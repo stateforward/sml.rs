@@ -1,9 +1,9 @@
-extern crate smlang;
+extern crate sml;
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        _ {
         *State1 + Event1 = State2,
         _ + Event1 = Fault,
         _ + Event1 = State3, //~ Wildcard has no effect

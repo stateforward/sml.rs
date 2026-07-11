@@ -1,9 +1,9 @@
-extern crate smlang;
+extern crate sml;
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        _ {
         _ + Event1 = Fault, //~ State and event combination specified multiple times, remove duplicates.
         *State1 + Event1 = State2,
     }

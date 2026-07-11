@@ -4,10 +4,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         *State1 + Event1 / action = State2,
         State1 + Event2 / action = State3,
         State2 + Event2 = State1,

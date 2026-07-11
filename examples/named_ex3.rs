@@ -5,11 +5,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    name: LoopingWithGuards,
-    transitions: {
+sml! {
+    LoopingWithGuards {
         *State1 + Event1 [guard] / action1 = State2,
         State2 + Event2 [guard_fail] / action2 = State3,
     }

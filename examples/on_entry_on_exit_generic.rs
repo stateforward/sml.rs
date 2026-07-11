@@ -2,11 +2,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    name: OnEntryExample,
-    transitions: {
+sml! {
+    OnEntryExample {
         *D0 + ToD1 = D1,
         D0 + ToD3 = D3,
         D1  + ToD2 = D2,

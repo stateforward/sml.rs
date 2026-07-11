@@ -4,10 +4,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         *State1 + Event1 / count_transition1 = State2,
         State2 + Event2 / count_transition2 = State1,
     }

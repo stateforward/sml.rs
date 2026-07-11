@@ -5,13 +5,13 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         *State1 + Event1 = State2,
         State2 + Event2 = State3,
-    },
+    }
 }
 
 /// Context

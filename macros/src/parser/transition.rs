@@ -5,7 +5,7 @@ use super::AsyncIdent;
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::fmt;
-use syn::{bracketed, parse, token, Ident, Token};
+use syn::{bracketed, parse, token, Expr, Ident, Token};
 
 #[derive(Debug, Clone)]
 pub struct StateTransition {
@@ -13,7 +13,12 @@ pub struct StateTransition {
     pub event: Event,
     pub guard: Option<GuardExpression>,
     pub action: Option<AsyncIdent>,
+    pub additional_actions: Vec<AsyncIdent>,
+    pub process_events: Vec<Expr>,
+    pub defer: bool,
+    pub eval_actions: Vec<EvalAction>,
     pub out_state: OutputState,
+    pub internal_transition: bool,
 }
 
 #[derive(Debug)]
@@ -22,7 +27,18 @@ pub struct StateTransitions {
     pub event: Event,
     pub guard: Option<GuardExpression>,
     pub action: Option<AsyncIdent>,
+    pub additional_actions: Vec<AsyncIdent>,
+    pub process_events: Vec<Expr>,
+    pub defer: bool,
+    pub eval_actions: Vec<EvalAction>,
     pub out_state: OutputState,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvalAction {
+    pub position: usize,
+    pub guard: GuardExpression,
+    pub action: AsyncIdent,
 }
 
 impl parse::Parse for StateTransitions {
@@ -61,16 +77,97 @@ impl parse::Parse for StateTransitions {
         };
 
         // Possible action
-        let action = if input.parse::<Token![/]>().is_ok() {
-            let is_async = input.parse::<token::Async>().is_ok();
-            let action: Ident = input.parse()?;
-            Some(AsyncIdent {
-                ident: action,
-                is_async,
-            })
-        } else {
-            None
-        };
+        let (action, additional_actions, process_events, defer, eval_actions) =
+            if input.parse::<Token![/]>().is_ok() {
+                let mut actions = Vec::new();
+                let mut process_events = Vec::new();
+                let mut defer = false;
+                let mut eval_actions = Vec::new();
+                let mut position = 0;
+                if input.peek(token::Paren) {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    while !content.is_empty() {
+                        let is_async = content.parse::<token::Async>().is_ok();
+                        let ident: Ident = content.parse()?;
+                        if ident == "eval" && content.peek(token::Bracket) {
+                            if is_async {
+                                return Err(parse::Error::new(
+                                    ident.span(),
+                                    "`eval` is an action-sequence operator, not an async callback",
+                                ));
+                            }
+                            let guard_content;
+                            bracketed!(guard_content in content);
+                            let guard = GuardExpression::parse(&guard_content)?;
+                            content.parse::<Token![/]>()?;
+                            let action_async = content.parse::<token::Async>().is_ok();
+                            eval_actions.push(EvalAction {
+                                position,
+                                guard,
+                                action: AsyncIdent {
+                                    ident: content.parse()?,
+                                    is_async: action_async,
+                                },
+                            });
+                        } else if ident == "defer" {
+                            if is_async {
+                                return Err(parse::Error::new(
+                                    ident.span(),
+                                    "`defer` is a queue operation, not an async callback",
+                                ));
+                            }
+                            defer = true;
+                        } else if ident == "process" && content.peek(token::Paren) {
+                            if is_async {
+                                return Err(parse::Error::new(
+                                    ident.span(),
+                                    "`process(...)` is a queue operation, not an async callback",
+                                ));
+                            }
+                            let event;
+                            syn::parenthesized!(event in content);
+                            process_events.push(event.parse()?);
+                        } else {
+                            actions.push(AsyncIdent { ident, is_async });
+                        }
+                        position += 1;
+                        if content.is_empty() {
+                            break;
+                        }
+                        content.parse::<Token![,]>()?;
+                    }
+                } else {
+                    let is_async = input.parse::<token::Async>().is_ok();
+                    let ident: Ident = input.parse()?;
+                    if ident == "defer" {
+                        if is_async {
+                            return Err(parse::Error::new(
+                                ident.span(),
+                                "`defer` is a queue operation, not an async callback",
+                            ));
+                        }
+                        defer = true;
+                    } else if ident == "process" && input.peek(token::Paren) {
+                        if is_async {
+                            return Err(parse::Error::new(
+                                ident.span(),
+                                "`process(...)` is a queue operation, not an async callback",
+                            ));
+                        }
+                        let content;
+                        syn::parenthesized!(content in input);
+                        process_events.push(content.parse()?);
+                    } else {
+                        actions.push(AsyncIdent { ident, is_async });
+                    }
+                }
+                let action = actions.first().cloned();
+                let additional = actions.into_iter().skip(1).collect();
+                (action, additional, process_events, defer, eval_actions)
+            } else {
+                (None, Vec::new(), Vec::new(), false, Vec::new())
+            };
 
         let out_state: OutputState = input.parse()?;
 
@@ -79,6 +176,10 @@ impl parse::Parse for StateTransitions {
             event,
             guard,
             action,
+            additional_actions,
+            process_events,
+            defer,
+            eval_actions,
             out_state,
         })
     }

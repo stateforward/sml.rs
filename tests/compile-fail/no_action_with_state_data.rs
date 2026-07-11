@@ -1,9 +1,9 @@
-extern crate smlang;
+extern crate sml;
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        _ {
         *State1 + Event1 = State2(u32), //~ This state has data associated, but not action is define here to provide it.
     }
 }

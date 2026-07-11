@@ -1,6 +1,7 @@
+use crate::parser::event::EventKind;
 use crate::parser::*;
 
-/// Generates a string containing 'dot' syntax to generate a statemachine diagram with graphviz.
+/// Generates DOT syntax for a state-machine diagram with Graphviz.
 pub fn generate_diagram(sm: &ParsedStateMachine) -> String {
     let transitions = &sm.states_events_mapping;
 
@@ -12,8 +13,29 @@ pub fn generate_diagram(sm: &ParsedStateMachine) -> String {
     for (state, event) in transitions {
         for eventmapping in event.values() {
             for transition in &eventmapping.transitions {
+                let (event_id, event_label) = match eventmapping.event_kind {
+                    EventKind::Normal => {
+                        let event = eventmapping.event.to_string();
+                        (event.clone(), event)
+                    }
+                    EventKind::Unexpected if eventmapping.event_wildcard => {
+                        ("unexpected_any".to_string(), "unexpected<_>".to_string())
+                    }
+                    EventKind::Unexpected => (
+                        format!("unexpected_{}", eventmapping.event),
+                        format!("unexpected<{}>", eventmapping.event),
+                    ),
+                    EventKind::Completion => (
+                        format!("completion_{}", eventmapping.event),
+                        format!("completion<{}>", eventmapping.event),
+                    ),
+                    EventKind::Entry => ("on_entry".to_string(), "on_entry<_>".to_string()),
+                    EventKind::Exit => ("on_exit".to_string(), "on_exit<_>".to_string()),
+                    EventKind::Exception => ("exception".to_string(), "exception<_>".to_string()),
+                };
                 diagram_events.push((
-                    eventmapping.event.to_string(),
+                    event_id.clone(),
+                    event_label,
                     transition
                         .guard
                         .as_ref()
@@ -21,15 +43,13 @@ pub fn generate_diagram(sm: &ParsedStateMachine) -> String {
                         .unwrap_or_else(|| "_".to_string()),
                     transition
                         .action
-                        .as_ref()
-                        .map(|i| i.ident.to_string())
-                        .unwrap_or_else(|| "_".to_string()),
+                        .iter()
+                        .chain(transition.additional_actions.iter())
+                        .map(|action| action.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
                 ));
-                diagram_transitions.push((
-                    state,
-                    transition.out_state.to_string(),
-                    eventmapping.event.to_string(),
-                ));
+                diagram_transitions.push((state, transition.out_state.to_string(), event_id));
             }
         }
     }
@@ -53,8 +73,8 @@ pub fn generate_diagram(sm: &ParsedStateMachine) -> String {
         .iter()
         .map(|s| {
             format!(
-                "\t{0} [shape=box label=\"{0}\\n[{1}] / {2}\"]",
-                s.0, s.1, s.2
+                "\t{0} [shape=box label=\"{1}\\n[{2}] / {3}\"]",
+                s.0, s.1, s.2, s.3
             )
         })
         .collect::<Vec<String>>();
@@ -82,4 +102,30 @@ pub fn generate_diagram(sm: &ParsedStateMachine) -> String {
         event_string.join("\n"),
         transition_string.join("\n")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_diagram;
+    use crate::parser::{state_machine::StateMachine, ParsedStateMachine};
+    use syn::parse_str;
+
+    #[test]
+    fn diagram_distinguishes_completion_and_unexpected_triggers() {
+        let parsed: StateMachine = parse_str(
+            "transitions: {
+                *Idle + Start = Step,
+                Step + completion<Start> = Done,
+                Done + unexpected<Reset> = Error,
+                Done + unexpected<_> = Error
+            }",
+        )
+        .unwrap();
+        let machine = ParsedStateMachine::new(parsed).unwrap();
+        let diagram = generate_diagram(&machine);
+
+        assert!(diagram.contains("completion<Start>"));
+        assert!(diagram.contains("unexpected<Reset>"));
+        assert!(diagram.contains("unexpected<_>"));
+    }
 }

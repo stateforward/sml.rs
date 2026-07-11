@@ -5,7 +5,7 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
 /// Event data
 #[derive(PartialEq, Debug)]
@@ -15,10 +15,11 @@ pub struct MyEventData(pub u32);
 #[derive(PartialEq, Debug)]
 pub struct MyStateData(pub u32);
 
-statemachine! {
-    states_attr: #[derive(Debug)],
-    events_attr: #[derive(Debug)],
-    transitions: {
+sml! {
+    _[
+        states_attr: #[derive(Debug)],
+        events_attr: #[derive(Debug)]
+    ] {
         *State1 + Event1(MyEventData) [guard1] / action1 = State2,
         State2(MyStateData) + Event2  [guard2] / action2 = State3,
         // ...
@@ -31,7 +32,7 @@ pub struct Context;
 impl StateMachineContext for Context {
     // Guard1 has access to the data from Event1
     fn guard1(&self, event_data: &MyEventData) -> Result<bool, ()> {
-        Ok(event_data.0 % 2 == 0)
+        Ok(event_data.0.is_multiple_of(2))
     }
 
     // Action1 has access to the data from Event1, and need to return the state data for State2
@@ -42,7 +43,7 @@ impl StateMachineContext for Context {
 
     // Guard2 has access to the data from State2
     fn guard2(&self, state_data: &MyStateData) -> Result<bool, ()> {
-        Ok(state_data.0 % 2 == 0)
+        Ok(state_data.0.is_multiple_of(2))
     }
 
     // Action2 has access to the data from State2

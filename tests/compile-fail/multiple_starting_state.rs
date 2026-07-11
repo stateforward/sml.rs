@@ -1,9 +1,9 @@
-extern crate smlang;
+extern crate sml;
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        InvalidOrthogonal {
         //~ More than one starting state defined (indicated with *), remove duplicates.
         *State1 + Event1 = State2,
         *State2 + Event2 = State3,

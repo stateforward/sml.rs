@@ -1,8 +1,8 @@
-extern crate smlang;
+extern crate sml;
 
 use derive_more::Display;
 
-use smlang::statemachine;
+use sml::sml;
 
 mod internal_macros {
     #[macro_export]
@@ -45,8 +45,8 @@ fn compile_fail_tests() {
 }
 #[test]
 fn wildcard_after_input_state() {
-    statemachine! {
-        transitions: {
+    sml! {
+        _ {
             *State1 + Event1 = State2,
             _ + Event1 = Fault,
         }
@@ -70,8 +70,8 @@ fn multiple_lifetimes() {
     pub struct Y;
     pub struct Z;
 
-    statemachine! {
-        transitions: {
+    sml! {
+        _ {
             *State1 + Event1(&'a X) [guard1] / action1 = State2(&'a X),
             State2(&'a X) + Event2(&'b Y) [guard2] / action2 = State3((&'a X, &'b Y)),
             State4 + Event(&'c Z) [guard3] / action3 = State5,
@@ -120,10 +120,11 @@ fn multiple_lifetimes() {
 
 #[test]
 fn derive_display_events_states() {
-    statemachine! {
-        events_attr: #[derive(Debug,Display)],
-        states_attr: #[derive(Debug,Display)],
-        transitions: {
+    sml! {
+        _[
+            events_attr: #[derive(Debug,Display)],
+            states_attr: #[derive(Debug,Display)]
+        ] {
             *Init + Event = End,
         }
     }
@@ -143,11 +144,11 @@ fn derive_display_events_states() {
 
 #[test]
 fn named_derive_display_events_states() {
-    statemachine! {
-        name: SM,
-        events_attr: #[derive(Debug,Display)],
-        states_attr: #[derive(Debug,Display)],
-        transitions: {
+    sml! {
+        SM[
+            events_attr: #[derive(Debug,Display)],
+            states_attr: #[derive(Debug,Display)]
+        ] {
             *Init + Event = End,
         }
     }
@@ -170,8 +171,8 @@ fn async_guards_and_actions() {
     use smol;
 
     smol::block_on(async {
-        statemachine! {
-            transitions: {
+        sml! {
+        _ {
                 *State1 + Event1 [async guard1] / async action1 = State2,
                 _ + Event1 = Fault,
             }
@@ -204,9 +205,8 @@ fn async_on_entry_and_exit() {
     use smol;
 
     smol::block_on(async {
-        statemachine! {
-            entry_exit_async: true,
-            transitions: {
+        sml! {
+            _[entry_exit_async] {
                 *State1 + Event1 = State2,
                 State2 + Event2 = State3,
             }
@@ -239,9 +239,8 @@ fn guard_expressions() {
     #[derive(PartialEq, Display)]
     pub struct Entry(pub u32);
 
-    statemachine! {
-        states_attr: #[derive(Display, Debug)],
-        transitions: {
+    sml! {
+        _[states_attr: #[derive(Display, Debug)]] {
             *Init + Login(&'a Entry) [valid_entry] / attempt = LoggedIn,
             Init + Login(&'a Entry) [!valid_entry && !too_many_attempts] / attempt = Init,
             Init + Login(&'a Entry) [!valid_entry && too_many_attempts] / attempt = LoginDenied,
@@ -317,9 +316,9 @@ fn guard_expressions() {
 }
 #[test]
 fn guarded_transition_before_unguarded() {
-    use smlang::statemachine;
-    statemachine! {
-        transitions: {
+    use sml::sml;
+    sml! {
+        _[states_attr: #[derive(Debug, Clone, Copy)]] {
             *State1 + Event1 [guard] / disable = State2,
             State1 + Event1 = Fault,
             State2 + Event1 = State1,
@@ -351,9 +350,9 @@ fn guarded_transition_before_unguarded() {
 
 #[test]
 fn guard_errors() {
-    use smlang::statemachine;
-    statemachine! {
-        transitions: {
+    use sml::sml;
+    sml! {
+        _ {
             *Init + Event1 [guard] = Done,
         }
     }
@@ -401,8 +400,8 @@ fn test_internal_transition_with_data() {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct State3Data(pub ActionId);
 
-    statemachine! {
-        transitions: {
+    sml! {
+        _[states_attr: #[derive(Debug, Clone, Copy, Eq)]] {
             *State1(State1Data) + Event2 / action12 = State2,
             State1(State1Data) + Event3 / action13 = State3(State3Data),
             State1(State1Data) + Event4 / action14 = State4(State3Data),
@@ -414,8 +413,7 @@ fn test_internal_transition_with_data() {
             // State3(State3Data) + Event3 / action_3 = State3(State3Data),
             // State4(State3Data) + Event3 / action_3 = State4(State3Data),
             _ + Event3 / action_3 = _,
-        },
-        states_attr: #[derive(Debug, Clone,  Copy, Eq)]
+        }
     }
     /// Context
     #[derive(Default, Debug, PartialEq, Eq)]
@@ -491,14 +489,13 @@ fn test_internal_transition_with_data() {
 }
 #[test]
 fn test_wildcard_states_and_internal_transitions() {
-    statemachine! {
-        transitions: {
+    sml! {
+        _[states_attr: #[derive(Debug, Clone, Copy)]] {
             *State1 + Event2 = State2,
             State2 + Event3 = State3,
             _ + Event1 / increment_count,      // Internal transition (implicit: omitting target state)
             _ + Event3 / increment_count = _ , // Internal transition (explicit: using _ as target state)
-        },
-        states_attr: #[derive(Debug, Clone,  Copy)]
+        }
     }
     #[derive(Debug)]
     pub struct Context {
@@ -526,13 +523,14 @@ fn test_wildcard_states_and_internal_transitions() {
 fn test_specify_attrs() {
     #![deny(non_camel_case_types)]
     use serde::Serialize;
-    statemachine! {
-        transitions: {
+    sml! {
+        _[
+            states_attr: #[derive(Debug, Clone, Copy, Serialize)] #[non_exhaustive] #[repr(u8)] #[serde(tag="type")],
+            events_attr: #[derive(Debug)] #[allow(non_camel_case_types)]
+        ] {
             *State1 + tostate2 = State2,
             State2 + tostate3 / increment_count = State3
-        },
-        states_attr: #[derive(Debug, Clone, Copy, Serialize)] #[non_exhaustive] #[repr(u8)] #[serde(tag="type")],
-        events_attr: #[derive(Debug)] #[allow(non_camel_case_types)]
+        }
     }
 
     #[derive(Debug, Default)]

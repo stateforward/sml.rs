@@ -36,20 +36,20 @@ implementation.
 ### Added
 
 - Add support for async guards and actions
-- Add name to statemachine and make dot output stable and unique ([issue-62](https://github.com/korken89/smlang-rs/pull/62))
-- Add derive macros to states and events ([issue-62](https://github.com/korken89/smlang-rs/pull/62))
+- Add names to `sml!` machines and make dot output stable and unique ([issue-62](https://github.com/stateforward/sml.rs/pull/62))
+- Add derive macros to states and events ([issue-62](https://github.com/stateforward/sml.rs/pull/62))
 - Add hooks to `StateMachineContext` for logging events, guards, actions, and state changes
 - Add support multiple guarded transitions for a triggering event
 - Add support for guard boolean expressions in the state machine declaration
 - There are now `on_entry_<snakecase_statename>` and `on_entry_<snakecase_statename>` functions
 defined to allow handling entry and exit from all state machine states. These have a default empty
 implementation.
-* The expanded code is now written to `target/smlang-expansion-<name|default>.rs` during the build
+* The expanded code is now written to `target/sml-expansion-<name|default>.rs` during the build
 process.
 
 ### Fixed
 
-- Fixes multiple issues with lifetimes ([issue-57](https://github.com/korken89/smlang-rs/issues/57), [issue-58](https://github.com/korken89/smlang-rs/pull/58))
+- Fixes multiple issues with lifetimes ([issue-57](https://github.com/stateforward/sml.rs/issues/57), [issue-58](https://github.com/stateforward/sml.rs/pull/58))
 
 ### Changed
 
@@ -68,8 +68,8 @@ process.
 
 ### Added
 
-- Starting state can now contain data ([issue-34](https://github.com/korken89/smlang-rs/issues/34))
-- Allow explicit input states before wildcard input state([issue-47](https://github.com/korken89/smlang-rs/pull/47)
+- Starting state can now contain data ([issue-34](https://github.com/stateforward/sml.rs/issues/34))
+- Allow explicit input states before wildcard input state([issue-47](https://github.com/stateforward/sml.rs/pull/47)
 
 ### Changed
 - Custom guard error types are now specified as a type of the `StateMachineContext` to allow for
@@ -78,7 +78,7 @@ process.
 ## [v0.5.1]
 
 ### Fixed
-* [#36](https://github.com/korken89/smlang-rs/issues/36) Attempts to use actions and guards with
+* [#36](https://github.com/stateforward/sml.rs/issues/36) Attempts to use actions and guards with
   inconsistent input, event, and output state data will be flagged as compiler errors.
 
 ### Added
@@ -88,13 +88,13 @@ process.
 ### Added
 
 - Changelog enforcer added to CI
-- State data now supports lifetimes ([issue-26](https://github.com/korken89/smlang-rs/issues/26))
-- New example [dominos.rs](https://github.com/korken89/smlang-rs/blob/master/examples/dominos.rs) illustrating a method of event propagation ([issue-17](https://github.com/korken89/smlang-rs/issues/17))
-- Input states support pattern matching and wildcards ([issue-29](https://github.com/korken89/smlang-rs/issues/29))
+- State data now supports lifetimes ([issue-26](https://github.com/stateforward/sml.rs/issues/26))
+- New example [dominos.rs](https://github.com/stateforward/sml.rs/blob/master/examples/dominos.rs) illustrating a method of event propagation ([issue-17](https://github.com/stateforward/sml.rs/issues/17))
+- Input states support pattern matching and wildcards ([issue-29](https://github.com/stateforward/sml.rs/issues/29))
 
 ### Fixed
-- PartialEq for States and Events based on discriminant only ([issue-21](https://github.com/korken89/smlang-rs/issues/21))
-- Updated the CI badges ([issue-30](https://github.com/korken89/smlang-rs/issues/30))
+- PartialEq for States and Events based on discriminant only ([issue-21](https://github.com/stateforward/sml.rs/issues/21))
+- Updated the CI badges ([issue-30](https://github.com/stateforward/sml.rs/issues/30))
 
 ## [v0.4.2]
 
@@ -198,20 +198,20 @@ a long list of states to go through.
 * Support for data in states
 * Change log added
 
-[Unreleased]: https://github.com/korken89/smlang-rs/compare/v0.8.0...master
-[v0.8.0]: https://github.com/korken89/smlang-rs/compare/v0.7.0...v0.8.0
-[v0.7.0]: https://github.com/korken89/smlang-rs/compare/v0.6.0...v0.7.0
-[v0.6.0]: https://github.com/korken89/smlang-rs/compare/v0.5.1...v0.6.0
-[v0.5.1]: https://github.com/korken89/smlang-rs/compare/v0.5.0...v0.5.1
-[v0.5.0]: https://github.com/korken89/smlang-rs/compare/v0.4.2...v0.5.0
-[v0.4.2]: https://github.com/korken89/smlang-rs/compare/v0.4.1...v0.4.2
-[v0.4.1]: https://github.com/korken89/smlang-rs/compare/v0.4.0...v0.4.1
-[v0.4.0]: https://github.com/korken89/smlang-rs/compare/v0.3.5...v0.4.0
-[v0.3.5]: https://github.com/korken89/smlang-rs/compare/v0.3.4...v0.3.5
-[v0.3.4]: https://github.com/korken89/smlang-rs/compare/v0.3.3...v0.3.4
-[v0.3.3]: https://github.com/korken89/smlang-rs/compare/v0.3.2...v0.3.3
-[v0.3.2]: https://github.com/korken89/smlang-rs/compare/v0.3.1...v0.3.2
-[v0.3.1]: https://github.com/korken89/smlang-rs/compare/v0.3.0...v0.3.1
-[v0.3.0]: https://github.com/korken89/smlang-rs/compare/v0.2.2...v0.3.0
-[v0.2.2]: https://github.com/korken89/smlang-rs/compare/v0.2.1...v0.2.2
-[v0.2.1]: https://github.com/korken89/smlang-rs/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/stateforward/sml.rs/compare/v0.8.0...master
+[v0.8.0]: https://github.com/stateforward/sml.rs/compare/v0.7.0...v0.8.0
+[v0.7.0]: https://github.com/stateforward/sml.rs/compare/v0.6.0...v0.7.0
+[v0.6.0]: https://github.com/stateforward/sml.rs/compare/v0.5.1...v0.6.0
+[v0.5.1]: https://github.com/stateforward/sml.rs/compare/v0.5.0...v0.5.1
+[v0.5.0]: https://github.com/stateforward/sml.rs/compare/v0.4.2...v0.5.0
+[v0.4.2]: https://github.com/stateforward/sml.rs/compare/v0.4.1...v0.4.2
+[v0.4.1]: https://github.com/stateforward/sml.rs/compare/v0.4.0...v0.4.1
+[v0.4.0]: https://github.com/stateforward/sml.rs/compare/v0.3.5...v0.4.0
+[v0.3.5]: https://github.com/stateforward/sml.rs/compare/v0.3.4...v0.3.5
+[v0.3.4]: https://github.com/stateforward/sml.rs/compare/v0.3.3...v0.3.4
+[v0.3.3]: https://github.com/stateforward/sml.rs/compare/v0.3.2...v0.3.3
+[v0.3.2]: https://github.com/stateforward/sml.rs/compare/v0.3.1...v0.3.2
+[v0.3.1]: https://github.com/stateforward/sml.rs/compare/v0.3.0...v0.3.1
+[v0.3.0]: https://github.com/stateforward/sml.rs/compare/v0.2.2...v0.3.0
+[v0.2.2]: https://github.com/stateforward/sml.rs/compare/v0.2.1...v0.2.2
+[v0.2.1]: https://github.com/stateforward/sml.rs/compare/v0.2.0...v0.2.1

@@ -1,3 +1,4 @@
+pub mod cpp;
 pub mod data;
 pub mod event;
 pub mod input_state;
@@ -7,7 +8,7 @@ pub mod state_machine;
 pub mod transition;
 
 use data::DataDefinitions;
-use event::EventMapping;
+use event::{EventKind, EventMapping};
 use state_machine::StateMachine;
 
 use input_state::InputState;
@@ -19,6 +20,30 @@ use std::fmt;
 use syn::{parse, Attribute, Ident, Type};
 use transition::StateTransition;
 pub type TransitionMap = HashMap<String, HashMap<String, EventMapping>>;
+
+pub fn state_ident(value: &str, span: Span) -> Ident {
+    let mut ident = String::new();
+    let mut uppercase = true;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if uppercase {
+                ident.extend(character.to_uppercase());
+                uppercase = false;
+            } else {
+                ident.push(character);
+            }
+        } else {
+            uppercase = true;
+        }
+    }
+    if ident.is_empty() {
+        ident.push_str("State");
+    }
+    if ident.as_bytes()[0].is_ascii_digit() {
+        ident.insert(0, 'S');
+    }
+    Ident::new(&ident, span)
+}
 
 #[derive(Debug, Clone)]
 pub struct AsyncIdent {
@@ -57,6 +82,21 @@ pub struct ParsedStateMachine {
     pub event_data: DataDefinitions,
     pub states_events_mapping: HashMap<String, HashMap<String, EventMapping>>,
     pub entry_exit_async: bool,
+    pub fixed_error_type: Option<Type>,
+}
+
+fn event_key(event: &event::Event) -> String {
+    match event.kind {
+        EventKind::Normal => event.ident.to_string(),
+        EventKind::Unexpected if event.wildcard => "unexpected::*".to_string(),
+        EventKind::Unexpected => format!("unexpected::{}", event.ident),
+        EventKind::Completion if event.wildcard => "completion::*".to_string(),
+        EventKind::Completion => format!("completion::{}", event.ident),
+        EventKind::Entry => "lifecycle::entry".to_string(),
+        EventKind::Exit => "lifecycle::exit".to_string(),
+        EventKind::Exception if event.wildcard => "exception::*".to_string(),
+        EventKind::Exception => format!("exception::{}", event.ident),
+    }
 }
 
 // helper function for adding a transition to a transition event map
@@ -69,15 +109,24 @@ fn add_transition(
         .get_mut(&transition.in_state.ident.to_string())
         .unwrap();
 
-    match p.entry(transition.event.ident.to_string()) {
+    match p.entry(event_key(&transition.event)) {
         hash_map::Entry::Vacant(entry) => {
             let mapping = EventMapping {
                 in_state: transition.in_state.ident.clone(),
                 event: transition.event.ident.clone(),
+                event_kind: transition.event.kind,
+                event_wildcard: transition.event.wildcard,
+                event_external: transition.event.external,
                 transitions: vec![Transition {
                     guard: transition.guard.clone(),
                     action: transition.action.clone(),
+                    additional_actions: transition.additional_actions.clone(),
+                    process_events: transition.process_events.clone(),
+                    defer: transition.defer,
+                    eval_actions: transition.eval_actions.clone(),
+                    default_output: transition.out_state.composite.is_some(),
                     out_state: transition.out_state.ident.clone(),
+                    internal_transition: transition.internal_transition,
                 }],
             };
             entry.insert(mapping);
@@ -87,7 +136,13 @@ fn add_transition(
             mapping.transitions.push(Transition {
                 guard: transition.guard.clone(),
                 action: transition.action.clone(),
+                additional_actions: transition.additional_actions.clone(),
+                process_events: transition.process_events.clone(),
+                defer: transition.defer,
+                eval_actions: transition.eval_actions.clone(),
+                default_output: transition.out_state.composite.is_some(),
                 out_state: transition.out_state.ident.clone(),
+                internal_transition: transition.internal_transition,
             });
         }
     }
@@ -100,7 +155,7 @@ fn add_transition(
         // This transition goes to a state that has data associated, check so it has an
         // action
 
-        if transition.action.is_none() {
+        if transition.action.is_none() && transition.out_state.composite.is_none() {
             return Err(parse::Error::new(
                 transition.out_state.ident.span(),
                 "This state has data associated, but not action is define here to provide it.",
@@ -112,6 +167,22 @@ fn add_transition(
 
 impl ParsedStateMachine {
     pub fn new(mut sm: StateMachine) -> parse::Result<Self> {
+        for transition in sm
+            .transitions
+            .iter()
+            .filter(|transition| transition.event.kind == EventKind::Completion)
+        {
+            if matches!(
+                transition.event.data_type,
+                Some(Type::Reference(ref reference)) if reference.mutability.is_some()
+            ) {
+                return Err(parse::Error::new(
+                    transition.event.ident.span(),
+                    "Completion origin data cannot be a mutable reference.",
+                ));
+            }
+        }
+
         // Derive out_state for internal non-wildcard transitions
         for transition in sm.transitions.iter_mut() {
             if transition.out_state.internal_transition && !transition.in_state.wildcard {
@@ -165,9 +236,20 @@ impl ParsedStateMachine {
             }
 
             // Collect events
-            let event_name = transition.event.ident.to_string();
-            events.insert(event_name.clone(), transition.event.ident.clone());
-            event_data.collect(event_name.clone(), transition.event.data_type.clone())?;
+            if !transition.event.wildcard
+                && !matches!(
+                    transition.event.kind,
+                    EventKind::Entry | EventKind::Exit | EventKind::Exception
+                )
+            {
+                let event_name = transition.event.ident.to_string();
+                events.insert(event_name.clone(), transition.event.ident.clone());
+                if transition.event.kind != EventKind::Completion
+                    || transition.event.data_type.is_some()
+                {
+                    event_data.collect(event_name.clone(), transition.event.data_type.clone())?;
+                }
+            }
 
             // add input and output states to the mapping HashMap
             if !transition.in_state.wildcard {
@@ -190,7 +272,7 @@ impl ParsedStateMachine {
                         .get_mut(&in_state.to_string())
                         .unwrap();
 
-                    if p.contains_key(&transition.event.ident.to_string()) {
+                    if p.contains_key(&event_key(&transition.event)) {
                         continue;
                     }
 
@@ -200,6 +282,8 @@ impl ParsedStateMachine {
                         wildcard: false,
                         ident: in_state.clone(),
                         data_type: state_data.data_types.get(name).cloned(),
+                        composite: None,
+                        history: false,
                     };
 
                     // create the transition
@@ -213,11 +297,16 @@ impl ParsedStateMachine {
                         event: transition.event.clone(),
                         guard: transition.guard.clone(),
                         action: transition.action.clone(),
+                        additional_actions: transition.additional_actions.clone(),
+                        process_events: transition.process_events.clone(),
+                        defer: transition.defer,
+                        eval_actions: transition.eval_actions.clone(),
                         out_state,
+                        internal_transition: transition.internal_transition,
                     };
 
                     // add the wildcard transition to the transition map
-                    // TODO:  Need to work on the span of this error, as it is being caused by the wildcard
+                    // The wildcard causes this validation error, so use its available span.
                     // but won't show up at that line
                     add_transition(
                         &wildcard_transition,
@@ -241,6 +330,18 @@ impl ParsedStateMachine {
             }
         }
 
+        let external_events: std::collections::HashSet<_> = sm
+            .transitions
+            .iter()
+            .filter(|transition| transition.event.external)
+            .map(|transition| transition.event.ident.to_string())
+            .collect();
+        for event_mappings in states_events_mapping.values_mut() {
+            for mapping in event_mappings.values_mut() {
+                mapping.event_external = external_events.contains(&mapping.event.to_string());
+            }
+        }
+
         Ok(ParsedStateMachine {
             name: sm.name,
             states_attr: sm.states_attr,
@@ -254,6 +355,7 @@ impl ParsedStateMachine {
             event_data,
             states_events_mapping,
             entry_exit_async: sm.entry_exit_async,
+            fixed_error_type: sm.fixed_error_type,
         })
     }
 }

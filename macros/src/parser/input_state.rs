@@ -1,4 +1,4 @@
-use syn::{parenthesized, parse, spanned::Spanned, token, Ident, Token, Type};
+use syn::{parenthesized, parse, spanned::Spanned, token, Ident, LitStr, Token, Type};
 
 #[derive(Debug, Clone)]
 pub struct InputState {
@@ -6,12 +6,28 @@ pub struct InputState {
     pub wildcard: bool,
     pub ident: Ident,
     pub data_type: Option<Type>,
+    pub composite: Option<Ident>,
+    pub history: bool,
 }
 
 impl parse::Parse for InputState {
     fn parse(input: parse::ParseStream) -> syn::Result<Self> {
         // Check for starting state definition
         let start = input.parse::<Token![*]>().is_ok();
+
+        if input.peek(token::Paren) {
+            let content;
+            parenthesized!(content in input);
+            let mut grouped: InputState = content.parse()?;
+            if !content.is_empty() || grouped.start {
+                return Err(parse::Error::new(
+                    content.span(),
+                    "a parenthesized state must contain exactly one state expression",
+                ));
+            }
+            grouped.start = start;
+            return Ok(grouped);
+        }
 
         // check to see if this is a wildcard state, which is denoted with "underscore"
         let underscore = input.parse::<Token![_]>();
@@ -26,19 +42,52 @@ impl parse::Parse for InputState {
         }
 
         // Input State
-        let ident: Ident = if let Ok(underscore) = underscore {
+        let mut ident: Ident = if let Ok(underscore) = underscore {
             underscore.into()
+        } else if input.peek(LitStr) {
+            let state: LitStr = input.parse()?;
+            crate::parser::state_ident(&state.value(), state.span())
         } else {
             input.parse()?
         };
+        let composite = if ident == "state" && input.peek(Token![<]) {
+            input.parse::<Token![<]>()?;
+            let child: Ident = input.parse()?;
+            input.parse::<Token![>]>()?;
+            ident = crate::parser::state_ident(&child.to_string(), child.span());
+            Some(child)
+        } else {
+            None
+        };
+        let inferred_data_type = composite
+            .as_ref()
+            .map(|state_type| syn::parse_quote_spanned!(state_type.span()=> #state_type));
+        if ident == "sml" && input.peek(Token![::]) {
+            input.parse::<Token![::]>()?;
+            ident = input.parse()?;
+            if ident != "X" {
+                return Err(parse::Error::new(
+                    ident.span(),
+                    "only the terminal state `sml::X` may be namespace-qualified",
+                ));
+            }
+        }
 
         // Possible type on the input state
-        let data_type = if input.peek(token::Paren) {
+        let (data_type, history) = if input.peek(token::Paren) {
             let content;
             parenthesized!(content in input);
             let input: Type = content.parse()?;
 
-            // Wilcards should not have data associated, as data will already be defined
+            let history = matches!(
+                &input,
+                Type::Path(path)
+                    if path.qself.is_none()
+                        && path.path.segments.len() == 1
+                        && path.path.is_ident("H")
+            );
+
+            // Wildcards should not have data or history associated.
             if wildcard {
                 return Err(parse::Error::new(
                     input.span(),
@@ -57,14 +106,18 @@ impl parse::Parse for InputState {
                 _ => {
                     return Err(parse::Error::new(
                         input.span(),
-                        "This is an unsupported type for states.",
+                        "This is an invalid type for states.",
                     ))
                 }
             }
 
-            Some(input)
+            if history {
+                (None, true)
+            } else {
+                (Some(input), false)
+            }
         } else {
-            None
+            (inferred_data_type, false)
         };
 
         Ok(Self {
@@ -72,6 +125,8 @@ impl parse::Parse for InputState {
             wildcard,
             ident,
             data_type,
+            composite,
+            history,
         })
     }
 }
@@ -102,6 +157,20 @@ mod tests {
     }
 
     #[test]
+    fn history_marker_is_not_state_data() {
+        let state: InputState = parse_quote! { "idle"_s(H) };
+        assert!(state.history);
+        assert!(state.data_type.is_none());
+    }
+
+    #[test]
+    fn parenthesized_initial_state_matches_cpp_spelling() {
+        let state: InputState = parse_quote! { *("idle"_s) };
+        assert!(state.start);
+        assert_eq!(state.ident, "Idle");
+    }
+
+    #[test]
     #[should_panic(expected = "Wildcard states cannot have data associated with it.")]
     fn wildcard_with_data() {
         let _: InputState = parse_quote! {
@@ -110,8 +179,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "This is an unsupported type for states.")]
-    fn unsupported_type() {
+    #[should_panic(expected = "This is an invalid type for states.")]
+    fn invalid_type() {
         let _: InputState = parse_quote! {
             State1(!)
         };
@@ -148,6 +217,12 @@ mod tests {
         assert!(!state.start);
         assert!(!state.wildcard);
         assert!(state.data_type.is_none());
+    }
+
+    #[test]
+    fn cpp_string_state_literal() {
+        let state: InputState = syn::parse_str("\"fin wait 1\"_s").unwrap();
+        assert_eq!(state.ident, "FinWait1");
     }
 
     #[test]

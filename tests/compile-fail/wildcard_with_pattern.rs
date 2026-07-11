@@ -1,9 +1,9 @@
-extern crate smlang;
+extern crate sml;
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        _ {
         *State1 + Event1 = State2,
         _ | State2 + Event2 = State1, //~ Wildcards already include all states, so should not be used with input state patterns.
     }

@@ -4,7 +4,7 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
 /// Event data
 #[derive(PartialEq)]
@@ -14,13 +14,12 @@ pub struct MyEventData(pub u32);
 #[derive(PartialEq)]
 pub struct MyStateData(pub u32);
 
-statemachine! {
-    temporary_context: &mut u16,
-    transitions: {
+sml! {
+    _[temporary_context: &mut u16] {
         *State1 + Event1(MyEventData) [guard1] / action1 = State2,
         State2(MyStateData) + Event2  [guard2] / action2 = State3,
         // ...
-    },
+    }
 }
 
 /// Context

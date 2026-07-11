@@ -1,0 +1,5 @@
+error: A wildcard trigger cannot carry event data.
+ --> tests/compile-fail/wildcard_trigger_data.rs:6:17
+  |
+6 |         Ready + completion<_>(u32) = Done,
+  |                 ^^^^^^^^^^

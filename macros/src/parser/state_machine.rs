@@ -1,7 +1,7 @@
 use super::transition::{StateTransition, StateTransitions};
 use syn::{braced, parse, spanned::Spanned, token, Attribute, Ident, Token, Type};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StateMachine {
     pub temporary_context_type: Option<Type>,
     pub custom_error: bool,
@@ -10,6 +10,7 @@ pub struct StateMachine {
     pub states_attr: Vec<Attribute>,
     pub events_attr: Vec<Attribute>,
     pub entry_exit_async: bool,
+    pub fixed_error_type: Option<Type>,
 }
 
 impl StateMachine {
@@ -22,17 +23,24 @@ impl StateMachine {
             states_attr: Vec::new(),
             events_attr: Vec::new(),
             entry_exit_async: false,
+            fixed_error_type: None,
         }
     }
 
     pub fn add_transitions(&mut self, transitions: StateTransitions) {
         for in_state in transitions.in_states {
+            let internal_transition = transitions.out_state.internal_transition;
             let transition = StateTransition {
                 in_state,
                 event: transitions.event.clone(),
                 guard: transitions.guard.clone(),
                 action: transitions.action.clone(),
+                additional_actions: transitions.additional_actions.clone(),
+                process_events: transitions.process_events.clone(),
+                defer: transitions.defer,
+                eval_actions: transitions.eval_actions.clone(),
                 out_state: transitions.out_state.clone(),
+                internal_transition,
             };
             self.transitions.push(transition);
         }
@@ -96,7 +104,7 @@ impl parse::Parse for StateMachine {
                         _ => {
                             return Err(parse::Error::new(
                                 temporary_context_type.span(),
-                                "This is an unsupported type for the temporary state.",
+                                "This is an invalid type for the temporary state.",
                             ))
                         }
                     }

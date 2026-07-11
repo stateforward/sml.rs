@@ -2,11 +2,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    name: Dominos,
-    transitions: {
+sml! {
+    Dominos {
         *D0 +  ToD1 / to_d2  = D1,
         D1(Option<DominosEvents>) +  ToD2 / to_d3  = D2,
         D2(Option<DominosEvents>) +  ToD3 / to_d4  = D3,

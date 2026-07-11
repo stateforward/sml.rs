@@ -1,7 +1,7 @@
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    transitions: {
+sml! {
+        _ {
         *Init + Event [guard] / action = State1(u32),
 
         // This transition is not valid because `guard` would have different input arguments from

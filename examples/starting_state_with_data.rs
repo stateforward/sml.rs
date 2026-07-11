@@ -4,14 +4,14 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
 /// State data
 #[derive(PartialEq)]
 pub struct MyStateData(pub u32);
 
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         State2 + Event2 / action = State1,
         *State1(MyStateData) + Event1 = State2,
         // ...

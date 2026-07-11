@@ -1,441 +1,265 @@
-# smlang: A `no_std` State Machine Language DSL in Rust
+# sml.rs
 
-![Build Status](https://github.com/korken89/smlang-rs/actions/workflows/build.yml/badge.svg)
-![Documentation](https://github.com/korken89/smlang-rs/actions/workflows/docs.yml/badge.svg)
+`sml.rs` is a `no_std`, allocation-free state-machine library for Rust. Its
+`sml!` procedural macro mirrors the [Boost.SML](https://boost-ext.github.io/sml/)
+transition-table DSL closely enough that tables can usually move between
+`sml.cpp` and Rust mechanically.
 
-> A state machine language DSL based on the syntax of [Boost-SML](https://boost-ext.github.io/sml/).
+```text
+source state + event [guard] / action = target state
+```
 
-`smlang` is a procedural macro library creating a state machine language DSL, whose aim to facilitate the
-use of state machines, as they quite fast can become overly complicated to write and get an
-overview of.
+The generated machine uses ordinary Rust enums, borrows event data, stores its
+context by value, and has no runtime allocator or dynamic dispatch.
 
-The library supports both `async` and non-`async` code.
+## Install
 
-## Transition DSL
+<!-- installation dependency matching Cargo.toml package name and version -->
 
-Below is a sample of the DSL. For a full description of the `statemachine` macro, please reference
-the [DSL document](docs/dsl.md).
+```toml
+[dependencies]
+sml = "0.8"
+```
+
+The crate has no default features and works on `no_std` targets. Enable
+`graphviz` only when build-time diagram generation is wanted:
+
+```toml
+sml = { version = "0.8", features = ["graphviz"] }
+```
+
+## Quick start
 
 ```rust
-statemachine!{
-    transitions: {
-        *SrcState1 + Event1 [ guard1 ] / action1 = DstState2, // * denotes starting state
-        SrcState2 + Event2 [ guard2 ] / action2 = DstState1,
+use sml::sml;
+
+pub struct OpenClose;
+pub struct CdDetected;
+pub struct Play;
+pub struct Stop;
+
+sml! {
+    Player {
+        *"empty"_s + event<OpenClose> / open_drawer = "open"_s,
+         "open"_s + event<OpenClose> / close_drawer = "empty"_s,
+         "empty"_s + event<CdDetected> = "stopped"_s,
+         "stopped"_s + event<Play> / start_playback = "playing"_s,
+         "playing"_s + event<Stop> / stop_playback = X,
     }
-    // ...
+}
+
+#[derive(Default)]
+struct Context {
+    actions: usize,
+}
+
+impl PlayerStateMachineContext for Context {
+    fn open_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
+        self.actions += 1;
+        Ok(())
+    }
+
+    fn close_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
+        self.actions += 1;
+        Ok(())
+    }
+
+    fn start_playback(&mut self, _: &Play) -> Result<(), ()> {
+        self.actions += 1;
+        Ok(())
+    }
+
+    fn stop_playback(&mut self, _: &Stop) -> Result<(), ()> {
+        self.actions += 1;
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), PlayerError> {
+    let mut player = PlayerStateMachine::new(Context::default());
+
+    assert!(player.is(&PlayerStates::Empty));
+    player.process_event(OpenClose)?;
+    player.process_event(OpenClose)?;
+    player.process_event(CdDetected)?;
+    player.process_event(Play)?;
+    player.process_event(Stop)?;
+
+    assert!(player.is_terminated());
+    assert_eq!(player.context().actions, 4);
+    Ok(())
 }
 ```
 
-Where `guard` and `action` are optional and can be left out. A `guard` is a function which returns
-`Ok(true)` if the state transition should happen - otherwise, the transition should not happen.
-The `action` functions are run during the state machine transition.
+The table generates `PlayerStateMachine`, `PlayerStateMachineContext`,
+`PlayerStates`, `PlayerEvents`, and `PlayerError`. Callback methods are inferred
+from the guards, actions, lifecycle hooks, and error handlers used by the table.
 
-> This implies that any state machine must be written as a list of transitions.
+## DSL at a glance
 
-The DSL supports wildcards and pattern matching for input states similar to rust pattern matching:
+<!-- transition spellings accepted by the sml! parser and documented in docs/dsl.md -->
+
+| Purpose | Spelling |
+|---|---|
+| Initial transition | `*"idle"_s + event<Start> = "running"_s` |
+| Reverse form | `"running"_s <= *"idle"_s + event<Start>` |
+| Guard and action | `state + event<E> [ready] / run = target` |
+| Guard expression | `[authorized && (!expired || admin)]` |
+| Action sequence | `/ (first, second, third)` |
+| Internal transition | `state + event<E> / action` |
+| External self-transition | `state + event<E> / action = state` |
+| Anonymous completion | `*"boot"_s / initialize = "ready"_s` |
+| Origin-aware completion | `state + completion<E> / finish = target` |
+| Entry and exit | `state + on_entry<_> / enter` and `on_exit<_>` |
+| Unexpected event | `state + unexpected_event<E> / recover` |
+| Error transition | `state + exception<MyError> / recover = target` |
+| Defer current event | `state + event<E> / defer` |
+| Process another event | `state + event<E> / process(Next {}) = target` |
+| Terminal state | `X` |
+| Shallow history | `*"idle"_s(H)` inside a child table |
+
+Named events use `"event name"_e`; typed states use `state<T>`. Prefix a guard
+or action with `async` to generate an async machine, for example
+`[async ready] / async send`.
+
+See [the complete DSL guide](docs/dsl.md) for callback signatures, state data,
+orthogonal regions, composite machines, exceptions, and queue behavior.
+
+## Generated API
+
+<!-- public methods emitted by the flat, orthogonal, and composite generators -->
+
+All generated machines provide construction, context access, event processing,
+and termination queries. The state API follows the machine shape:
+
+| Shape | Main state API |
+|---|---|
+| Flat | `state()`, `is(...)`, `set_state(...)`, `visit_current_state(...)` |
+| Orthogonal | `states()`, `state(region)`, `is_region(...)` |
+| Composite | Parent state methods plus typed child state, active, setter, and visitor methods |
+
+Call `initialize()` when the initial state's entry hook or anonymous completion
+must run before the first external event. `process_event` automatically runs
+completion stabilization after every handled event.
+
+Generated callbacks return `Result`. Without a custom error type, guards use
+`Result<bool, ()>` and actions use `Result<(), ()>`. A final action targeting a
+payload state returns that payload value instead.
+
+## State and event data
+
+`event<E>` accepts an owned Rust event at the public boundary and passes `&E`
+to guards and actions. A flat `state<T>` becomes a payload-bearing state enum
+variant. Initial payloads and actionless payload targets use `Default`; a
+producing transition returns the destination payload from its final action.
+
+This is the ownership-safe counterpart to `sml.cpp` callbacks that mutate a
+destination state object. A machine has one callback error type; use a Rust
+enum when several error variants need distinct exception routing.
+
+## Orthogonal and composite machines
+
+Multiple `*` rows create orthogonal regions. One borrowed event is broadcast
+to every active region, and the machine terminates only after every region
+reaches `X`.
+
+Adjacent named tables form native composite machines:
 
 ```rust
-statemachine!{
-    transitions: {
-        *State1 | State3 + ToState2 = State2,
-        State1 | State2 + ToState3 = State3,
-        _ + ToState4 = State4,
-        State4 + ToState1 = State1,
-    }
-    // ...
-}
-```
+use sml::sml;
 
-Which is equivalent to:
+pub struct Enter;
+pub struct Work;
 
-```rust
-statemachine!{
-    transitions: {
-        *State1 + ToState2 = State2,
-        State3 + ToState2 = State2,
-
-        State1 + ToState3 = State3,
-        State2 + ToState3 = State3,
-
-        State1 + ToState4 = State4,
-        State2 + ToState4 = State4,
-        State3 + ToState4 = State4,
-        State4 + ToState4 = State4,
-
-        State4 + ToState1 = State1,
-    }
-    // ...
-}
-```
-See example `examples/input_state_pattern_match.rs` for a usage example.
-
-#### Internal transitions
-
-The DSL supports internal transitions.
-Internal transition allow to accept an event and process an action,
-and then stay in the current state. 
-Internal transitions can be specified explicitly, e.g.
-```plantuml
-State2 + Event2 / event2_action = State2,
-```
-or 
-```plantuml
-State2 + Event2 / event2_action = _,
-```
-or implicitly, by omitting the target state including '='.
-```plantuml
-State2 + Event2 / event2_action,
-```
-It is also possible to define wildcard implicit (or explicit using '_') internal transitions.  
-
-```rust
-statemachine! {
-    transitions: {
-        *State1 + Event2 = State2,
-        State1 + Event3 = State3,
-        State1 + Event4 = State4,
-        
-        _ + Event2 / event2_action,
-    },
-}
-```
-The example above demonstrates how you could make Event2 acceptable for any state,
-not covered by any of the previous transitions, and to do an action to process it.
-
-It is equivalent to:
-
-```rust
-statemachine! {
-    transitions: {
-        *State1 + Event2 = State2,
-        State1 + Event3 = State3,
-        State1 + Event4 = State4,
-        
-        State2 + Event2 / event2_action = State2,
-        State3 + Event2 / event2_action = State3,
-        State4 + Event2 / event2_action = State4,
-    },
-}
-```
-
-See also tests: `test_internal_transition_with_data()` or `test_wildcard_states_and_internal_transitions()` for a usage example.
-
-#### Guard expressions
-
-Guard expression in square brackets [] allows to define a boolean expressions of multiple guard functions.
-For example:
-```rust
-statemachine! {
-  transitions: {
-      *Init + Login(Entry) [valid_entry] / attempt = LoggedIn,
-      Init + Login(Entry) [!valid_entry && !too_many_attempts] / attempt = Init,
-      Init + Login(Entry) [!valid_entry && too_many_attempts] / attempt = LoginDenied,
-      LoggedIn + Logout / reset = Init,
-  }
-}
-```
-Guard expressions may consist of guard function names, and their combinations with &&, || and ! operations.
-
-#### Multiple guarded transitions for the same state and triggering event
-Multiple guarded transitions for the same state and triggering event are supported (see the example above).
-It is assumed that only one guard is enabled in such a case to avoid a conflict over which transition should be selected.
-However, if there is a conflict and more than one guard is enabled, the first enabled transition,
-in the order they appear in the state machine definition, will be selected.
-
-### State machine context
-
-The state machine needs a context to be defined.
-The `StateMachineContext` is generated from the `statemachine!` proc-macro and is what implements
-guards and actions, and data that is available in all states within the state machine and persists
-between state transitions:
-
-```rust
-statemachine!{
-    transitions: {
-        State1 + Event1 = State2,
-    }
-    // ...
-}
-
-pub struct Context;
-
-impl StateMachineContext for Context {}
-
-fn main() {
-    let mut sm = StateMachine::new(Context);
-
-    // ...
-}
-```
-
-See example `examples/context.rs` for a usage example.
-
-
-### State data
-
-Any state may have some data associated with it:
-
-```rust
-pub struct MyStateData(pub u32);
-
-statemachine!{
-    transitions: {
-        State1(MyStateData) + Event1 = State2,
-    }
-    // ...
-}
-```
-
-See example `examples/state_with_data.rs` for a usage example.
-
-If the starting state contains data, this data must be provided after the context when creating a new machine.
-
-```rust
-pub struct MyStateData(pub u32);
-
-statemachine!{
-    transitions: {
-        State2 + Event2 / action = State1(MyStateData),
-        *State1(MyStateData) + Event1 = State2,
-        // ...
-    }
-    // ...
-}
-
-// ...
-
-let mut sm = StateMachine::new(Context, MyStateData(42));
-```
-
-State data may also have associated lifetimes which the `statemachine!` macro will pick up and add the `States` enum and `StateMachine` structure. This means the following will also work:
-
-```rust
-pub struct MyStateData<'a>(&'a u32);
-
-statemachine! {
-    transitions: {
-        *State1 + Event1 / action = State2,
-        State2(MyStateData<'a>) + Event2 = State1,
-        // ...
-    }
-    // ...
-}
-```
-
-See example `examples/state_with_reference_data.rs` for a usage example.
-
-### Event data
-
-Data may be passed along with an event into the `guard` and `action`:
-
-```rust
-pub struct MyEventData(pub u32);
-
-statemachine!{
-    transitions: {
-        State1 + Event1(MyEventData) [guard] = State2,
-    }
-    // ...
-}
-```
-
-Event data may also have associated lifetimes which the `statemachine!` macro will pick up and add the `Events` enum. This means the following will also work:
-
-```rust
-pub struct MyEventData<'a>(pub &'a u32);
-
-statemachine!{
-    transitions: {
-        State1 + Event1(MyEventData<'a>) [guard1] = State2,
-        State1 + Event2(&'a [u8]) [guard2] = State3,
-    }
-    // ...
-}
-```
-
-See example `examples/event_with_data.rs` for a usage example.
-
-### Guard and Action syntax
-
-See example `examples/guard_action_syntax.rs` for a usage-example.
-
-### Async Guard, Action And Entry/Exit
-
-Guards and actions may both be optionally `async`:
-```rust
-use smlang::{async_trait, statemachine};
-
-statemachine! {
-    entry_exit_async: true,
-    transitions: {
-        *State1 + Event1 [guard1] / async action1 = State2,
-        State2 + Event2 [async guard2] / action2 = State3,
-    }
-}
-
-
-pub struct Context {
-    // ...
-}
-
-impl StateMachineContext for Context {
-    async fn action1(&mut self) -> () {
-        // ...
+sml! {
+    Child {
+        *"idle"_s + event<Work> = X,
     }
 
-    async fn guard2(&mut self) -> Result<(), ()> {
-        // ...
-    }
-
-    fn guard1(&mut self) -> Result<(), ()> {
-        // ...
-    }
-
-    fn action2(&mut self) -> () {
-        // ...
-    }
-
-    async fn on_entry_state1(&mut self) {
-        // ...
-    }
-
-    async fn on_exit_state2(&mut self) {
-        // ...
+    Parent {
+        *"outside"_s + event<Enter> = state<Child>,
+         state<Child> / child_completed = X,
     }
 }
 ```
 
-See example `examples/async.rs` for a usage-example.
+The parent owns its descendants. Dispatch is deepest-active-child first and
+bubbles upward only when a child does not handle the event. Scalar and
+orthogonal nodes can be nested recursively; lifecycle, completion, exception,
+payload, async, defer/process, and history behavior participates in the same
+ownership tree.
 
-## State Machine Examples
+## Runtime utilities
 
-Here are some examples of state machines converted from UML to the State Machine Language DSL.
-Runnable versions of each example is available in the `examples` folder. The `.png`s are generated
-with the `graphviz` feature.
+<!-- public utility types in src/utility.rs -->
 
-### Linear state machine
+The `sml::utility` module provides allocation-free building blocks for cases
+outside the static DSL:
 
-![alt text](./docs/sm1.png "")
+- `EventQueue` and `EventQueues` for bounded defer/process ordering;
+- `DispatchTable` for checked contiguous runtime event IDs;
+- `SmPool` for indexed and batch dispatch over machine storage;
+- `OrthogonalRegions` for broadcasting through a collection of machines;
+- `Hierarchical` for generic parent/child bubbling and shallow history.
 
-DSL implementation:
+The SDL-style runtime-ID adapter is covered by
+[`tests/sdl_adapter.rs`](tests/sdl_adapter.rs).
 
-```rust
-statemachine!{
-    transitions: {
-        *State1 + Event1 = State2,
-        State2 + Event2 = State3,
-    }
-}
+## Diagram generation
+
+<!-- graphviz feature behavior implemented by macros/src/lib.rs -->
+
+With the `graphviz` feature enabled, compiling a flat `sml!` table renders
+`sml_<Machine>.svg` when the `dot` executable is available. If Graphviz is not
+installed, the macro writes `sml_<Machine>.dot` under Cargo's `OUT_DIR`
+instead. Diagram generation is a build-time feature and is not required at
+runtime.
+
+## `sml.cpp` parity
+
+The repository includes a compiling behavioral translation for every one of
+the 25 programs under `../sml.cpp/example` in
+[`tests/sml_cpp_examples.rs`](tests/sml_cpp_examples.rs).
+
+- [Capability parity matrix](docs/sml-cpp-parity.md)
+- [Example-by-example translation audit](docs/sml-cpp-examples.md)
+
+Rust-specific mappings—trait methods instead of inline lambdas, context fields
+instead of type-based dependency injection, `Result` instead of thrown values,
+and LLVM-selected dispatch lowering—are documented and tested there.
+
+## Performance
+
+<!-- equivalent benchmark workloads: examples/player_benchmark.rs and benchmarks/player_cpp.cpp -->
+
+The CD-player benchmark performs 11 million equivalent event dispatches and
+uses a direct-address compiler barrier after every dispatch in both languages.
+
+```bash
+RUSTFLAGS="-C target-cpu=native" \
+  cargo run --release --example player_benchmark
+
+clang++ -std=c++20 -O3 -DNDEBUG -march=native \
+  -I../sml.cpp/include -I../sml.cpp/benchmark/simple \
+  benchmarks/player_cpp.cpp -o /tmp/sml_cpp_player
+/tmp/sml_cpp_player
 ```
 
-This example is available in `ex1.rs`.
+In 21 alternating native-release runs on 2026-07-11, `sml.rs` completed the
+workload in a 2.248 ms median versus 3.277 ms for `sml.cpp`, a 31.4% throughput
+advantage on the test machine. These sub-millisecond differences are sensitive
+to scheduling and thermals, so compare repeated alternating runs locally.
 
-### Looping state machine
+## Development
 
-![alt text](./docs/sm2.png "")
-
-DSL implementation:
-
-```rust
-statemachine!{
-    transitions: {
-        *State1 + Event1 = State2,
-        State2 + Event2 = State3,
-        State3 + Event3 = State2,
-    }
-}
+```bash
+cargo test --all-features
+cargo test --no-default-features
+cargo test --all-features --examples
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+cargo fmt --all -- --check
+git diff --check
 ```
 
-This example is available in `ex2.rs`.
-
-### Using guards and actions
-
-![alt text](./docs/sm3.png "")
-
-DSL implementation:
-
-```rust
-statemachine!{
-    transitions: {
-        *State1 + Event1 [guard] / action = State2,
-    }
-}
-```
-
-This example is available in `ex3.rs`.
-
-### Using entry and exit functions in transitions
-
-The statemachine will create for all states an `on_entry_` and `on_exit_` function.
-If the are not used, they will be optimized away by the compiler. An example be
-found in `on_entry_on_exit_generic`.
-
-### Transition callback
-
-The statemachine will call for every transition a transition callback. This function
-is called with both the old state and new state as arguments. An example can be found
-in `dominos`.
-
-## Helpers
-
-### Specify attributes for states and events
-
-Setting `events_attr` and `states_attr` fields to a list of attributes to `Events` and `States` enums respectively. To derive Display, use `derive_more::Display`.
-
-
-```rust
-use core::Debug;
-use derive_more::Display;
-// ...
-statemachine!{
-    states_attr: #[derive(Debug, Display)],
-    events_attr: #[derive(Debug, Display)],
-    transitions: {
-        *State1 + Event1 = State2,
-    }
-}
-
-// ...
-
-println!("Current state: {}", sm.state().unwrap());
-println!("Expected state: {}", States::State1);
-println!("Sending event: {}", Events::Event1);
-
-// ...
-
-```
-
-### Hooks for logging events, guards, actions, and state transitions
-
-The `StateMachineContext` trait defines (and provides default, no-op implementations for) functions that are called for each event, guard, action, and state transition. You can provide your
-own implementations which plug into your preferred logging mechanism.
-
-```rust
-fn log_process_event(&self, current_state: &States, event: &Events) {}
-fn log_guard(&self, guard: &'static str, result: &Result<(), ()>) {}
-fn log_action(&self, action: &'static str) {}
-fn log_state_change(&self, new_state: &States) {}
-```
-
-See `examples/state_machine_logger.rs` for an example which uses `states_attr` and `events_attr` to derive `Debug` implementations for easy logging.
-
-## Contributors
-
-List of contributors in alphabetical order:
-
-* Emil Fresk ([@korken89](https://github.com/korken89))
-* Mathias Koch ([@MathiasKoch](https://github.com/MathiasKoch))
-* Ryan Summers ([@ryan-summers](https://github.com/ryan-summers))
-* Donny Zimmanck ([@dzimmanck](https://github.com/dzimmanck))
-
----
-
-## License
-
-Licensed under either of
-
-- Apache License, Version 2.0 [LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>
-- MIT license [LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>
-
-at your option.
-
+The crate is licensed under either Apache-2.0 or MIT.

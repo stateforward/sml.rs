@@ -4,14 +4,14 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
 /// Reference wrapper
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct MyReferenceWrapper<'a>(pub &'a u32);
 
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         *State1 + Event1(&'a [u8]) [guard1] / action1 = State2,
         State2 + Event2(MyReferenceWrapper<'b>) [guard2] / action2 = State3,
     }

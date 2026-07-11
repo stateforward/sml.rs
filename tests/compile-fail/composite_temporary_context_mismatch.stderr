@@ -1,0 +1,5 @@
+error: parent and child temporary context types must match
+ --> tests/compile-fail/composite_temporary_context_mismatch.rs:6:30
+  |
+6 |     Child[temporary_context: &mut u64] {
+  |                              ^

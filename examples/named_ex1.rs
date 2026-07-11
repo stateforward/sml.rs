@@ -5,12 +5,10 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    name: Linear,
-    states_attr: #[derive(Debug)],
-    transitions: {
+sml! {
+    Linear[states_attr: #[derive(Debug)]] {
         *State1 + Event1 = State2,
         State2 + Event2 = State3,
     },

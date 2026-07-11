@@ -4,9 +4,9 @@
 //! transition to the same output state can be described more succinctly
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-// statemachine! {
+// sml! {
 //     transitions: {
 //         *Idle + Charge = Charging,
 //         Idle + Discharge = Discharging,
@@ -26,15 +26,15 @@ use smlang::statemachine;
 // }
 
 // A simple charge/discharge state machine that has a dedicated "Fault" state
-statemachine! {
-    transitions: {
+sml! {
+    _ {
         *Idle | Discharging | Discharged + Charge = Charging,
         Idle | Charging | Charged + Discharge = Discharging,
         Charging + ChargeComplete = Charged,
         Discharging + DischargeComplete = Discharged,
         _ + FaultDetected = Fault,
         Fault + FaultCleard = Idle,
-    },
+    }
 }
 
 /// Context

@@ -2,12 +2,13 @@
 
 #![deny(missing_docs)]
 
-use smlang::statemachine;
+use sml::sml;
 
-statemachine! {
-    states_attr: #[derive(Debug)],
-    events_attr: #[derive(Debug)],
-    transitions: {
+sml! {
+    _[
+        states_attr: #[derive(Debug)],
+        events_attr: #[derive(Debug)]
+    ] {
         *D0 +  ToD1 / to_d2  = D1,
         D1(Option<Events>) +  ToD2 / to_d3  = D2,
         D2(Option<Events>) +  ToD3 / to_d4  = D3,

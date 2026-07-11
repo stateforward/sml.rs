@@ -1,0 +1,5 @@
+error: Completion origin data cannot be a mutable reference.
+ --> tests/compile-fail/completion_mutable_reference.rs:8:27
+  |
+8 |         Step + completion<Go>(&'a mut Payload) = Done,
+  |                           ^^

@@ -1,11 +1,11 @@
 [package]
-name = "smlang-macros"
+name = "sml-macros"
 categories = ["embedded", "no-std"]
 authors = ["Emil Fresk <emil.fresk@gmail.com>", "Donny Zimmanck <dzimmanck@gmail.com>"]
-description = "Procedual macros for the smlang crate"
-keywords = ["dsl", "statemachine"]
+description = "Procedural macros for the sml.rs transition-table DSL"
+keywords = ["dsl", "state-machine", "sml"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/korken89/smlang-rs"
+repository = "https://github.com/stateforward/sml.rs"
 version = "0.8.0"
 edition = "2018"
 readme = "../README.md"
@@ -14,7 +14,7 @@ readme = "../README.md"
 quote = "1"
 proc-macro2 = "1"
 string_morph = "0.1.0"
-syn = "2"
+syn = { version = "2", features = ["extra-traits"] }
 
 [lib]
 proc-macro = true

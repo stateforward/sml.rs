@@ -72,19 +72,33 @@ fn validate_action_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Erro
                 .data_types
                 .get(&event_mapping.event.to_string());
             for transition in &event_mapping.transitions {
-                if let Some(AsyncIdent {
-                    ident: action,
-                    is_async,
-                }) = &transition.action
+                let transition_actions = transition
+                    .action
+                    .iter()
+                    .chain(transition.additional_actions.iter())
+                    .collect::<Vec<_>>();
+                let last_action_index = transition_actions.len().saturating_sub(1);
+                for (
+                    action_index,
+                    AsyncIdent {
+                        ident: action,
+                        is_async,
+                    },
+                ) in transition_actions.into_iter().enumerate()
                 {
+                    let action_output_data = if action_index == last_action_index {
+                        out_state_data
+                    } else {
+                        None
+                    };
                     let signature = FunctionSignature::new(
                         in_state_data,
                         event_data,
-                        out_state_data,
+                        action_output_data,
                         *is_async,
                     );
 
-                    // If the action is not yet known, add it to our tracking list.
+                    // Register the action on first use.
                     actions
                         .entry(action.to_string())
                         .or_insert_with(|| signature.clone());
@@ -95,6 +109,26 @@ fn validate_action_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Erro
                         return Err(parse::Error::new(
                             Span::call_site(),
                             format!("Action `{}` can only be reused when all input states, events, and output states have the same data", action),
+                        ));
+                    }
+                }
+                for eval in &transition.eval_actions {
+                    let signature = FunctionSignature::new(
+                        in_state_data,
+                        event_data,
+                        None,
+                        eval.action.is_async,
+                    );
+                    let action = eval.action.ident.to_string();
+                    actions
+                        .entry(action.clone())
+                        .or_insert_with(|| signature.clone());
+                    if actions.get(&action).unwrap() != &signature {
+                        return Err(parse::Error::new(
+                            eval.action.ident.span(),
+                            format!(
+                                "Eval action `{action}` has incompatible input state or event data"
+                            ),
                         ));
                     }
                 }
@@ -126,7 +160,7 @@ fn validate_guard_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Error
                         let signature =
                             FunctionSignature::new_guard(in_state_data, event_data, guard.is_async);
 
-                        // If the action is not yet known, add it to our tracking list.
+                        // Register the action on first use.
                         guards
                             .entry(guard.ident.to_string())
                             .or_insert_with(|| signature.clone());
@@ -142,6 +176,23 @@ fn validate_guard_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Error
                         Ok(())
                     });
                     res?;
+                }
+                for eval in &transition.eval_actions {
+                    visit_guards(&eval.guard, |guard| {
+                        let signature =
+                            FunctionSignature::new_guard(in_state_data, event_data, guard.is_async);
+                        let name = guard.ident.to_string();
+                        guards
+                            .entry(name.clone())
+                            .or_insert_with(|| signature.clone());
+                        if guards.get(&name).unwrap() != &signature {
+                            return Err(parse::Error::new(
+                                guard.ident.span(),
+                                format!("Eval guard `{name}` has incompatible input state or event data"),
+                            ));
+                        }
+                        Ok(())
+                    })?;
                 }
             }
         }
