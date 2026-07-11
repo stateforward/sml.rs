@@ -148,7 +148,7 @@ fn validate_guard_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Error
     for (in_state_name, from_transitions) in all_transitions.iter() {
         let in_state_data = sm.state_data.data_types.get(in_state_name);
 
-        for (_out_state_name, event_mapping) in from_transitions.iter() {
+        for event_mapping in from_transitions.values() {
             // Get the data associated with this event.
             let event_data = sm
                 .event_data
