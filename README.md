@@ -230,7 +230,7 @@ and LLVM-selected dispatch lowering—are documented and tested there.
 
 ## Performance
 
-<!-- equivalent benchmark workloads: examples/player_benchmark.rs and benchmarks/player_cpp.cpp -->
+<!-- benchmark workloads and runner under examples/*_benchmark.rs and benchmarks/ -->
 
 The CD-player benchmark performs 11 million equivalent event dispatches and
 uses a direct-address compiler barrier after every dispatch in both languages.
@@ -250,16 +250,93 @@ workload in a 2.248 ms median versus 3.277 ms for `sml.cpp`, a 31.4% throughput
 advantage on the test machine. These sub-millisecond differences are sensitive
 to scheduling and thermals, so compare repeated alternating runs locally.
 
-## Development
+### Tensor actor pool
+
+The tensor-pool runner compares `SmPool<Vec<u8>>` with C++ `sm_pool` using the
+same 10,000-actor, 50,000-event workload, identical local and seeded-random
+indices, and 1,001 rounds per sample. Each language is also measured against
+its own flat byte-array loop. Rust's allocation counter covers the timed path.
 
 ```bash
-cargo test --all-features
-cargo test --no-default-features
-cargo test --all-features --examples
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
-cargo fmt --all -- --check
-git diff --check
+python3 benchmarks/compare_tensor_pool.py --runs 21
+```
+
+The 2026-07-11 rotated native-release run produced:
+
+| Path | Local | Random | Timed allocations |
+|---|---:|---:|---:|
+| Rust flat array | 0.312 ns/event | 0.335 ns/event | 0 |
+| C++ flat array | 0.275 ns/event | 0.282 ns/event | setup only |
+| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event | 0 |
+| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event | setup only |
+| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event | 0 |
+| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event | setup only |
+
+Rust batch dispatch was 23.6% faster locally and 22.6% faster under random
+access than C++ `sm_pool`. It stayed within 16.0% of Rust's flat-array local
+baseline and 10.4% of its random baseline. The benchmark uses compact byte
+state to model tensor actors; real tensor payload layout and wavefront
+scheduling require their own end-to-end benchmarks.
+
+### Async, allocator, and worker-pool comparison
+
+The extended runner compares the same 11-million-event player sequence through
+Rust futures and C++ `co_sm` allocator policies. It also compares bounded,
+persistent eight-worker fork/join schedulers over 5,000 rounds. Rust's global
+allocation counter verifies that every timed Rust loop performs zero heap
+allocations after setup.
+
+```bash
+# The thread-pool policy currently lives on this sibling branch.
+mkdir -p /tmp/sml-cpp-thread-pool
+git -C ../sml.cpp archive origin/thread-pool-scheduler |
+  tar -x -C /tmp/sml-cpp-thread-pool
+
+python3 benchmarks/compare_extended.py \
+  --runs 21 \
+  --thread-pool-cpp-dir /tmp/sml-cpp-thread-pool
+```
+
+The 2026-07-11 alternating run produced:
+
+| Workload | Median | Timed allocations | Completed runs |
+|---|---:|---:|---:|
+| Rust async façade over synchronous actions | 0.361 ns/event | 0 | 21/21 |
+| C++ inline `co_sm` | 1.982 ns/event | inline fast path | 21/21 |
+| Rust machine with native async callbacks | 3.372 ns/event | 0 | 21/21 |
+| C++ `co_sm` with pooled coroutine frames | 21.506 ns/event | pooled frame/event | 21/21 |
+| C++ `co_sm` with heap coroutine frames | 49.427 ns/event | heap frame/event | 21/21 |
+| Rust fixed-lane worker pool | 259.255 ns/task | 0 | 21/21 |
+| C++ fixed-ring thread-pool scheduler | 1,139.283 ns/task | fixed inline slots | 13/21 |
+
+The async-façade rows are directly comparable: both wrap synchronous actions.
+The native Rust row additionally awaits actual async action futures, which the
+C++ player table does not model. The worker-pool rows compare policy designs,
+not identical implementations: Rust uses one fixed atomic lane per worker,
+while C++ uses a shared fixed MPMC task ring. Eight C++ runs exceeded the
+runner's five-second timeout; the median above includes completed runs only and
+must be read together with that reliability result.
+
+## Development
+
+<!-- enforced quality commands from scripts/quality_gates.sh and .github/workflows/*.yml -->
+
+The same gate runs locally and on every push and pull request:
+
+```bash
+./scripts/quality_gates.sh
+```
+
+It enforces formatting, warning-free Clippy across every target and feature,
+the full feature matrix, rustdoc warnings, Python harness syntax, package
+construction, at least 90% whole-workspace line coverage, and 100% runtime
+function coverage. Separate required jobs run the suite on Linux, macOS, and
+Windows, execute AddressSanitizer and Miri, and fuzz the runtime utilities.
+
+Run the fuzz target locally with a nightly toolchain and `cargo-fuzz`:
+
+```bash
+cargo fuzz run runtime_utilities
 ```
 
 The crate is licensed under either Apache-2.0 or MIT.

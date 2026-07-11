@@ -8,7 +8,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/stateforward/sml.rs"
 version = "0.8.0"
 edition = "2018"
+rust-version = "1.90"
 readme = "README.md"
+documentation = "https://docs.rs/sml"
+homepage = "https://github.com/stateforward/sml.rs"
 
 [dependencies]
 sml-macros = { path = "macros", version = "0.8.0" }

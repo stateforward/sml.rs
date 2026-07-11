@@ -2,6 +2,10 @@
 macros/target
 **/*.rs.bk
 Cargo.lock
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/
+.quality_gates/
 *.gv
 *.svg
 .vscode

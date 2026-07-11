@@ -33,7 +33,11 @@ fn pool_supports_indexed_and_batch_dispatch() {
     assert_eq!(handled, 2);
 
     let handled = pool.process_event_batch(
-        [with_id(0, Event::Add(4)), with_id(1, Event::Clear)],
+        [
+            with_id(0, Event::Add(4)),
+            with_id(1, Event::Clear),
+            with_id(9, Event::Clear),
+        ],
         dispatch,
     );
     assert_eq!(handled, 2);
@@ -45,6 +49,8 @@ fn pool_supports_indexed_and_batch_dispatch() {
         value: index as i32,
     });
     assert_eq!(pool.storage()[2].value, 2);
+    pool.storage_mut()[0].value = 9;
+    assert_eq!(pool.storage()[0].value, 9);
 }
 
 #[derive(Clone, Copy)]
@@ -73,6 +79,8 @@ fn dispatch_table_routes_contiguous_runtime_ids() {
     assert_eq!(table.dispatch(&RawEvent { value: 1 }, 9), None);
     assert_eq!(table.dispatch(&RawEvent { value: 1 }, 12), None);
     assert_eq!(table.machine().value, 3);
+    table.machine_mut().value = 11;
+    assert_eq!(table.machine().value, 11);
 }
 
 impl MachineTrait<Event> for Machine {
@@ -97,6 +105,64 @@ fn orthogonal_regions_broadcast_to_every_active_machine() {
     assert_eq!(regions.regions()[0].value, 6);
     assert_eq!(regions.regions()[1].value, 15);
     assert_eq!(regions.regions()[2].value, 105);
+    regions.regions_mut()[0].value = 7;
+    assert_eq!(regions.regions()[0].value, 7);
+}
+
+#[test]
+fn hierarchy_accessors_reset_and_all_completion_paths_work() {
+    let mut hierarchy = Hierarchical::new(Machine { value: 1 }, Child::default());
+    assert!(!hierarchy.child_is_active());
+    assert_eq!(hierarchy.parent().value, 1);
+    hierarchy.parent_mut().value = 2;
+    hierarchy.child_mut().handled = 3;
+    hierarchy.activate_child();
+    hierarchy.deactivate_child();
+    hierarchy.reset_child(Child {
+        handled: 4,
+        terminal: false,
+    });
+    assert_eq!(hierarchy.child().handled, 4);
+
+    let child = |_child: &mut Child, event: Event| matches!(event, Event::Add(_));
+    let parent = |_parent: &mut Machine, event: Event| matches!(event, Event::Clear);
+    assert_eq!(
+        hierarchy.process_event(Event::Add(1), child, parent),
+        HierarchicalDispatch::Child
+    );
+    assert_eq!(
+        hierarchy.process_event(Event::Add(1), |_child, _event| false, parent),
+        HierarchicalDispatch::Unhandled
+    );
+
+    hierarchy.child_mut().terminal = true;
+    assert_eq!(
+        hierarchy.process_event_with_completion(Event::Add(1), child, parent, |_parent| false),
+        HierarchicalDispatch::ChildTerminated
+    );
+    hierarchy.child_mut().terminal = false;
+    assert_eq!(
+        hierarchy.process_event_with_completion(Event::Add(1), child, parent, |_parent| true),
+        HierarchicalDispatch::Child
+    );
+    assert_eq!(
+        hierarchy.process_event_with_completion(
+            Event::Clear,
+            |_child, _event| false,
+            parent,
+            |_parent| true,
+        ),
+        HierarchicalDispatch::Parent
+    );
+    assert_eq!(
+        hierarchy.process_event_with_completion(
+            Event::Add(1),
+            |_child, _event| false,
+            parent,
+            |_parent| true,
+        ),
+        HierarchicalDispatch::Unhandled
+    );
 }
 
 #[test]
@@ -112,6 +178,56 @@ fn bounded_queue_orders_processed_events_before_deferred_events() {
     assert_eq!(queue.pop(), Some(1));
     assert_eq!(queue.pop(), Some(2));
     assert_eq!(queue.pop(), None);
+}
+
+#[test]
+fn queue_defaults_clear_and_zero_capacity_are_total() {
+    let mut queue = EventQueue::<i32, 2>::default();
+    assert!(queue.is_empty());
+    queue.defer(1).unwrap();
+    queue.process(2).unwrap();
+    assert_eq!(queue.process(3), Err(QueueFull));
+    queue.clear();
+    assert!(queue.is_empty());
+
+    let mut zero = EventQueue::<i32, 0>::new();
+    assert_eq!(zero.defer(1), Err(QueueFull));
+    assert_eq!(zero.process(1), Err(QueueFull));
+    assert_eq!(zero.pop(), None);
+}
+
+#[test]
+fn event_queue_defaults_report_both_lengths() {
+    let mut queues = EventQueues::<i32, 1, 1>::default();
+    assert_eq!(queues.deferred_len(), 0);
+    assert_eq!(queues.processed_len(), 0);
+    queues.defer(1).unwrap();
+    queues.process(2).unwrap();
+    assert_eq!(queues.deferred_len(), 1);
+    assert_eq!(queues.processed_len(), 1);
+}
+
+#[test]
+fn recursive_dispatch_can_consume_an_outer_deferred_retry() {
+    let mut queues = EventQueues::<i32, 2, 1>::new();
+    queues.defer(1).unwrap();
+    let mut machine = 0;
+    let summary = queues.dispatch(&mut machine, 0, |machine, queues, event| {
+        *machine += 1;
+        if event == 0 {
+            let nested = queues.dispatch(machine, 2, |_machine, _queues, _event| DispatchStatus {
+                handled: true,
+                transitioned: true,
+            });
+            assert_eq!(nested.dispatched, 2);
+        }
+        DispatchStatus {
+            handled: true,
+            transitioned: true,
+        }
+    });
+    assert_eq!(summary.dispatched, 1);
+    assert_eq!(machine, 1);
 }
 
 #[derive(Default)]

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- Add C++-shaped transition-table DSL parity, native composite and orthogonal
+  state machines, allocation-free queues, `SmPool`, runtime dispatch utilities,
+  async processing, and complete sibling-example translations.
+- Add matched C++/Rust performance harnesses for synchronous dispatch, async
+  allocators, tensor actor pools, and worker pools.
+- Add enforced cross-platform quality, coverage, AddressSanitizer, Miri, fuzz,
+  documentation, and package-validation gates.
 - Add support for defining States and Events attributes using `states_attr` and `events_attr` fields
 - Add support for async on_entry_* and on_exit_* hooks with flag `entry_exit_async: true`
 
@@ -89,7 +96,7 @@ process.
 
 - Changelog enforcer added to CI
 - State data now supports lifetimes ([issue-26](https://github.com/stateforward/sml.rs/issues/26))
-- New example [dominos.rs](https://github.com/stateforward/sml.rs/blob/master/examples/dominos.rs) illustrating a method of event propagation ([issue-17](https://github.com/stateforward/sml.rs/issues/17))
+- New example [dominos.rs](https://github.com/stateforward/sml.rs/blob/main/examples/dominos.rs) illustrating a method of event propagation ([issue-17](https://github.com/stateforward/sml.rs/issues/17))
 - Input states support pattern matching and wildcards ([issue-29](https://github.com/stateforward/sml.rs/issues/29))
 
 ### Fixed
@@ -198,7 +205,7 @@ a long list of states to go through.
 * Support for data in states
 * Change log added
 
-[Unreleased]: https://github.com/stateforward/sml.rs/compare/v0.8.0...master
+[Unreleased]: https://github.com/stateforward/sml.rs/compare/v0.8.0...main
 [v0.8.0]: https://github.com/stateforward/sml.rs/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/stateforward/sml.rs/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/stateforward/sml.rs/compare/v0.5.1...v0.6.0

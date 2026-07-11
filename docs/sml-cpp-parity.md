@@ -50,19 +50,66 @@ same machine produced:
 
 The Rust implementation retained a 31.4% median throughput advantage.
 
+### Tensor actor pool invariant
+
+`benchmarks/compare_tensor_pool.py` compares the public Rust `SmPool` and C++
+`sm_pool` APIs over identical compact storage, indices, and event counts. The
+2026-07-11 medians from 21 rotated native-release runs were:
+
+| Path | Local | Random |
+|---|---:|---:|
+| Rust flat array | 0.312 ns/event | 0.335 ns/event |
+| C++ flat array | 0.275 ns/event | 0.282 ns/event |
+| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event |
+| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event |
+| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
+| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
+
+The Rust batch path performed zero timed allocations, beat C++ `sm_pool` by
+23.6% locally and 22.6% under random access, and remained within 16.0% and
+10.4% of its corresponding flat-array baselines. Pool throughput at or above
+C++ and zero steady-state allocations are cutover invariants for tensor-actor
+workloads.
+
+### Async and scheduler policies
+
+`benchmarks/compare_extended.py` builds and alternates the Rust harnesses in
+`examples/async_allocator_benchmark.rs` and
+`examples/thread_pool_benchmark.rs` against the C++ policy harnesses in
+`benchmarks/async_allocator_cpp.cpp` and `benchmarks/thread_pool_cpp.cpp`.
+
+On 2026-07-11, 21 requested runs produced:
+
+| Policy path | Median | Reliability |
+|---|---:|---:|
+| Rust stack-polled async façade | 0.361 ns/event | 21/21 |
+| C++ inline `co_sm` | 1.982 ns/event | 21/21 |
+| Rust native async callbacks | 3.372 ns/event | 21/21 |
+| C++ pooled coroutine allocator | 21.506 ns/event | 21/21 |
+| C++ heap coroutine allocator | 49.427 ns/event | 21/21 |
+| Rust fixed-lane worker pool | 259.255 ns/task | 21/21 |
+| C++ fixed-ring thread pool | 1,139.283 ns/task | 13/21 |
+
+Both Rust timed paths reported zero allocations. The C++ allocator variants
+force the coroutine-frame path; the inline policy intentionally bypasses frame
+allocation. The pool topologies differ and therefore measure policy tradeoffs,
+not a like-for-like language primitive. The C++ completed-run median excludes
+eight five-second timeouts, which are retained as part of the result.
+
 ## Final verification
 
-The cutover audit on 2026-07-11 used the following repository-wide gates:
+<!-- enforced quality commands from scripts/quality_gates.sh and .github/workflows/*.yml -->
+
+The cutover audit and every subsequent push use the repository gate:
 
 ```bash
-cargo test --all-features
-cargo test --no-default-features
-cargo test --all-features --examples
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
-cargo fmt --all -- --check
-git diff --check
+./scripts/quality_gates.sh
 ```
+
+CI additionally requires Linux, macOS, and Windows tests, AddressSanitizer,
+Miri, and a bounded libFuzzer run. Coverage fails below 90% workspace line
+coverage or below 100% runtime function coverage; this matches the sibling
+project's line threshold while making complete runtime API execution explicit.
 
 An exact filename reconciliation found 25 upstream `example/*.cpp` programs
 and the same 25 named modules in `tests/sml_cpp_examples.rs`, with no missing

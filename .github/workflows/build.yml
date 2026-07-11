@@ -1,9 +1,9 @@
-name: Build
+name: Legacy compatibility
 on:
   pull_request:
   push:
     branches:
-      - master
+      - main
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,7 +52,7 @@ jobs:
           components: clippy
 
       - name: Run cargo clippy
-        run: cargo clippy --all -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   docs:
     runs-on: ubuntu-latest
