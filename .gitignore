@@ -5,6 +5,7 @@ Cargo.lock
 fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/
+sanitizer/target/
 .quality_gates/
 *.gv
 *.svg

@@ -24,7 +24,9 @@ jobs:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
           ASAN_OPTIONS: detect_leaks=1
-        run: cargo test --workspace --all-features -Zbuild-std --target x86_64-unknown-linux-gnu
+        run: >-
+          cargo run --manifest-path sanitizer/Cargo.toml -Zbuild-std
+          --target x86_64-unknown-linux-gnu
 
   miri:
     name: Miri

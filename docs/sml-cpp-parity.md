@@ -106,8 +106,8 @@ The cutover audit and every subsequent push use the repository gate:
 ./scripts/quality_gates.sh
 ```
 
-CI additionally requires Linux, macOS, and Windows tests, AddressSanitizer,
-Miri, and a bounded libFuzzer run. Coverage fails below 90% workspace line
+CI additionally requires Linux, macOS, and Windows tests, an instrumented
+AddressSanitizer runtime harness, Miri, and a bounded libFuzzer run. Coverage fails below 90% workspace line
 coverage or below 100% runtime function coverage; this matches the sibling
 project's line threshold while making complete runtime API execution explicit.
 
