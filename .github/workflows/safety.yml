@@ -41,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
       - name: Fuzz runtime utilities
         run: cargo fuzz run runtime_utilities -- -max_total_time=60 -timeout=10
