@@ -5,7 +5,7 @@ publish = false
 edition = "2021"
 
 [dependencies]
-sml = { path = ".." }
+sml = { package = "stateforward-sml", path = ".." }
 
 [workspace]
 members = ["."]

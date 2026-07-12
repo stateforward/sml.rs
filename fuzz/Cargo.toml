@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-sml = { path = ".." }
+sml = { package = "stateforward-sml", path = ".." }
 
 [[bin]]
 name = "runtime_utilities"

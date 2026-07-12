@@ -31,6 +31,10 @@ cargo test --workspace --all-features
 cargo test --workspace --no-default-features
 cargo test --workspace --all-features --examples
 
+section auxiliary-harnesses
+cargo check --manifest-path sanitizer/Cargo.toml
+cargo check --manifest-path fuzz/Cargo.toml
+
 section documentation
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
