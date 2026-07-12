@@ -166,3 +166,73 @@ impl parse::Parse for StateMachine {
         Ok(statemachine)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_every_native_configuration_field() {
+        let machine: StateMachine = syn::parse_str(
+            r#"
+            name: Player,
+            custom_error: true,
+            temporary_context: (&'static str, [u8; 2]),
+            states_attr: #[derive(Debug)] #[repr(u8)],
+            events_attr: #[derive(Clone)],
+            entry_exit_async: true,
+            transitions: {
+                *Idle + Start = Running,
+                Running + Stop = Idle,
+            },
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(machine.name.unwrap(), "Player");
+        assert!(machine.custom_error);
+        assert!(machine.temporary_context_type.is_some());
+        assert_eq!(machine.states_attr.len(), 2);
+        assert_eq!(machine.events_attr.len(), 1);
+        assert!(machine.entry_exit_async);
+        assert_eq!(machine.transitions.len(), 2);
+    }
+
+    #[test]
+    fn false_flags_and_missing_trailing_commas_remain_false() {
+        let machine: StateMachine = syn::parse_str(
+            "custom_error: false, entry_exit_async: false, transitions: {*Idle + Start = Idle}",
+        )
+        .unwrap();
+        assert!(!machine.custom_error);
+        assert!(!machine.entry_exit_async);
+        assert_eq!(machine.transitions.len(), 1);
+
+        let empty: StateMachine = syn::parse_str("").unwrap();
+        assert!(empty.transitions.is_empty());
+    }
+
+    #[test]
+    fn accepts_every_supported_temporary_context_shape() {
+        for ty in [
+            "[u8; 4]",
+            "Context",
+            "*mut u8",
+            "&'static mut u8",
+            "[u8]",
+            "(u8, u16)",
+        ] {
+            let source = format!("temporary_context: {ty}");
+            assert!(syn::parse_str::<StateMachine>(&source).is_ok(), "{}", ty);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_context_and_unknown_keyword() {
+        let invalid = syn::parse_str::<StateMachine>("temporary_context: fn()").unwrap_err();
+        assert!(invalid.to_string().contains("invalid type"));
+
+        let unknown = syn::parse_str::<StateMachine>("mystery: true").unwrap_err();
+        assert!(unknown.to_string().contains("Unknown keyword mystery"));
+    }
+}

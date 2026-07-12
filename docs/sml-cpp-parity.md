@@ -50,9 +50,28 @@ same machine produced:
 
 The Rust implementation retained a 31.4% median throughput advantage.
 
-### Tensor actor pool invariant
+### Compile-time cost
 
-`benchmarks/compare_tensor_pool.py` compares the public Rust `SmPool` and C++
+`benchmarks/compare_compile_time.py` measures clean native release builds and
+player-source edit rebuilds for equivalent Rust and C++ programs. It uses a
+temporary Rust consumer with only `sml.rs` as a dependency, excludes lockfile
+generation and downloads, and alternates language order across samples.
+
+The 2026-07-11 seven-run medians on Apple Silicon were:
+
+| Toolchain | Clean release build | Player edit and rebuild |
+|---|---:|---:|
+| Rust 1.94.0 | 4.714 s | 1.828 s |
+| Apple Clang 16.0.0 | 0.462 s | 0.457 s |
+
+Rust took 10.20 times as long for a clean build and 4.00 times as long for the
+edit rebuild. This is a known developer-experience tradeoff: Rust compiles the
+procedural-macro dependency stack and performs LTO, while the C++ program
+parses the header-only SML implementation inside one translation unit.
+
+### State-machine pool invariant
+
+`benchmarks/compare_sm_pool.py` compares the public Rust `SmPool` and C++
 `sm_pool` APIs over identical compact storage, indices, and event counts. The
 2026-07-11 medians from 21 rotated native-release runs were:
 
@@ -68,8 +87,8 @@ The Rust implementation retained a 31.4% median throughput advantage.
 The Rust batch path performed zero timed allocations, beat C++ `sm_pool` by
 23.6% locally and 22.6% under random access, and remained within 16.0% and
 10.4% of its corresponding flat-array baselines. Pool throughput at or above
-C++ and zero steady-state allocations are cutover invariants for tensor-actor
-workloads.
+C++ and zero steady-state allocations are cutover invariants for pooled
+state-machine workloads.
 
 ### Async and scheduler policies
 
@@ -106,14 +125,17 @@ The cutover audit and every subsequent push use the repository gate:
 ./scripts/quality_gates.sh
 ```
 
-CI additionally requires Linux, macOS, and Windows tests, an instrumented
-AddressSanitizer runtime harness, Miri, and a bounded libFuzzer run. Coverage fails below 90% workspace line
-coverage or below 100% runtime function coverage; this matches the sibling
-project's line threshold while making complete runtime API execution explicit.
+CI additionally requires Linux, macOS, and Windows tests, dependency and
+license policy, public API compatibility, an instrumented AddressSanitizer
+runtime harness, Miri, and a bounded libFuzzer run. Coverage fails below 90%
+workspace line coverage or below 100% runtime function coverage; this matches
+the sibling project's line threshold while making complete runtime API
+execution explicit.
 
 An exact filename reconciliation found 25 upstream `example/*.cpp` programs
 and the same 25 named modules in `tests/sml_cpp_examples.rs`, with no missing
 or extra translation. Searches across non-generated sources found no
 pre-cutover package reference or macro surface. Cargo metadata
-resolves the workspace packages as `sml` and `sml-macros`, both pointing to
-the `stateforward/sml.rs` repository.
+resolves the workspace packages as `stateforward-sml` and
+`stateforward-sml-macros`, both pointing to the `stateforward/sml.rs`
+repository. The runtime library target remains `sml`.

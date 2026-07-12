@@ -1,7 +1,8 @@
 /target
 macros/target
 **/*.rs.bk
-Cargo.lock
+fuzz/Cargo.lock
+sanitizer/Cargo.lock
 fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/

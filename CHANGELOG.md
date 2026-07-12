@@ -1,224 +1,44 @@
-# Change Log
+# Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented here. This project follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](http://keepachangelog.com/)
-and this project adheres to [Semantic Versioning](http://semver.org/).
+## Unreleased
 
-## [Unreleased]
+## 1.0.0 - 2026-07-11
 
 ### Added
 
-- Add C++-shaped transition-table DSL parity, native composite and orthogonal
-  state machines, allocation-free queues, `SmPool`, runtime dispatch utilities,
-  async processing, and complete sibling-example translations.
-- Add matched C++/Rust performance harnesses for synchronous dispatch, async
-  allocators, tensor actor pools, and worker pools.
-- Add enforced cross-platform quality, coverage, AddressSanitizer, Miri, fuzz,
-  documentation, and package-validation gates.
-- Add support for defining States and Events attributes using `states_attr` and `events_attr` fields
-- Add support for async on_entry_* and on_exit_* hooks with flag `entry_exit_async: true`
+- Add a C++-shaped transition-table DSL with native flat, composite,
+  orthogonal, completion, exception, history, deferred, and processed-event
+  semantics.
+- Add synchronous and asynchronous guards, actions, lifecycle callbacks, and
+  dispatch APIs.
+- Add allocation-free runtime queues, dispatch tables, hierarchical and
+  orthogonal utilities, and `SmPool` indexed and batch dispatch.
+- Add translations and behavioral tests for all 25 sibling `sml.cpp` examples.
+- Add matched Rust and C++ performance harnesses for synchronous dispatch,
+  asynchronous execution, allocator policies, state-machine pools, and worker
+  pools.
+- Add a complete DSL guide, parity audit, migration guide, stability policy,
+  security policy, and release runbook.
+- Add enforced formatting, linting, testing, documentation, link checking,
+  package validation, dependency policy, public API compatibility, coverage,
+  MSRV, cross-platform, AddressSanitizer, Miri, and fuzzing gates.
+- Add trusted-publishing release automation with provenance attestations.
 
 ### Changed
 
-- [breaking] Remove `derive_states` and `derive_events` fields in lieu of `states_attr` and `events_attr` to define attributes generically
-- Bumped `syn` dependency to version 2
-
-## [v0.8.0] - 2024-08-07
-
-### Added
-
-- Add transition callback. A function which is called for every transition. It has default empty
-implementation.
-- Add support for implicit and wildcard internal transitions
-
-### Changed
-
-- [breaking] Renamed custom_guard_error flag to custom_error as it is not guard specific anymore
-- [breaking] Re-ordered on_exit/on_entry hooks calls
-- [breaking] New `transition_callback` has replaced `log_state_change` as it is more flexible.
-
-## [0.7.0] - 2024-07-03
-
-### Added
-
-- Add support for async guards and actions
-- Add names to `sml!` machines and make dot output stable and unique ([issue-62](https://github.com/stateforward/sml.rs/pull/62))
-- Add derive macros to states and events ([issue-62](https://github.com/stateforward/sml.rs/pull/62))
-- Add hooks to `StateMachineContext` for logging events, guards, actions, and state changes
-- Add support multiple guarded transitions for a triggering event
-- Add support for guard boolean expressions in the state machine declaration
-- There are now `on_entry_<snakecase_statename>` and `on_entry_<snakecase_statename>` functions
-defined to allow handling entry and exit from all state machine states. These have a default empty
-implementation.
-* The expanded code is now written to `target/sml-expansion-<name|default>.rs` during the build
-process.
-
-### Fixed
-
-- Fixes multiple issues with lifetimes ([issue-57](https://github.com/stateforward/sml.rs/issues/57), [issue-58](https://github.com/stateforward/sml.rs/pull/58))
-
-### Changed
-
-- `StateMachine::new` and `StateMachine::new_with_state` are now const functions
-- Fixed clippy warnings
-- [breaking] Changed guard functions return type from Result<(),_> to Result<bool,_>
-- [breaking] Changed action functions return type from () to Result<NextStateData,_>
-- [breaking] Disallow guards mutable access to the context
-- [breaking] Renamed GuardError to Error as it is now used for both guards and actions
-
-## [v0.6.0] - 2022-11-02
-
-### Fixed
-
-- Updated the link checker in the Github actions to use [lychee](https://github.com/lycheeverse/lychee).
-
-### Added
-
-- Starting state can now contain data ([issue-34](https://github.com/stateforward/sml.rs/issues/34))
-- Allow explicit input states before wildcard input state([issue-47](https://github.com/stateforward/sml.rs/pull/47)
-
-### Changed
-- Custom guard error types are now specified as a type of the `StateMachineContext` to allow for
-  more versatile types.
-
-## [v0.5.1]
-
-### Fixed
-* [#36](https://github.com/stateforward/sml.rs/issues/36) Attempts to use actions and guards with
-  inconsistent input, event, and output state data will be flagged as compiler errors.
-
-### Added
-
-## [v0.5.0]
-
-### Added
-
-- Changelog enforcer added to CI
-- State data now supports lifetimes ([issue-26](https://github.com/stateforward/sml.rs/issues/26))
-- New example [dominos.rs](https://github.com/stateforward/sml.rs/blob/main/examples/dominos.rs) illustrating a method of event propagation ([issue-17](https://github.com/stateforward/sml.rs/issues/17))
-- Input states support pattern matching and wildcards ([issue-29](https://github.com/stateforward/sml.rs/issues/29))
-
-### Fixed
-- PartialEq for States and Events based on discriminant only ([issue-21](https://github.com/stateforward/sml.rs/issues/21))
-- Updated the CI badges ([issue-30](https://github.com/stateforward/sml.rs/issues/30))
-
-## [v0.4.2]
-
-### Fixed
-
-### Added
-
-- Initial state can be specified at runtime.
-
-### Changes
-
-## [v0.4.1] -- YANKED
-
-## [v0.4.0]
-
-### Added
-
-- Introduce a new named syntax, supporting `guard_error`, `transitions` and `temporary_context`
-- The ability to define custom guard errors
-
-## [v0.3.5]
-
-### Fixed
-
-- No longer needed to define each action, the same action can now be reused.
-
-### Added
-
-## [v0.3.4]
-
-### Fixed
-
-### Added
-
-- Added syntax and support for a temporary context which is propagated from `process_event`. This
-  allows for usage in systems where the normal context cannot take ownership, such as when having a
-  reference which is only valid during the invocation of the state machine. For an example of this
-  feature see `examples/guard_action_syntax_with_temporary_context.rs`.
-
-### Changes
-
-## [v0.3.3]
-
-### Fixed
-
-- Now compatible with `#![deny(missing_docs)]`.
-
-## [v0.3.2]
-
-### Fixed
-
-- Having states with data associated, but no action to set this data, caused arcane errors. This is now fixed.
-
-### Added
-
-- Destination state may now have a type associated with it
-
-### Changes
-
-## [v0.3.1]
-
-### Changes
-
-* Better documentation and examples
-* Graphviz diagrams only generated if feature is enabled
-
-## [v0.3.0]
-
-### Fixed
-
-* API documentation should now be correctly generated in a project
-
-### Changes
-
-* [breaking] Most derives on `States`, `Events` (`Copy`, `Clone`, `Debug`) and trait bounds on
-`StateMachineContext` are removed.
-* [breaking] All returns of state are now by reference
-* [breaking] Guards now take self my mutable reference, this to allow for context modifications. Quite common
-when receiving the same event N times can be accepted as a transition. Before one would have to have
-a long list of states to go through.
-* Most function are made `#[inline]`
-
-## [v0.2.2]
-
-### Added
-
-* Lifetime support added to guards and actions
-
-## [v0.2.1]
-
-### Added
-
-* Basic lifetime support for event data
-
-## v0.2.0
-
-### Added
-
-* Support for generating a graphviz file over the state machine
-* Support for data in events
-* Support for data in states
-* Change log added
-
-[Unreleased]: https://github.com/stateforward/sml.rs/compare/v0.8.0...main
-[v0.8.0]: https://github.com/stateforward/sml.rs/compare/v0.7.0...v0.8.0
-[v0.7.0]: https://github.com/stateforward/sml.rs/compare/v0.6.0...v0.7.0
-[v0.6.0]: https://github.com/stateforward/sml.rs/compare/v0.5.1...v0.6.0
-[v0.5.1]: https://github.com/stateforward/sml.rs/compare/v0.5.0...v0.5.1
-[v0.5.0]: https://github.com/stateforward/sml.rs/compare/v0.4.2...v0.5.0
-[v0.4.2]: https://github.com/stateforward/sml.rs/compare/v0.4.1...v0.4.2
-[v0.4.1]: https://github.com/stateforward/sml.rs/compare/v0.4.0...v0.4.1
-[v0.4.0]: https://github.com/stateforward/sml.rs/compare/v0.3.5...v0.4.0
-[v0.3.5]: https://github.com/stateforward/sml.rs/compare/v0.3.4...v0.3.5
-[v0.3.4]: https://github.com/stateforward/sml.rs/compare/v0.3.3...v0.3.4
-[v0.3.3]: https://github.com/stateforward/sml.rs/compare/v0.3.2...v0.3.3
-[v0.3.2]: https://github.com/stateforward/sml.rs/compare/v0.3.1...v0.3.2
-[v0.3.1]: https://github.com/stateforward/sml.rs/compare/v0.3.0...v0.3.1
-[v0.3.0]: https://github.com/stateforward/sml.rs/compare/v0.2.2...v0.3.0
-[v0.2.2]: https://github.com/stateforward/sml.rs/compare/v0.2.1...v0.2.2
-[v0.2.1]: https://github.com/stateforward/sml.rs/compare/v0.2.0...v0.2.1
+- Set the minimum supported Rust version to 1.90.
+- Upgrade `syn` to version 2.
+- Replace `derive_states` and `derive_events` with generic `states_attr` and
+  `events_attr` configuration.
+- Replace `log_state_change` with the more flexible `transition_callback`.
+- Rename `custom_guard_error` to `custom_error` because error customization
+  applies beyond guards.
+- Define on-exit and on-entry lifecycle ordering consistently across flat,
+  composite, and orthogonal transitions.
+
+The public repository starts its formal release history at 1.0.0. Earlier
+development history remains available in Git.

@@ -160,7 +160,7 @@ fn normalize_transition(transition: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_direction, normalize_transition, SmlDefinition};
+    use super::{normalize_direction, normalize_transition, SmlDefinition, SmlDefinitions};
     use quote::quote;
 
     #[test]
@@ -211,5 +211,50 @@ mod tests {
         assert!(definition.machine.temporary_context_type.is_some());
         assert_eq!(definition.machine.states_attr.len(), 1);
         assert_eq!(definition.machine.events_attr.len(), 1);
+    }
+
+    #[test]
+    fn parses_unnamed_and_adjacent_definitions() {
+        let definitions: SmlDefinitions = syn::parse2(quote! {
+            _ { *Idle + Start = X },
+            Named { *Idle + Stop = X },
+        })
+        .unwrap();
+        assert_eq!(definitions.machines.len(), 2);
+        assert!(definitions.machines[0].name.is_none());
+        assert_eq!(definitions.machines[1].name.as_ref().unwrap(), "Named");
+    }
+
+    #[test]
+    fn rejects_unknown_option_and_unrelated_exception_types() {
+        assert!(
+            syn::parse2::<SmlDefinition>(quote! { Bad[unknown] { *Idle + Start = X } }).is_err()
+        );
+        assert!(syn::parse2::<SmlDefinition>(quote! {
+            Bad {
+                *Idle + exception<First> = X,
+                 Idle + exception<Second> = X,
+            }
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_exception_sets_fixed_error_and_normalization_handles_noop_forms() {
+        let definition: SmlDefinition = syn::parse2(quote! {
+            Errors { *Idle + exception<MyError> = X }
+        })
+        .unwrap();
+        assert!(definition.machine.custom_error);
+        assert!(definition.machine.fixed_error_type.is_some());
+
+        assert_eq!(
+            normalize_transition(quote!(Idle + Start = Ready)).to_string(),
+            quote!(Idle + Start = Ready).to_string()
+        );
+        assert_eq!(
+            normalize_transition(quote!(Idle)).to_string(),
+            quote!(Idle).to_string()
+        );
     }
 }
