@@ -1,4 +1,6 @@
 /target
+/.semver-baseline/
+/semver-checks/
 macros/target
 **/*.rs.bk
 fuzz/Cargo.lock
