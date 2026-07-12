@@ -70,3 +70,45 @@ impl DataDefinitions {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ty(source: &str) -> Type {
+        syn::parse_str(source).unwrap()
+    }
+
+    #[test]
+    fn collects_consistent_types_and_lifetimes() {
+        let mut definitions = DataDefinitions::new();
+        definitions
+            .collect("event".to_owned(), Some(ty("&'a str")))
+            .unwrap();
+        definitions
+            .collect("event".to_owned(), Some(ty("&'a str")))
+            .unwrap();
+        assert_eq!(definitions.data_types.len(), 1);
+        assert_eq!(definitions.all_lifetimes.as_slice().len(), 1);
+        assert_eq!(definitions.lifetimes["event"].as_slice().len(), 1);
+    }
+
+    #[test]
+    fn rejects_conflicting_or_missing_redefinitions() {
+        let mut definitions = DataDefinitions::new();
+        definitions
+            .collect("event".to_owned(), Some(ty("u8")))
+            .unwrap();
+        assert!(definitions
+            .collect("event".to_owned(), Some(ty("u16")))
+            .is_err());
+        assert!(definitions.collect("event".to_owned(), None).is_err());
+    }
+
+    #[test]
+    fn ignores_absent_first_definition() {
+        let mut definitions = DataDefinitions::new();
+        definitions.collect("event".to_owned(), None).unwrap();
+        assert!(definitions.data_types.is_empty());
+    }
+}

@@ -18,14 +18,14 @@ context by value, and has no runtime allocator or dynamic dispatch.
 
 ```toml
 [dependencies]
-sml = "0.8"
+sml = { package = "stateforward-sml", version = "1" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { version = "0.8", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "1", features = ["graphviz"] }
 ```
 
 ## Quick start
@@ -223,10 +223,13 @@ the 25 programs under `../sml.cpp/example` in
 
 - [Capability parity matrix](docs/sml-cpp-parity.md)
 - [Example-by-example translation audit](docs/sml-cpp-examples.md)
+- [Migrating from 0.8 to 1.0](docs/migrating-to-1.0.md)
+- [1.x stability policy](docs/stability.md)
 
-Rust-specific mappings—trait methods instead of inline lambdas, context fields
-instead of type-based dependency injection, `Result` instead of thrown values,
-and LLVM-selected dispatch lowering—are documented and tested there.
+Rust-specific mappings, including trait methods instead of inline lambdas,
+context fields instead of type-based dependency injection, `Result` instead of
+thrown values, and LLVM-selected dispatch lowering, are documented and tested
+there.
 
 ## Performance
 
@@ -250,15 +253,43 @@ workload in a 2.248 ms median versus 3.277 ms for `sml.cpp`, a 31.4% throughput
 advantage on the test machine. These sub-millisecond differences are sensitive
 to scheduling and thermals, so compare repeated alternating runs locally.
 
-### Tensor actor pool
+### Compile time
 
-The tensor-pool runner compares `SmPool<Vec<u8>>` with C++ `sm_pool` using the
-same 10,000-actor, 50,000-event workload, identical local and seeded-random
-indices, and 1,001 rounds per sample. Each language is also measured against
-its own flat byte-array loop. Rust's allocation counter covers the timed path.
+The compile-time runner alternates clean production builds of the same player
+program. The Rust side uses a temporary consumer crate whose only dependency is
+this repository; the C++ side compiles the equivalent translation unit against
+`sml.cpp`. Both use native CPU tuning, full optimization, and linking. Lockfile
+generation and dependency downloads are outside the timed region. The rebuild
+case appends a newline to the player source, preserving Rust dependency
+artifacts while requiring both languages to rebuild and relink the program.
 
 ```bash
-python3 benchmarks/compare_tensor_pool.py --runs 21
+python3 benchmarks/compare_compile_time.py --runs 7
+```
+
+The 2026-07-11 alternating run on Apple Silicon used Rust 1.94.0 and Apple
+Clang 16.0.0:
+
+| Toolchain | Clean release build | Player edit and rebuild |
+|---|---:|---:|
+| Rust `sml.rs` | 4.714 s | 1.828 s |
+| C++ `sml.cpp` | 0.462 s | 0.457 s |
+
+Rust was 10.20 times slower from a clean target and 4.00 times slower after a
+player-source edit. The clean Rust build includes compiling `proc-macro2`,
+`quote`, `syn`, and `stateforward-sml-macros` from locally cached sources. The C++ workload
+parses its header-only dependency in the player translation unit. These are
+developer-visible build times, separate from the runtime throughput results.
+
+### `SmPool` throughput
+
+The pool runner compares `SmPool<Vec<u8>>` with C++ `sm_pool` using the same
+10,000-slot, 50,000-event workload, identical local and seeded-random indices,
+and 1,001 rounds per sample. Each language is also measured against its own
+flat byte-array loop. Rust's allocation counter covers the timed path.
+
+```bash
+python3 benchmarks/compare_sm_pool.py --runs 21
 ```
 
 The 2026-07-11 rotated native-release run produced:
@@ -274,9 +305,8 @@ The 2026-07-11 rotated native-release run produced:
 
 Rust batch dispatch was 23.6% faster locally and 22.6% faster under random
 access than C++ `sm_pool`. It stayed within 16.0% of Rust's flat-array local
-baseline and 10.4% of its random baseline. The benchmark uses compact byte
-state to model tensor actors; real tensor payload layout and wavefront
-scheduling require their own end-to-end benchmarks.
+baseline and 10.4% of its random baseline. The compact byte state isolates pool
+dispatch and access locality from application-specific work.
 
 ### Async, allocator, and worker-pool comparison
 
@@ -328,10 +358,12 @@ The same gate runs locally and on every push and pull request:
 ```
 
 It enforces formatting, warning-free Clippy across every target and feature,
-the full feature matrix, rustdoc warnings, Python harness syntax, package
-construction, at least 90% whole-workspace line coverage, and 100% runtime
-function coverage. Separate required jobs run the suite on Linux, macOS, and
-Windows, execute AddressSanitizer and Miri, and fuzz the runtime utilities.
+the full feature matrix, rustdoc warnings, documentation links, Python harness
+syntax, package construction, dependency advisories and licenses, at least 90%
+whole-workspace line coverage, and 100% runtime function coverage. Separate
+required jobs run the suite on Linux, macOS, and Windows, enforce public API
+compatibility, execute AddressSanitizer and Miri, and fuzz the runtime
+utilities.
 
 Run the fuzz target locally with a nightly toolchain and `cargo-fuzz`:
 
@@ -340,3 +372,5 @@ cargo fuzz run runtime_utilities
 ```
 
 The crate is licensed under either Apache-2.0 or MIT.
+
+Release maintainers should follow the [release runbook](docs/releasing.md).

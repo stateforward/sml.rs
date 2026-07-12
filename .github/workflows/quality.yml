@@ -14,10 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-deny
       - name: Run enforced quality gate
         run: ./scripts/quality_gates.sh
 
@@ -40,3 +44,52 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
       - run: cargo check --workspace --all-features
+
+  dependency-policy:
+    name: Dependency and license policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.90.0"
+          arguments: --all-features
+
+  semver:
+    name: Public API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Prepare API baseline
+        env:
+          BASELINE_REF: ${{ github.event.pull_request.base.sha || 'HEAD^' }}
+        run: |
+          mkdir .semver-baseline
+          git archive "${BASELINE_REF}" | tar -x -C .semver-baseline
+          python3 scripts/prepare_semver_baseline.py .semver-baseline
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: stateforward-sml
+          feature-group: all-features
+          baseline-root: .semver-baseline
+          release-type: patch
+
+  links:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >-
+            --no-progress
+            --exclude-path target
+            --exclude-path fuzz/corpus
+            './**/*.md'

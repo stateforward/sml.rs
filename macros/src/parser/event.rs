@@ -201,4 +201,57 @@ mod tests {
         assert_eq!(exception.kind, EventKind::Exception);
         assert!(exception.wildcard);
     }
+
+    #[test]
+    fn parses_all_event_kinds_and_external_types() {
+        let external: Event = parse_str("+ event<Start>").unwrap();
+        assert!(external.external);
+        assert!(external.data_type.is_some());
+
+        let unexpected: Event = parse_str("+ unexpected_event<Start>").unwrap();
+        assert!(unexpected.external);
+        assert!(unexpected.data_type.is_some());
+
+        let wildcard: Event = parse_str("+ unexpected_event<_>").unwrap();
+        assert!(!wildcard.external);
+        assert!(wildcard.data_type.is_none());
+
+        let exit: Event = parse_str("+ on_exit<_>").unwrap();
+        assert_eq!(exit.kind, EventKind::Exit);
+
+        let exception: Event = parse_str("+ exception<MyError>").unwrap();
+        assert_eq!(exception.kind, EventKind::Exception);
+        assert!(exception.data_type.is_some());
+    }
+
+    #[test]
+    fn accepts_supported_payload_shapes() {
+        for ty in [
+            "[u8; 4]",
+            "Payload",
+            "*mut u8",
+            "&'static u8",
+            "[u8]",
+            "(u8, u16)",
+        ] {
+            let source = format!("+ Start({ty})");
+            assert!(parse_str::<Event>(&source).is_ok(), "{}", ty);
+        }
+    }
+
+    #[test]
+    fn rejects_bad_named_suffix_invalid_payload_and_wildcard_data() {
+        assert!(parse_str::<Event>("+ \"bad name\"_s")
+            .unwrap_err()
+            .to_string()
+            .contains("suffix `_e`"));
+        assert!(parse_str::<Event>("+ Start(fn())")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid type"));
+        assert!(parse_str::<Event>("+ unexpected<_>(u8)")
+            .unwrap_err()
+            .to_string()
+            .contains("wildcard trigger"));
+    }
 }

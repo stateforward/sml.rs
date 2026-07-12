@@ -93,3 +93,55 @@ impl parse::Parse for OutputState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_internal_named_terminal_and_composite_states() {
+        let implicit: OutputState = syn::parse_str("").unwrap();
+        assert!(implicit.internal_transition);
+
+        let explicit: OutputState = syn::parse_str("= _").unwrap();
+        assert!(explicit.internal_transition);
+
+        let named: OutputState = syn::parse_str("= \"ready state\"_s").unwrap();
+        assert_eq!(named.ident, "ReadyState");
+
+        let terminal: OutputState = syn::parse_str("= sml::X").unwrap();
+        assert_eq!(terminal.ident, "X");
+
+        let composite: OutputState = syn::parse_str("= state<Child>").unwrap();
+        assert_eq!(composite.ident, "Child");
+        assert_eq!(composite.composite.unwrap(), "Child");
+        assert!(composite.data_type.is_some());
+    }
+
+    #[test]
+    fn accepts_supported_payload_shapes() {
+        for ty in [
+            "[u8; 4]",
+            "Payload",
+            "*mut u8",
+            "&'static u8",
+            "[u8]",
+            "(u8, u16)",
+        ] {
+            let source = format!("= Ready({ty})");
+            assert!(syn::parse_str::<OutputState>(&source).is_ok(), "{}", ty);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_payload_and_qualified_nonterminal() {
+        assert!(syn::parse_str::<OutputState>("= Ready(fn())")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid type"));
+        assert!(syn::parse_str::<OutputState>("= sml::Ready")
+            .unwrap_err()
+            .to_string()
+            .contains("only the terminal state"));
+    }
+}

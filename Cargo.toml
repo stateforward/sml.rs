@@ -1,20 +1,20 @@
 [package]
-name = "sml"
+name = "stateforward-sml"
 categories = ["embedded", "no-std"]
 authors = ["Emil Fresk <emil.fresk@gmail.com>", "Donny Zimmanck <dzimmanck@gmail.com>"]
 description = "sml.rs: a no-std Rust implementation of the sml.cpp transition-table DSL"
 keywords = ["dsl", "state-machine", "sml"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stateforward/sml.rs"
-version = "0.8.0"
+version = "1.0.0"
 edition = "2018"
 rust-version = "1.90"
 readme = "README.md"
-documentation = "https://docs.rs/sml"
+documentation = "https://docs.rs/stateforward-sml"
 homepage = "https://github.com/stateforward/sml.rs"
 
 [dependencies]
-sml-macros = { path = "macros", version = "0.8.0" }
+sml-macros = { package = "stateforward-sml-macros", path = "macros", version = "1.0.0" }
 
 [dev-dependencies]
 smol = "1"
@@ -30,6 +30,9 @@ name = "test"
 [profile.release]
 codegen-units = 1
 lto = true
+
+[lib]
+name = "sml"
 
 [workspace]
 members = ["macros"]

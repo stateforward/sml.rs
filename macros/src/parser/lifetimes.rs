@@ -121,3 +121,43 @@ impl Sub<Lifetimes> for &Lifetimes {
         self.to_owned().sub(&rhs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    fn ty(source: &str) -> Type {
+        syn::parse_str(source).unwrap()
+    }
+
+    #[test]
+    fn extracts_nested_and_generic_lifetimes_without_duplicates() {
+        let lifetimes = Lifetimes::from_type(&ty("(&'a str, Wrapper<'b, &'a u8>)")).unwrap();
+        assert_eq!(lifetimes.as_slice().len(), 2);
+        assert_eq!(quote!(#lifetimes).to_string(), "'a , 'b ,");
+    }
+
+    #[test]
+    fn rejects_reference_without_explicit_lifetime() {
+        let error = Lifetimes::from_type(&ty("&str")).unwrap_err();
+        assert!(error.to_string().contains("lifetime is not defined"));
+    }
+
+    #[test]
+    fn subtraction_forms_remove_shared_lifetimes() {
+        let left = Lifetimes::from_type(&ty("Pair<'a, 'b>")).unwrap();
+        let right = Lifetimes::from_type(&ty("Item<'b>")).unwrap();
+        assert_eq!((left.clone() - right.clone()).as_slice().len(), 1);
+        assert_eq!((left.clone() - &right).as_slice().len(), 1);
+        assert_eq!((&left - right.clone()).as_slice().len(), 1);
+        assert_eq!((&left - &right).as_slice().len(), 1);
+    }
+
+    #[test]
+    fn empty_lifetimes_emit_no_tokens_and_other_types_are_ignored() {
+        let empty = Lifetimes::from_type(&ty("u8")).unwrap();
+        assert!(empty.is_empty());
+        assert!(quote!(#empty).is_empty());
+    }
+}

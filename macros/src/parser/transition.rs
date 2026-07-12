@@ -319,7 +319,8 @@ fn parse_primary(input: parse::ParseStream) -> syn::Result<GuardExpression> {
 
 #[cfg(test)]
 mod test {
-    use crate::parser::transition::GuardExpression;
+    use crate::parser::transition::{visit_guards, GuardExpression, StateTransitions};
+    use quote::quote;
     use syn::parse_str;
 
     #[test]
@@ -347,8 +348,83 @@ mod test {
         ] {
             let guard_expression: GuardExpression = parse_str(guard_expression_str)?;
             assert_eq!(guard_expression.to_string(), expected);
-            println!("{:?}", guard_expression);
         }
         Ok(())
+    }
+
+    #[test]
+    fn guard_tokens_and_visitor_cover_the_expression_tree() {
+        let expression: GuardExpression = parse_str("!(async a || b) && c").unwrap();
+        let tokens = expression.to_token_stream(&mut |guard| {
+            let ident = &guard.ident;
+            if guard.is_async {
+                quote!(#ident().await)
+            } else {
+                quote!(#ident())
+            }
+        });
+        assert_eq!(tokens.to_string(), "! (a () . await || b ()) && c ()");
+
+        let mut visited = Vec::new();
+        visit_guards(&expression, |guard| {
+            visited.push(guard.ident.to_string());
+            Ok(())
+        })
+        .unwrap();
+        visited.sort();
+        assert_eq!(visited, ["a", "b", "c"]);
+
+        assert!(visit_guards(&expression, |_guard| {
+            Err(syn::Error::new(proc_macro2::Span::call_site(), "stop"))
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn parses_action_sequence_queue_operations_and_eval() {
+        let transition: StateTransitions = parse_str(
+            "Idle | Ready + Start [allowed] / (first, async second, process(Next {}), defer, eval[ready] / async third) = Running",
+        )
+        .unwrap();
+        assert_eq!(transition.in_states.len(), 2);
+        assert_eq!(transition.action.unwrap().ident, "first");
+        assert_eq!(transition.additional_actions.len(), 1);
+        assert_eq!(transition.process_events.len(), 1);
+        assert!(transition.defer);
+        assert_eq!(transition.eval_actions.len(), 1);
+        assert_eq!(transition.eval_actions[0].position, 4);
+        assert!(transition.eval_actions[0].action.is_async);
+    }
+
+    #[test]
+    fn parses_single_actions_and_internal_transitions() {
+        let asynchronous: StateTransitions =
+            parse_str("Idle + Start / async begin = Ready").unwrap();
+        assert!(asynchronous.action.unwrap().is_async);
+
+        let process: StateTransitions = parse_str("Idle + Start / process(Next {})").unwrap();
+        assert_eq!(process.process_events.len(), 1);
+        assert!(process.out_state.internal_transition);
+
+        let defer: StateTransitions = parse_str("Idle + Start / defer").unwrap();
+        assert!(defer.defer);
+
+        let bare: StateTransitions = parse_str("Idle + Start").unwrap();
+        assert!(bare.action.is_none());
+        assert!(bare.out_state.internal_transition);
+    }
+
+    #[test]
+    fn rejects_wildcard_patterns_and_async_queue_operators() {
+        assert!(parse_str::<StateTransitions>("_ | Idle + Start").is_err());
+        for source in [
+            "Idle + Start / async defer",
+            "Idle + Start / async process(Next {})",
+            "Idle + Start / (async defer)",
+            "Idle + Start / (async process(Next {}))",
+            "Idle + Start / (async eval[ready] / run)",
+        ] {
+            assert!(parse_str::<StateTransitions>(source).is_err(), "{}", source);
+        }
     }
 }
