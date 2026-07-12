@@ -11,6 +11,7 @@ All notable changes to this project are documented here. This project follows
 - Upgrade official GitHub workflow actions to their current Node 24 releases.
 - Document and enforce the crates.io API-token bootstrap required before
   trusted publishing can manage later releases.
+- Exclude generated semver-check artifacts from release crate packaging.
 
 ## 1.0.0 - 2026-07-11
 
