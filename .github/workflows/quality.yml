@@ -18,6 +18,7 @@ jobs:
         with:
           components: clippy,rustfmt
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-deny
       - name: Run enforced quality gate
         run: ./scripts/quality_gates.sh
 
