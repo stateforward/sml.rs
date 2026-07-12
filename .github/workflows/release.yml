@@ -75,16 +75,53 @@ jobs:
           feature-group: all-features
           baseline-root: .semver-baseline
 
+      - name: Check crates.io release state
+        id: registry
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if cargo info "stateforward-sml-macros@${VERSION}" >/dev/null 2>&1; then
+            echo "macros_exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "macros_exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if cargo info "stateforward-sml@${VERSION}" >/dev/null 2>&1; then
+            echo "runtime_exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "runtime_exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Validate crates.io release state
+        env:
+          VERSION: ${{ inputs.version }}
+          MACROS_EXISTS: ${{ steps.registry.outputs.macros_exists }}
+          RUNTIME_EXISTS: ${{ steps.registry.outputs.runtime_exists }}
+        run: |
+          if [ "${MACROS_EXISTS}" != "${RUNTIME_EXISTS}" ]; then
+            echo "Only one crate exists at ${VERSION}; finish the interrupted publication manually." >&2
+            exit 1
+          fi
+          if [ "${VERSION}" = "1.0.0" ] && [ "${MACROS_EXISTS}" = "false" ]; then
+            echo "Bootstrap 1.0.0 with an API token as documented in docs/releasing.md." >&2
+            exit 1
+          fi
+
+      - name: Package macro crate
+        run: cargo package -p stateforward-sml-macros
+
       - name: Authenticate to crates.io
+        if: steps.registry.outputs.macros_exists == 'false'
         uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
       - name: Publish macro crate first
+        if: steps.registry.outputs.macros_exists == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p stateforward-sml-macros
 
       - name: Wait for macro crate index propagation
+        if: steps.registry.outputs.macros_exists == 'false'
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -97,7 +134,11 @@ jobs:
           echo "stateforward-sml-macros ${VERSION} did not reach the crates.io index" >&2
           exit 1
 
+      - name: Package runtime crate
+        run: cargo package -p stateforward-sml
+
       - name: Publish runtime crate
+        if: steps.registry.outputs.runtime_exists == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p stateforward-sml
