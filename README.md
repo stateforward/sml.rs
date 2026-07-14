@@ -18,14 +18,14 @@ context by value, and has no runtime allocator or dynamic dispatch.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1" }
+sml = { package = "stateforward-sml", version = "1.1" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "1.1", features = ["graphviz"] }
 ```
 
 ## Quick start
@@ -131,6 +131,17 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 All generated machines provide construction, context access, event processing,
 and termination queries. The state API follows the machine shape:
+
+<!-- public event-processing traits from src/lib.rs -->
+
+Synchronous flat machines implement `Machine<E>` with `process_event` and
+`process_event_async`. Both report event acceptance as `bool`, matching the
+`sml.cpp` `co_sm` contract. The latter returns an allocation-free ready future
+after the uncontended inline run-to-completion fast path. Detailed Rust errors
+remain available from the generated machine's inherent `process_event` method.
+Async callbacks are a separate concern. Orthogonal, composite, async-callback,
+and temporary-context machines retain their shape-specific inherent processing
+APIs.
 
 | Shape | Main state API |
 |---|---|
@@ -243,15 +254,46 @@ RUSTFLAGS="-C target-cpu=native" \
   cargo run --release --example player_benchmark
 
 clang++ -std=c++20 -O3 -DNDEBUG -march=native \
-  -I../sml.cpp/include -I../sml.cpp/benchmark/simple \
+  -I../sml.cpp/include \
   benchmarks/player_cpp.cpp -o /tmp/sml_cpp_player
 /tmp/sml_cpp_player
 ```
 
-In 21 alternating native-release runs on 2026-07-11, `sml.rs` completed the
-workload in a 2.248 ms median versus 3.277 ms for `sml.cpp`, a 31.4% throughput
-advantage on the test machine. These sub-millisecond differences are sensitive
-to scheduling and thermals, so compare repeated alternating runs locally.
+In 21 alternating native-release runs on 2026-07-13, the new
+`Machine::process_event` path completed the workload in a 2.370 ms median versus
+3.424 ms for `sml.cpp`, 30.8% lower elapsed time and 44.5% higher throughput on
+the test machine. These small timing differences are sensitive to scheduling and
+thermals, so compare repeated alternating runs locally.
+
+The same Rust executable accepts `async` to measure
+`Machine::process_event_async`. The matching C++ harness uses `co_sm` with its
+inline scheduler:
+
+```bash
+./target/release/examples/player_benchmark async
+
+clang++ -std=c++20 -O3 -DNDEBUG -march=native \
+  -I../sml.cpp/include \
+  benchmarks/co_sm_inline_cpp.cpp -o /tmp/sml_cpp_co_sm_inline
+/tmp/sml_cpp_co_sm_inline
+```
+
+In 21 alternating runs, Rust completed the async RTC workload in a 2.543 ms
+median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
+405.3% higher throughput. This measures the uncontended ready path only.
+Scheduler queueing and suspended RTC completion require a separate benchmark
+when that adapter is implemented.
+
+Reproduce both comparisons, including alternating order, raw samples, platform,
+and toolchain capture, with:
+
+```bash
+python3 benchmarks/compare_machine_rtc.py --runs 21 \
+  --output benchmarks/results/machine-rtc.json
+```
+
+The recorded run behind the numbers above is stored in
+`benchmarks/results/2026-07-13-machine-rtc.json`.
 
 ### Compile time
 

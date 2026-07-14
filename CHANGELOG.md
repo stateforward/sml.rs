@@ -4,7 +4,21 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.1.0 - 2026-07-14
+
+### Breaking
+
+- Replace the 1.0 `Machine::process` and `Machine::Error` contract with the
+  `sml.cpp`-compatible acceptance interface described below. This is an
+  owner-authorized pre-adoption API correction and is not source compatible
+  with manual 1.0 `Machine` implementations.
+
+### Added
+
+- Add `Machine::process_event` and `Machine::process_event_async` acceptance APIs
+  for generated synchronous flat machines and manual implementors. This
+  replaces the previous fallible `Machine::process` contract; detailed errors
+  remain on each generated machine's inherent `process_event` method.
 
 ### Changed
 

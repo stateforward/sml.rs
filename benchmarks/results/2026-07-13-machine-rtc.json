@@ -1,0 +1,187 @@
+{
+  "schema": 2,
+  "workload": "player-11m-machine-rtc",
+  "runs": 21,
+  "events_per_run": 11000000,
+  "system": {
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64"
+  },
+  "toolchains": {
+    "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+    "clang": "Apple clang version 16.0.0 (clang-1600.0.26.6)"
+  },
+  "source_identity": {
+    "sml_rs_head": "af8256943b6e98932f31022a13e8fd48d205c8af",
+    "sml_rs_relevant_status": [
+      " M Cargo.lock",
+      " M Cargo.toml",
+      " M examples/player_benchmark.rs",
+      " M macros/Cargo.toml",
+      " M macros/src/codegen.rs",
+      " M src/lib.rs",
+      " M src/utility.rs"
+    ],
+    "sml_rs_compilation_tree_sha256": "9a35723844c35176f009dc40dcf11edc72d3a370bda74676c7425ca621417da3",
+    "benchmark_inputs_sha256": "d1695595b58117163b2a0473f19e2d9387bed1f180d6f5b08050df9f895974f9",
+    "sml_cpp_head": "38282f52e6ea53ea54f97fe4c8961ce92bfe97c9",
+    "sml_cpp_include_status": [],
+    "sml_cpp_include_tree_sha256": "68a04af9875a43a929b6738b3cece84cf210cefad9a642f86ee94dbb9e02c60d"
+  },
+  "commands": {
+    "rust_build_env": {
+      "RUSTFLAGS": "-C target-cpu=native"
+    },
+    "rust_build": [
+      "cargo",
+      "build",
+      "--release",
+      "--example",
+      "player_benchmark"
+    ],
+    "cpp_sync_build": [
+      "clang++",
+      "-std=c++20",
+      "-O3",
+      "-DNDEBUG",
+      "-march=native",
+      "-I${SML_CPP}/include",
+      "benchmarks/player_cpp.cpp",
+      "-o",
+      "/tmp/sml_cpp_player"
+    ],
+    "cpp_async_build": [
+      "clang++",
+      "-std=c++20",
+      "-O3",
+      "-DNDEBUG",
+      "-march=native",
+      "-I${SML_CPP}/include",
+      "benchmarks/co_sm_inline_cpp.cpp",
+      "-o",
+      "/tmp/sml_cpp_co_sm_inline"
+    ],
+    "workloads": {
+      "rust-sync": [
+        "${SML_RS}/target/release/examples/player_benchmark"
+      ],
+      "cpp-sync": [
+        "/tmp/sml_cpp_player"
+      ],
+      "rust-async-ready": [
+        "${SML_RS}/target/release/examples/player_benchmark",
+        "async"
+      ],
+      "cpp-co-sm-inline": [
+        "/tmp/sml_cpp_co_sm_inline"
+      ]
+    }
+  },
+  "samples_ns": {
+    "rust-sync": [
+      2346875,
+      2277708,
+      2355209,
+      2453500,
+      2392083,
+      2417917,
+      2279209,
+      2391500,
+      2369500,
+      2334375,
+      2384875,
+      2391959,
+      2367250,
+      2375084,
+      2391500,
+      2359083,
+      2417916,
+      2356541,
+      2352500,
+      2313584,
+      2475500
+    ],
+    "cpp-sync": [
+      3506583,
+      3478167,
+      3242375,
+      3266917,
+      3423834,
+      3364875,
+      3346083,
+      3339750,
+      3552167,
+      3345917,
+      3445625,
+      3490416,
+      4139917,
+      3360500,
+      3842333,
+      3443708,
+      3423125,
+      3521667,
+      3311917,
+      3481459,
+      3338791
+    ],
+    "rust-async-ready": [
+      2650000,
+      2526917,
+      2515042,
+      3501166,
+      2535167,
+      2565459,
+      2542875,
+      2510917,
+      2589041,
+      2697458,
+      2511583,
+      2624250,
+      2524208,
+      3337500,
+      2548541,
+      2501541,
+      2512333,
+      2436167,
+      2583375,
+      2460042,
+      2567375
+    ],
+    "cpp-co-sm-inline": [
+      12772917,
+      16501375,
+      12734208,
+      12849334,
+      12938250,
+      12921083,
+      12704333,
+      12665875,
+      12973458,
+      12854625,
+      12672458,
+      12537334,
+      16582958,
+      14191542,
+      13613250,
+      12898167,
+      12791542,
+      12895834,
+      12679750,
+      12770459,
+      12839250
+    ]
+  },
+  "medians_ns": {
+    "rust-sync": 2369500,
+    "cpp-sync": 3423834,
+    "rust-async-ready": 2542875,
+    "cpp-co-sm-inline": 12849334
+  },
+  "derived": {
+    "sync_elapsed_time_reduction_percent": 30.8,
+    "sync_throughput_increase_percent": 44.5,
+    "async_ready_elapsed_time_reduction_percent": 80.2,
+    "async_ready_throughput_increase_percent": 405.3
+  }
+}

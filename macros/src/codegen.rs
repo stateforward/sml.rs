@@ -1407,14 +1407,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                 for #state_machine_type_name<#state_lifetimes T>
             {
                 type State = #states_type_name<#state_lifetimes>;
-                type Error = #error_type;
 
                 #[inline]
-                fn process(
+                fn process_event(
                     &mut self,
                     event: #events_type_name<#event_lifetimes>
-                ) -> Result<&Self::State, Self::Error> {
-                    self.process_event(event)
+                ) -> bool {
+                    self.process_event(event).is_ok()
                 }
             }
         }

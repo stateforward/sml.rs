@@ -550,3 +550,104 @@ fn test_specify_attrs() {
     assert_transition!(sm, Events::tostate2, States::State2, 0);
     assert_transition!(sm, Events::tostate3, States::State3, 1);
 }
+
+mod machine_trait_api {
+    use sml::{sml, Machine};
+
+    pub struct SyncFlatEvent;
+    pub struct RejectedEvent;
+
+    #[derive(Debug, PartialEq)]
+    enum PrivateFailure {
+        Rejected,
+    }
+
+    sml! {
+        TraitSyncFlat {
+            *"idle"_s + event<SyncFlatEvent> = "done"_s,
+        }
+    }
+
+    sml! {
+        TraitPrivateError[custom_error] {
+            *"idle"_s + event<RejectedEvent> / reject = "done"_s,
+        }
+    }
+
+    struct Context;
+
+    impl TraitSyncFlatStateMachineContext for Context {}
+    impl TraitPrivateErrorStateMachineContext for Context {
+        type Error = PrivateFailure;
+
+        fn reject(&mut self, _event: &RejectedEvent) -> Result<(), PrivateFailure> {
+            Err(PrivateFailure::Rejected)
+        }
+    }
+
+    fn process_sync<M, E>(machine: &mut M, event: E) -> bool
+    where
+        M: Machine<E>,
+    {
+        Machine::process_event(machine, event)
+    }
+
+    async fn process_async<M, E>(machine: &mut M, event: E) -> bool
+    where
+        M: Machine<E>,
+    {
+        Machine::process_event_async(machine, event).await
+    }
+
+    #[test]
+    fn synchronous_trait_dispatches_flat_machine() {
+        let mut flat = TraitSyncFlatStateMachine::new(Context);
+        assert!(process_sync(
+            &mut flat,
+            TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)
+        ));
+        assert!(flat.is(&TraitSyncFlatStates::Done));
+    }
+
+    #[test]
+    fn asynchronous_trait_dispatches_flat_machine() {
+        smol::block_on(async {
+            let mut flat = TraitSyncFlatStateMachine::new(Context);
+            assert!(
+                process_async(&mut flat, TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)).await
+            );
+            assert!(flat.is(&TraitSyncFlatStates::Done));
+        });
+    }
+
+    #[test]
+    fn trait_rejection_preserves_private_inherent_error_contract() {
+        let mut inherent = TraitPrivateErrorStateMachine::new(Context);
+        assert!(matches!(
+            inherent.process_event(RejectedEvent),
+            Err(TraitPrivateErrorError::ActionFailed(
+                PrivateFailure::Rejected
+            ))
+        ));
+        assert!(inherent.is(&TraitPrivateErrorStates::Idle));
+
+        let mut synchronous = TraitPrivateErrorStateMachine::new(Context);
+        assert!(!Machine::process_event(
+            &mut synchronous,
+            TraitPrivateErrorEvents::RejectedEvent(RejectedEvent),
+        ));
+        assert!(synchronous.is(&TraitPrivateErrorStates::Idle));
+
+        smol::block_on(async {
+            let mut asynchronous = TraitPrivateErrorStateMachine::new(Context);
+            assert!(
+                !Machine::process_event_async(
+                    &mut asynchronous,
+                    TraitPrivateErrorEvents::RejectedEvent(RejectedEvent),
+                )
+                .await
+            );
+            assert!(asynchronous.is(&TraitPrivateErrorStates::Idle));
+        });
+    }
+}
