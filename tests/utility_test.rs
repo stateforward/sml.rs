@@ -3,6 +3,27 @@ use sml::utility::{
     HierarchicalDispatch, OrthogonalRegions, QueueFull, SmPool,
 };
 use sml::{Machine as MachineTrait, Terminated};
+use std::future::Future;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
+
+struct TestWake;
+
+impl Wake for TestWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(TestWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {}
+        }
+    }
+}
 
 #[derive(Default)]
 struct Machine {
@@ -94,7 +115,7 @@ impl MachineTrait<Event> for Machine {
 
 #[test]
 fn machine_trait_async_entry_point_awaits_inline_rtc() {
-    smol::block_on(async {
+    block_on(async {
         let mut machine = Machine { value: 3 };
         assert!(MachineTrait::process_event_async(&mut machine, Event::Add(4)).await);
         assert_eq!(machine.value, 7);
@@ -147,7 +168,7 @@ where
 
 #[test]
 fn machine_trait_override_can_borrow_and_remain_pending_without_boxing() {
-    smol::block_on(async {
+    block_on(async {
         let mut machine = PendingMachine::default();
         assert!(process_generic_async(&mut machine, Event::Add(9)).await);
         assert_eq!(machine.polls, 2);
