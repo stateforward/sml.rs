@@ -4,18 +4,10 @@ use sml::utility::{
 };
 use sml::{Machine as MachineTrait, Terminated};
 use std::future::Future;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
-
-struct TestWake;
-
-impl Wake for TestWake {
-    fn wake(self: Arc<Self>) {}
-}
+use std::task::{Context, Poll, Waker};
 
 fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(TestWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     let mut future = Box::pin(future);
     loop {
         match future.as_mut().poll(&mut context) {
