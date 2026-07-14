@@ -40,15 +40,27 @@ Parity work must retain the CD-player dispatch advantage measured by
 dispatches and uses the same direct-address compiler barrier as
 `sml.cpp/benchmark/simple/sml_player_sm.hpp`.
 
-On 2026-07-11, a fresh 21-run alternating native release comparison on the
-same machine produced:
+On 2026-07-13, a fresh 21-run alternating native release comparison through
+`Machine::process_event` on the same machine produced:
 
 | Implementation | Median for 11M events | Median per event |
 |---|---:|---:|
-| sml.cpp | 3.277 ms | 0.298 ns |
-| sml.rs | 2.248 ms | 0.204 ns |
+| sml.cpp | 3.424 ms | 0.311 ns |
+| sml.rs | 2.370 ms | 0.215 ns |
 
-The Rust implementation retained a 31.4% median throughput advantage.
+The Rust implementation used 30.8% less median elapsed time, equivalent to
+44.5% higher throughput.
+
+The matching inline asynchronous RTC benchmark compares
+`Machine::process_event_async` with `co_sm` using its inline scheduler. Across 21
+alternating runs, Rust produced a 2.543 ms median (0.231 ns/event) versus 12.849
+ms (1.168 ns/event) for C++, 80.2% less elapsed time and 405.3% higher
+throughput. This result covers only the uncontended ready path; scheduler
+queueing and suspended completion are not yet claimed.
+
+`benchmarks/compare_machine_rtc.py` owns the alternating runner and
+`benchmarks/results/2026-07-13-machine-rtc.json` records all raw samples plus the
+platform and toolchain identity for these medians.
 
 ### Compile-time cost
 

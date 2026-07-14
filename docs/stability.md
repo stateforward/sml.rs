@@ -1,7 +1,9 @@
 # Stability policy
 
-Version 1.0 establishes the following compatibility contract for the `1.x`
-series.
+Version 1.1 establishes the following compatibility contract for subsequent
+`1.x` releases. Version 1.1 intentionally corrects the newly introduced
+`Machine<E>` contract from 1.0 before known downstream adoption; see the
+[1.1 migration guide](migrating-to-1.1.md).
 
 ## Stable
 
@@ -16,6 +18,11 @@ Removing or incompatibly changing these requires a new major version. Every
 pull request is checked against its protected base revision with
 `cargo-semver-checks`; generated API and DSL behavior also remain covered by
 compile-pass, compile-fail, and runtime tests.
+
+The compatibility workflow contains one exact exception for the owner-approved
+1.0.0 to 1.1.0 `Machine<E>` correction. It synthesizes a baseline containing
+only that authorized trait delta, applies patch-level enforcement to every
+other public API, and verifies that an unrelated public removal still fails.
 
 ## Not covered by semantic versioning
 

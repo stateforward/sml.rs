@@ -1,6 +1,6 @@
 //! CD-player throughput workload matching `sml.cpp/benchmark/simple/sml_player_sm.hpp`.
 
-use sml::sml;
+use sml::{sml, Machine};
 use std::time::Instant;
 
 pub struct OpenClose;
@@ -72,37 +72,74 @@ fn barrier<T>(value: &mut T) {
     std::hint::black_box(value);
 }
 
+#[inline(always)]
+fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
+    let _ = Machine::process_event(sm, event);
+}
+
 fn run(sm: &mut PlayerStateMachine<Context>) {
     for _ in 0..1_000_000 {
-        let _ = sm.process_event(OpenClose);
+        process(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
-        let _ = sm.process_event(OpenClose);
+        process(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
-        let _ = sm.process_event(CdDetected);
+        process(sm, PlayerEvents::CdDetected(CdDetected));
         barrier(sm);
-        let _ = sm.process_event(Play);
+        process(sm, PlayerEvents::Play(Play));
         barrier(sm);
-        let _ = sm.process_event(Pause);
+        process(sm, PlayerEvents::Pause(Pause));
         barrier(sm);
-        let _ = sm.process_event(EndPause);
+        process(sm, PlayerEvents::EndPause(EndPause));
         barrier(sm);
-        let _ = sm.process_event(Pause);
+        process(sm, PlayerEvents::Pause(Pause));
         barrier(sm);
-        let _ = sm.process_event(Stop);
+        process(sm, PlayerEvents::Stop(Stop));
         barrier(sm);
-        let _ = sm.process_event(Stop);
+        process(sm, PlayerEvents::Stop(Stop));
         barrier(sm);
-        let _ = sm.process_event(OpenClose);
+        process(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
-        let _ = sm.process_event(OpenClose);
+        process(sm, PlayerEvents::OpenClose(OpenClose));
+        barrier(sm);
+    }
+}
+
+async fn run_async(sm: &mut PlayerStateMachine<Context>) {
+    for _ in 0..1_000_000 {
+        let _ = Machine::process_event_async(sm, PlayerEvents::OpenClose(OpenClose)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::OpenClose(OpenClose)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::CdDetected(CdDetected)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::Play(Play)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::Pause(Pause)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::EndPause(EndPause)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::Pause(Pause)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::Stop(Stop)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::Stop(Stop)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::OpenClose(OpenClose)).await;
+        barrier(sm);
+        let _ = Machine::process_event_async(sm, PlayerEvents::OpenClose(OpenClose)).await;
         barrier(sm);
     }
 }
 
 fn main() {
     let mut sm = PlayerStateMachine::new(Context);
+    let async_mode = std::env::args().nth(1).as_deref() == Some("async");
     let start = Instant::now();
-    run(&mut sm);
+    if async_mode {
+        smol::block_on(run_async(&mut sm));
+    } else {
+        run(&mut sm);
+    }
     let elapsed = start.elapsed();
 
     assert!(matches!(sm.state(), PlayerStates::Empty));

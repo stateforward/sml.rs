@@ -72,12 +72,49 @@ jobs:
           mkdir .semver-baseline
           git archive "${BASELINE_REF}" | tar -x -C .semver-baseline
           python3 scripts/prepare_semver_baseline.py .semver-baseline
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      - name: Prepare exact compatibility contract
+        id: compatibility
+        run: |
+          current=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          baseline=$(sed -n 's/^version = "\([^"]*\)"/\1/p' .semver-baseline/Cargo.toml | head -1)
+          if [ "${baseline}" = "1.0.0" ] && [ "${current}" = "1.1.0" ]; then
+            cp -R .semver-baseline .semver-authorized
+            python3 scripts/prepare_machine_1_1_semver_baseline.py .semver-authorized
+            echo "baseline_root=.semver-authorized" >> "${GITHUB_OUTPUT}"
+            echo "machine_exception=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "baseline_root=.semver-baseline" >> "${GITHUB_OUTPUT}"
+            echo "machine_exception=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Enforce compatibility outside the exact Machine exception
+        uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: stateforward-sml
           feature-group: all-features
-          baseline-root: .semver-baseline
+          baseline-root: ${{ steps.compatibility.outputs.baseline_root }}
           release-type: patch
+      - name: Prepare unrelated-break negative control
+        if: steps.compatibility.outputs.machine_exception == 'true'
+        run: |
+          mkdir .semver-negative
+          git archive HEAD | tar -x -C .semver-negative
+          python3 scripts/prepare_semver_negative_control.py .semver-negative
+      - name: Prove unrelated breaking changes still fail
+        if: steps.compatibility.outputs.machine_exception == 'true'
+        id: negative_control
+        continue-on-error: true
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          manifest-path: .semver-negative/Cargo.toml
+          package: stateforward-sml
+          feature-group: all-features
+          baseline-root: .semver-authorized
+          release-type: patch
+      - name: Require the negative control to fail
+        if: steps.compatibility.outputs.machine_exception == 'true'
+        env:
+          NEGATIVE_OUTCOME: ${{ steps.negative_control.outcome }}
+        run: test "${NEGATIVE_OUTCOME}" = failure
 
   links:
     name: Documentation links

@@ -3,6 +3,19 @@ use sml::utility::{
     HierarchicalDispatch, OrthogonalRegions, QueueFull, SmPool,
 };
 use sml::{Machine as MachineTrait, Terminated};
+use std::future::Future;
+use std::task::{Context, Poll, Waker};
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let mut context = Context::from_waker(Waker::noop());
+    let mut future = Box::pin(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {}
+        }
+    }
+}
 
 #[derive(Default)]
 struct Machine {
@@ -85,12 +98,74 @@ fn dispatch_table_routes_contiguous_runtime_ids() {
 
 impl MachineTrait<Event> for Machine {
     type State = i32;
-    type Error = ();
 
-    fn process(&mut self, event: Event) -> Result<&Self::State, Self::Error> {
+    fn process_event(&mut self, event: Event) -> bool {
         dispatch(self, event);
-        Ok(&self.value)
+        true
     }
+}
+
+#[test]
+fn machine_trait_async_entry_point_awaits_inline_rtc() {
+    block_on(async {
+        let mut machine = Machine { value: 3 };
+        assert!(MachineTrait::process_event_async(&mut machine, Event::Add(4)).await);
+        assert_eq!(machine.value, 7);
+    });
+}
+
+#[derive(Default)]
+struct PendingMachine {
+    value: i32,
+    polls: usize,
+}
+
+impl MachineTrait<Event> for PendingMachine {
+    type State = i32;
+
+    fn process_event(&mut self, event: Event) -> bool {
+        match event {
+            Event::Add(value) => self.value += value,
+            Event::Clear => self.value = 0,
+        }
+        true
+    }
+
+    fn process_event_async(&mut self, event: Event) -> impl core::future::Future<Output = bool> {
+        let mut event = Some(event);
+        core::future::poll_fn(move |cx| {
+            self.polls += 1;
+            if self.polls == 1 {
+                cx.waker().wake_by_ref();
+                core::task::Poll::Pending
+            } else {
+                core::task::Poll::Ready(
+                    self.process_event(
+                        event
+                            .take()
+                            .expect("pending future completed more than once"),
+                    ),
+                )
+            }
+        })
+    }
+}
+
+async fn process_generic_async<M, E>(machine: &mut M, event: E) -> bool
+where
+    M: MachineTrait<E>,
+{
+    MachineTrait::process_event_async(machine, event).await
+}
+
+#[test]
+fn machine_trait_override_can_borrow_and_remain_pending_without_boxing() {
+    block_on(async {
+        let mut machine = PendingMachine::default();
+        assert!(process_generic_async(&mut machine, Event::Add(9)).await);
+        assert_eq!(machine.polls, 2);
+        assert_eq!(machine.value, 9);
+    });
 }
 
 #[test]

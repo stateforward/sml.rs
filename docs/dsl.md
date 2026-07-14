@@ -154,6 +154,19 @@ Prefix a callback with `async` in a guard or action position to generate an
 async machine, for example `[async ready] / async send`. Rust futures provide
 the coroutine behavior directly.
 
+Generated synchronous flat machines without a temporary call-scoped context
+implement `Machine<E>`. Generic callers can use `process_event` directly or
+await `process_event_async` for the same run-to-completion operation. Both
+report event acceptance as `bool`, matching the `sml.cpp` `co_sm` contract; the
+generated machine's inherent `process_event` retains the detailed Rust
+`Result`. The async trait entry point is an allocation-free future using the
+uncontended inline RTC fast path. This is independent of async guards and
+actions. Generic callers pass the generated event enum; inherent methods also
+accept external event types that convert into that enum. Orthogonal, composite,
+async-callback, and temporary-context machines retain their shape-specific
+inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
+completion remains separate work.
+
 Action sequences accept `eval [guard] / action` in any position. The nested
 action runs only when its guard expression passes, while surrounding actions
 retain their original order. Both the eval guard and action may be `async`.

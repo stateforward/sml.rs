@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "stateforward-sml"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "derive_more",
  "serde",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "stateforward-sml-macros"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proc-macro2",
  "quote",

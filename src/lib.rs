@@ -16,11 +16,17 @@ pub mod utility;
 pub trait Machine<E> {
     /// Generated state enum.
     type State;
-    /// Generated processing error.
-    type Error;
 
-    /// Processes one event.
-    fn process(&mut self, event: E) -> Result<&Self::State, Self::Error>;
+    /// Processes one event to run-to-completion and reports whether it was
+    /// accepted.
+    fn process_event(&mut self, event: E) -> bool;
+
+    /// Processes one event to run-to-completion and returns its acceptance as a
+    /// future. The default inline path does not allocate.
+    #[inline]
+    fn process_event_async(&mut self, event: E) -> impl core::future::Future<Output = bool> {
+        core::future::ready(self.process_event(event))
+    }
 }
 
 /// Reports whether a state machine has reached its terminal state.

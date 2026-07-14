@@ -440,7 +440,7 @@ impl<S> OrthogonalRegions<S> {
         E: Clone,
     {
         self.regions.as_mut().iter_mut().fold(0, |handled, region| {
-            handled + usize::from(region.process(event.clone()).is_ok())
+            handled + usize::from(Machine::process_event(region, event.clone()))
         })
     }
 }
