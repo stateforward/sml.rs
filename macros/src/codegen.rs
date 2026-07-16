@@ -1345,7 +1345,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     };
     let (temporary_context_impl_generics, _, temporary_context_where_clause) =
         temporary_context_generics.split_for_impl();
-    let initialize_generics = if has_anonymous_completion {
+    let initialize_uses_temporary_context = sm.temporary_context_type.is_some()
+        && (has_anonymous_completion || !entry_actions.is_empty());
+    let initialize_generics = if initialize_uses_temporary_context {
         temporary_context_generics.clone()
     } else {
         syn::Generics::default()
@@ -1556,7 +1558,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             #event_dispatch
         }
     };
-    let initialize_context = if has_anonymous_completion {
+    let initialize_context = if initialize_uses_temporary_context {
         temporary_context.clone()
     } else {
         quote! {}

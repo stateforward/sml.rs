@@ -350,6 +350,33 @@ fn temporary_context_generics_propagate_to_non_generic_callbacks() {
     assert!(values.is_empty());
 }
 
+pub struct TemporaryEntryValues<T>(Vec<T>);
+
+sml! {
+    GenericTemporaryEntry<T: Default>[temporary_context: &mut TemporaryEntryValues<T>] {
+        *Idle + on_entry<_> / seed_entry,
+         Idle + event<TemporaryContextEvent<T>> = X,
+    }
+}
+
+struct TemporaryEntryContext;
+
+impl GenericTemporaryEntryStateMachineContext for TemporaryEntryContext {
+    fn seed_entry<T: Default>(&mut self, values: &mut TemporaryEntryValues<T>) -> Result<(), ()> {
+        values.0.push(T::default());
+        Ok(())
+    }
+}
+
+#[test]
+fn initialize_retains_generic_temporary_context_for_initial_entry_actions() {
+    let mut machine = GenericTemporaryEntryStateMachine::new(TemporaryEntryContext);
+    let mut values = TemporaryEntryValues(Vec::<String>::new());
+
+    machine.initialize(&mut values).unwrap();
+    assert_eq!(values.0, [String::new()]);
+}
+
 pub struct TemporaryLifecycleEvent<T>(T);
 
 sml! {
