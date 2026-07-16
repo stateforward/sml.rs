@@ -377,6 +377,31 @@ fn initialize_retains_generic_temporary_context_for_initial_entry_actions() {
     assert_eq!(values.0, [String::new()]);
 }
 
+pub struct LaterEntryEvent<T>(T);
+
+sml! {
+    GenericLaterEntry<T>[temporary_context: &mut TemporaryEntryValues<T>] {
+        *Idle + event<LaterEntryEvent<T>> = Ready,
+         Ready + on_entry<_> / later_entry,
+    }
+}
+
+struct LaterEntryContext;
+
+impl GenericLaterEntryStateMachineContext for LaterEntryContext {
+    fn later_entry<T>(&mut self, values: &mut TemporaryEntryValues<T>) -> Result<(), ()> {
+        values.0.clear();
+        Ok(())
+    }
+}
+
+#[test]
+fn initialize_omits_generic_context_for_later_state_entry_actions() {
+    let mut machine = GenericLaterEntryStateMachine::new(LaterEntryContext);
+
+    machine.initialize().unwrap();
+}
+
 pub struct TemporaryLifecycleEvent<T>(T);
 
 sml! {
