@@ -123,13 +123,27 @@ sml! {
     where
         T: Clone + 'operation,
     {
-        *"idle"_s + event<&'operation mut Operation<T>> / complete_operation,
+        *"idle"_s + event<&'operation mut Operation<T>> [operation_ready]
+            / (complete_operation, observe_completed_operation),
     }
 }
 
-struct OperationContext;
+#[derive(Default)]
+struct OperationContext {
+    completed: usize,
+}
 
 impl GenericOperationStateMachineContext for OperationContext {
+    fn operation_ready<'operation, T>(
+        &self,
+        operation: &'operation mut Operation<T>,
+    ) -> Result<bool, ()>
+    where
+        T: Clone + 'operation,
+    {
+        Ok(operation.result.is_none())
+    }
+
     fn complete_operation<'operation, T>(
         &mut self,
         operation: &'operation mut Operation<T>,
@@ -140,11 +154,23 @@ impl GenericOperationStateMachineContext for OperationContext {
         operation.result = Some(operation.input.clone());
         Ok(())
     }
+
+    fn observe_completed_operation<'operation, T>(
+        &mut self,
+        operation: &'operation mut Operation<T>,
+    ) -> Result<(), ()>
+    where
+        T: Clone + 'operation,
+    {
+        assert!(operation.result.is_some());
+        self.completed += 1;
+        Ok(())
+    }
 }
 
 #[test]
 fn mutable_borrowed_typed_operation_completes_synchronously() {
-    let mut machine = GenericOperationStateMachine::new(OperationContext);
+    let mut machine = GenericOperationStateMachine::new(OperationContext::default());
     let mut operation = Operation {
         input: String::from("answer"),
         result: None,
@@ -153,6 +179,7 @@ fn mutable_borrowed_typed_operation_completes_synchronously() {
     machine.process_event(&mut operation).unwrap();
 
     assert_eq!(operation.result.as_deref(), Some("answer"));
+    assert_eq!(machine.context().completed, 1);
 }
 
 pub struct ConstPacket<T, const N: usize>([T; N]);

@@ -201,6 +201,11 @@ family; lifetimes may remain event-specific. See the
 [generic-event guide](docs/dsl.md#generic-event-types) and the
 [`generic_events` example](examples/generic_events.rs).
 
+Because type and const parameters are dispatch-scoped, they cannot appear in
+stored state data or typed exception payloads. A declared lifetime may be
+shared with state data; generated dispatch methods reuse that machine lifetime.
+A `where` clause requires at least one declared parameter.
+
 ## Orthogonal and composite machines
 
 Multiple `*` rows create orthogonal regions. One borrowed event is broadcast

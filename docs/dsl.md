@@ -135,7 +135,17 @@ at the call and cannot escape dispatch. A single machine value may process, for
 example, both `Owned<u32, 4>` and `Owned<String, 8>` when its generic callback
 implementation satisfies the declared bounds. Parameter defaults are rejected
 because Rust does not permit defaults on the generated generic callback and
-dispatch methods.
+dispatch methods. A `where` clause therefore also requires at least one
+declared parameter after the machine name.
+
+Type and const parameters are dispatch-scoped: they may appear in typed event
+payloads and callbacks, but not in stored state payloads or typed exception
+payloads. Stored state would otherwise need to choose one monomorphization for
+the lifetime of the machine, while typed exception recovery is generated
+outside the individual dispatch method. The macro rejects both forms with a
+targeted diagnostic. A declared lifetime may also appear in state data; in that
+case the lifetime belongs to the machine and is reused, rather than redeclared,
+by `process_event`.
 
 Generic event declarations currently apply to flat tables. Orthogonal and
 composite generators have fixed event enums and reject them with a targeted

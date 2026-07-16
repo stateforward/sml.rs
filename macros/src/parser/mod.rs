@@ -446,9 +446,62 @@ impl ParsedStateMachine {
             ));
         }
         for transition in &sm.transitions {
+            for (state, data_type) in [
+                (
+                    &transition.in_state.ident,
+                    transition.in_state.data_type.as_ref(),
+                ),
+                (
+                    &transition.out_state.ident,
+                    transition.out_state.data_type.as_ref(),
+                ),
+            ] {
+                let Some(data_type) = data_type else {
+                    continue;
+                };
+                for generic in sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                }) {
+                    if Self::type_uses_generic_param(data_type, generic) {
+                        let name = match generic {
+                            GenericParam::Type(param) => param.ident.to_string(),
+                            GenericParam::Const(param) => param.ident.to_string(),
+                            GenericParam::Lifetime(_) => unreachable!(),
+                        };
+                        return Err(parse::Error::new(
+                            state.span(),
+                            format!(
+                                "stored state data cannot use dispatch-scoped generic event parameter `{name}`; only lifetimes may be shared with machine state"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for transition in &sm.transitions {
             let Some(event_type) = transition.event.data_type.as_ref() else {
                 continue;
             };
+            if transition.event.kind == EventKind::Exception {
+                if let Some(generic) = sm
+                    .event_generics
+                    .params
+                    .iter()
+                    .find(|generic| Self::type_uses_generic_param(event_type, generic))
+                {
+                    let name = match generic {
+                        GenericParam::Lifetime(param) => param.lifetime.to_string(),
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                    };
+                    return Err(parse::Error::new(
+                        transition.event.ident.span(),
+                        format!(
+                            "typed exception payloads cannot use dispatch-scoped generic event parameter `{name}`"
+                        ),
+                    ));
+                }
+            }
             let uses_declared_generic = sm
                 .event_generics
                 .params

@@ -13,7 +13,9 @@ All notable changes to this project are documented here. This project follows
   mutable-borrow handoffs, generated event enums, inherent dispatch, and
   `Machine<E>` implementations without type erasure or allocation. Every
   external event must identify all declared type and const parameters; the
-  macro diagnoses parameter subsets that cannot infer the single event family.
+  macro diagnoses parameter subsets that cannot infer the single event family,
+  reuses lifetimes shared with stored state, and rejects dispatch-only type or
+  const parameters in state and typed-exception storage.
 
 ## 1.1.0 - 2026-07-14
 

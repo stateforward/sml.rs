@@ -1224,7 +1224,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
     // lifetimes that exists in #events_type_name but not in #states_type_name
     let event_unique_lifetimes = event_lifetimes - state_lifetimes;
-    let dispatch_generics = sm.event_generics_with_lifetimes(&event_unique_lifetimes);
+    let mut dispatch_generics = sm.event_generics_with_lifetimes(&event_unique_lifetimes);
+    dispatch_generics.params = dispatch_generics
+        .params
+        .into_iter()
+        .filter(|param| {
+            !matches!(
+                param,
+                syn::GenericParam::Lifetime(param)
+                    if state_lifetimes.as_slice().contains(&param.lifetime)
+            )
+        })
+        .collect();
     let (dispatch_impl_generics, _, dispatch_where_clause) = dispatch_generics.split_for_impl();
     let mut process_event_generics = dispatch_generics.clone();
     process_event_generics

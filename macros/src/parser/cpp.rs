@@ -44,6 +44,14 @@ impl parse::Parse for SmlDefinition {
         if input.peek(Token![where]) {
             event_generics.where_clause = Some(input.parse::<WhereClause>()?);
         }
+        if event_generics.params.is_empty() {
+            if let Some(where_clause) = &event_generics.where_clause {
+                return Err(syn::Error::new(
+                    where_clause.where_token.span,
+                    "a generic event `where` clause requires declared parameters after the machine name",
+                ));
+            }
+        }
         if let Some(defaulted) = event_generics.params.iter().find(|param| match param {
             syn::GenericParam::Type(param) => param.default.is_some(),
             syn::GenericParam::Const(param) => param.default.is_some(),
