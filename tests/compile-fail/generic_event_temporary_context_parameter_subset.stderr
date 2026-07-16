@@ -1,0 +1,5 @@
+error: a generic temporary context must use declared parameter `U` so generated callbacks can infer the complete event family
+ --> tests/compile-fail/generic_event_temporary_context_parameter_subset.rs:6:53
+  |
+6 |     TemporaryContextSubset<T, U>[temporary_context: &mut Vec<T>] {
+  |                                                     ^

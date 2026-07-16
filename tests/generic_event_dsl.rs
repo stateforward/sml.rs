@@ -301,3 +301,155 @@ fn completion_origin_keeps_only_the_lifetimes_used_by_its_variants() {
     assert!(machine.is_terminated());
     assert_eq!(machine.context().finished, 1);
 }
+
+pub struct TemporaryContextEvent<T>(T);
+
+sml! {
+    GenericTemporaryContext<T: Clone>[temporary_context: &mut Vec<T>] {
+        *Idle + event<TemporaryContextEvent<T>> / push_value,
+         Idle + Reset / clear_values,
+    }
+}
+
+struct TemporaryContextCallbacks;
+
+impl GenericTemporaryContextStateMachineContext for TemporaryContextCallbacks {
+    fn push_value<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        event: &TemporaryContextEvent<T>,
+    ) -> Result<(), ()>
+    where
+        T: Clone,
+    {
+        values.push(event.0.clone());
+        Ok(())
+    }
+
+    fn clear_values<T>(&mut self, values: &mut Vec<T>) -> Result<(), ()> {
+        values.clear();
+        Ok(())
+    }
+}
+
+#[test]
+fn temporary_context_generics_propagate_to_non_generic_callbacks() {
+    let mut machine = GenericTemporaryContextStateMachine::new(TemporaryContextCallbacks);
+    let mut values = Vec::new();
+
+    machine
+        .process_event(&mut values, TemporaryContextEvent(String::from("value")))
+        .unwrap();
+    assert_eq!(values, ["value"]);
+
+    machine
+        .process_event(&mut values, GenericTemporaryContextEvents::<String>::Reset)
+        .unwrap();
+    assert!(values.is_empty());
+}
+
+pub struct TemporaryLifecycleEvent<T>(T);
+
+sml! {
+    GenericTemporaryLifecycle<T>[temporary_context: &mut Vec<T>] {
+        *Boot + completion<_> / prepare_values = Idle,
+         Idle + event<TemporaryLifecycleEvent<T>> / fail_event = X,
+         Idle + exception<_> / recover_values = X,
+    }
+}
+
+struct TemporaryLifecycleContext;
+
+impl GenericTemporaryLifecycleStateMachineContext for TemporaryLifecycleContext {
+    fn prepare_values<T>(&mut self, values: &mut Vec<T>) -> Result<(), ()> {
+        values.clear();
+        Ok(())
+    }
+
+    fn fail_event<T>(
+        &mut self,
+        values: &mut Vec<T>,
+        event: &TemporaryLifecycleEvent<T>,
+    ) -> Result<(), ()> {
+        let _ = (values, &event.0);
+        Err(())
+    }
+
+    fn recover_values<T>(&mut self, values: &mut Vec<T>) -> Result<(), ()> {
+        values.clear();
+        Ok(())
+    }
+}
+
+#[test]
+fn temporary_context_generics_propagate_through_initialize_and_exception_paths() {
+    let mut machine = GenericTemporaryLifecycleStateMachine::new(TemporaryLifecycleContext);
+    let mut values = vec![1_u32];
+
+    machine.initialize(&mut values).unwrap();
+    assert!(values.is_empty());
+    assert!(machine.is(&GenericTemporaryLifecycleStates::Idle));
+
+    machine
+        .process_event(&mut values, TemporaryLifecycleEvent(7_u32))
+        .unwrap();
+    assert!(machine.is_terminated());
+}
+
+#[derive(Clone)]
+pub struct CompletionAfterInitialization<T>(T);
+
+sml! {
+    GenericAnonymousCompletion<T: Clone> {
+        *Idle + completion<_> = Ready,
+         Ready + event<CompletionAfterInitialization<T>> = Finishing,
+         Finishing + completion<CompletionAfterInitialization> = X,
+    }
+}
+
+struct AnonymousCompletionContext;
+impl GenericAnonymousCompletionStateMachineContext for AnonymousCompletionContext {}
+
+#[test]
+fn anonymous_initialization_does_not_require_event_family_inference() {
+    let mut machine = GenericAnonymousCompletionStateMachine::new(AnonymousCompletionContext);
+
+    machine.initialize().unwrap();
+    assert!(machine.is(&GenericAnonymousCompletionStates::Ready));
+
+    machine
+        .process_event(CompletionAfterInitialization(7_u32))
+        .unwrap();
+    assert!(machine.is_terminated());
+}
+
+pub struct NestedLifetimeEvent<A, T>(A, T);
+
+sml! {
+    GenericNestedLifetime<T> {
+        *Idle + event<NestedLifetimeEvent<Option<&'event u8>, T>> / inspect_nested,
+    }
+}
+
+struct NestedLifetimeContext;
+
+impl GenericNestedLifetimeStateMachineContext for NestedLifetimeContext {
+    #[allow(clippy::needless_lifetimes)]
+    fn inspect_nested<'event, T>(
+        &mut self,
+        event: &NestedLifetimeEvent<Option<&'event u8>, T>,
+    ) -> Result<(), ()> {
+        let _ = (&event.0, &event.1);
+        Ok(())
+    }
+}
+
+#[test]
+fn event_specific_lifetimes_are_collected_from_nested_type_arguments() {
+    let value = 9_u8;
+    let mut machine = GenericNestedLifetimeStateMachine::new(NestedLifetimeContext);
+
+    machine
+        .process_event(NestedLifetimeEvent(Some(&value), String::from("nested")))
+        .unwrap();
+}

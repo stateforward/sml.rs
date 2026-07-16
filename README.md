@@ -196,9 +196,13 @@ monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
 directly to its callbacks; the borrow lasts until dispatch completes, including
 through `.await` for an asynchronous machine.
 Bounds and `where` clauses are copied to every generated event API that needs
-them. Every external event in one generic table must carry every declared type
-and const parameter so `process_event` can infer the single generated event
-family; lifetimes may remain event-specific. See the
+them. Every declared parameter must appear in at least one event payload, and
+every external event in one generic table must carry every declared type and
+const parameter so `process_event` can infer the single generated event family;
+lifetimes may remain event-specific, including inside nested type arguments.
+Temporary contexts may use event parameters and propagate them to every callback,
+but they must carry every declared type and const parameter and do not by
+themselves define an event family. See the
 [generic-event guide](docs/dsl.md#generic-event-types) and the
 [`generic_events` example](examples/generic_events.rs).
 

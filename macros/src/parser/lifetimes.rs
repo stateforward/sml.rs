@@ -1,7 +1,8 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use std::ops::Sub;
-use syn::{parse, spanned::Spanned, GenericArgument, Lifetime, PathArguments, Type};
+use syn::visit::{self, Visit};
+use syn::{parse, spanned::Spanned, Lifetime, Type, TypeReference};
 
 #[derive(Default, Debug, Clone)]
 pub struct Lifetimes {
@@ -48,38 +49,35 @@ impl Lifetimes {
 
     /// Extracts lifetimes from a [`Type`]
     pub fn insert_from_type(&mut self, data_type: &Type) -> Result<(), parse::Error> {
-        match data_type {
-            Type::Reference(tr) => {
-                if let Some(lifetime) = &tr.lifetime {
-                    self.insert(lifetime);
-                } else {
-                    return Err(parse::Error::new(
-                        data_type.span(),
-                        "This event's data lifetime is not defined, consider adding a lifetime.",
-                    ));
-                }
-            }
-            Type::Path(tp) => {
-                let punct = &tp.path.segments;
-                for p in punct.iter() {
-                    if let PathArguments::AngleBracketed(abga) = &p.arguments {
-                        for arg in &abga.args {
-                            if let GenericArgument::Lifetime(lifetime) = &arg {
-                                self.insert(lifetime);
-                            }
-                        }
-                    }
-                }
-            }
-            Type::Tuple(tuple) => {
-                for elem in tuple.elems.iter() {
-                    self.insert_from_type(elem)?;
-                }
-            }
-            _ => {}
+        struct Collector<'a> {
+            lifetimes: &'a mut Lifetimes,
+            missing_reference_lifetime: Option<proc_macro2::Span>,
         }
 
-        Ok(())
+        impl<'ast> Visit<'ast> for Collector<'_> {
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                self.lifetimes.insert(lifetime);
+            }
+
+            fn visit_type_reference(&mut self, reference: &'ast TypeReference) {
+                if reference.lifetime.is_none() && self.missing_reference_lifetime.is_none() {
+                    self.missing_reference_lifetime = Some(reference.span());
+                }
+                visit::visit_type_reference(self, reference);
+            }
+        }
+
+        let mut collector = Collector {
+            lifetimes: self,
+            missing_reference_lifetime: None,
+        };
+        collector.visit_type(data_type);
+        collector.missing_reference_lifetime.map_or(Ok(()), |span| {
+            Err(parse::Error::new(
+                span,
+                "This event's data lifetime is not defined, consider adding a lifetime.",
+            ))
+        })
     }
 }
 
@@ -138,9 +136,10 @@ mod tests {
 
     #[test]
     fn extracts_nested_and_generic_lifetimes_without_duplicates() {
-        let lifetimes = Lifetimes::from_type(&ty("(&'a str, Wrapper<'b, &'a u8>)")).unwrap();
-        assert_eq!(lifetimes.as_slice().len(), 2);
-        assert_eq!(quote!(#lifetimes).to_string(), "'a , 'b ,");
+        let lifetimes =
+            Lifetimes::from_type(&ty("(&'a str, Wrapper<'b, Option<&'c u8>, &'a u8>)")).unwrap();
+        assert_eq!(lifetimes.as_slice().len(), 3);
+        assert_eq!(quote!(#lifetimes).to_string(), "'a , 'b , 'c ,");
     }
 
     #[test]

@@ -1136,6 +1136,30 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         })
         .collect();
+    let anonymous_completion_state_arms: Vec<TokenStream> = transitions
+        .values()
+        .zip(in_states.iter().zip(events.iter().zip(code_blocks.iter())))
+        .filter_map(|(event_mappings, (in_state, (events, code_blocks)))| {
+            event_mappings
+                .values()
+                .zip(events.iter().zip(code_blocks.iter()))
+                .find(|(mapping, _)| {
+                    mapping.event_kind == EventKind::Completion && mapping.event_wildcard
+                })
+                .map(|(_, (_, code_block))| {
+                    quote! {
+                        #states_type_name::#in_state => {
+                            #code_block
+
+                            #[allow(unreachable_code)]
+                            {
+                                Ok(false)
+                            }
+                        }
+                    }
+                })
+        })
+        .collect();
 
     let starting_state = &sm.starting_state;
     let initial_entry_arms: Vec<_> = sm
@@ -1299,10 +1323,28 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             .get(&event.to_string())
             .filter(|event_type| sm.type_uses_event_generics(event_type))
     });
-    let completion_generics =
+    let completion_origin_generics =
         sm.completion_generics_with_lifetimes(&completion_lifetimes, completion_generic_type);
-    let (completion_impl_generics, completion_type_generics, completion_where_clause) =
-        completion_generics.split_for_impl();
+    let (
+        completion_origin_impl_generics,
+        completion_origin_type_generics,
+        completion_origin_where_clause,
+    ) = completion_origin_generics.split_for_impl();
+    let temporary_context_uses_event_generics = sm.temporary_context_uses_event_generics();
+    let process_completion_generics = if temporary_context_uses_event_generics {
+        sm.event_generics_with_lifetimes(&completion_lifetimes)
+    } else {
+        completion_origin_generics.clone()
+    };
+    let (process_completion_impl_generics, _, process_completion_where_clause) =
+        process_completion_generics.split_for_impl();
+    let temporary_context_generics = if temporary_context_uses_event_generics {
+        sm.event_generics.clone()
+    } else {
+        syn::Generics::default()
+    };
+    let (temporary_context_impl_generics, _, temporary_context_where_clause) =
+        temporary_context_generics.split_for_impl();
     let completion_origin_clone_arms: Vec<_> = completion_events
         .iter()
         .map(|event| {
@@ -1335,8 +1377,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     };
     let completion_origin_definition = if has_completion_events {
         quote! {
-            enum #completion_origin_type_name #completion_impl_generics
-                #completion_where_clause
+            enum #completion_origin_type_name #completion_origin_impl_generics
+                #completion_origin_where_clause
             {
                 #anonymous_completion_variant
                 #(#completion_origin_variants),*
@@ -1382,15 +1424,33 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let process_completion = if has_completion_events {
         quote! {
             #[inline]
-            #is_async fn process_completion #completion_impl_generics(
+            #is_async fn process_completion #process_completion_impl_generics(
                 &mut self,
                 #temporary_context
-                origin: &#completion_origin_type_name #completion_type_generics
+                origin: &#completion_origin_type_name #completion_origin_type_generics
             ) -> Result<bool, #error_type>
-                #completion_where_clause
+                #process_completion_where_clause
             {
                 match self.state {
                     #(#completion_state_arms),*
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let process_anonymous_completion = if has_anonymous_completion {
+        quote! {
+            #[inline]
+            #is_async fn process_anonymous_completion #temporary_context_impl_generics(
+                &mut self,
+                #temporary_context
+            ) -> Result<bool, #error_type>
+                #temporary_context_where_clause
+            {
+                match self.state {
+                    #(#anonymous_completion_state_arms,)*
+                    _ => Ok(false),
                 }
             }
         }
@@ -1408,11 +1468,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     });
     let process_exception = if has_exception_handlers {
         quote! {
-            #is_async fn process_exception(
+            #is_async fn process_exception #temporary_context_impl_generics(
                 &mut self,
                 #temporary_context
                 error: #error_type,
-            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type> {
+            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type>
+                #temporary_context_where_clause
+            {
                 #exception_error_binding
                 match self.state {
                     #(#exception_state_arms,)*
@@ -1495,11 +1557,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let initialize = {
         let stabilize = if has_anonymous_completion {
             quote! {
-                let completion_origin =
-                    #completion_origin_type_name::__AnyCompletion;
-                while self.process_completion(
+                while self.process_anonymous_completion(
                     #completion_context_call
-                    &completion_origin
                 )#completion_await? {}
             }
         } else {
@@ -1508,10 +1567,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         quote! {
             /// Enters the initial state and runs anonymous `completion<_>`
             /// transitions until the machine reaches a stable state.
-            pub #is_async fn initialize(
+            pub #is_async fn initialize #temporary_context_impl_generics(
                 &mut self,
                 #initialize_context
-            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type> {
+            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type>
+                #temporary_context_where_clause
+            {
                 match self.state {
                     #(#initial_entry_arms),*
                 }
@@ -1657,7 +1718,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
             #state_machine_type_name<#state_lifetimes #context_type_ident>
         {
-            #process_completion
+        #process_completion
+        #process_anonymous_completion
             #process_exception
             #initialize
             #queued_dispatch

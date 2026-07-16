@@ -13,6 +13,7 @@ use state_machine::StateMachine;
 
 use input_state::InputState;
 use proc_macro2::{Span, TokenStream};
+use syn::spanned::Spanned;
 
 use crate::parser::event::Transition;
 use std::collections::{hash_map, HashMap, HashSet};
@@ -281,8 +282,12 @@ impl ParsedStateMachine {
         lifetimes: &lifetimes::Lifetimes,
         event_type: Option<&Type>,
     ) -> Generics {
-        let uses_event_generics =
-            event_type.is_some_and(|event_type| self.type_uses_event_generics(event_type));
+        let uses_event_generics = event_type
+            .is_some_and(|event_type| self.type_uses_event_generics(event_type))
+            || self
+                .temporary_context_type
+                .as_ref()
+                .is_some_and(|context| self.type_uses_event_generics(context));
         let generics = if uses_event_generics {
             self.event_generics.clone()
         } else {
@@ -431,6 +436,12 @@ impl ParsedStateMachine {
             .any(|generic| Self::type_uses_generic_param(event_type, generic))
     }
 
+    pub fn temporary_context_uses_event_generics(&self) -> bool {
+        self.temporary_context_type
+            .as_ref()
+            .is_some_and(|context| self.type_uses_event_generics(context))
+    }
+
     pub fn new(mut sm: StateMachine) -> parse::Result<Self> {
         if !sm.event_generics.params.is_empty()
             && sm
@@ -526,6 +537,56 @@ impl ParsedStateMachine {
                         format!(
                             "generic event `{}` must use declared parameter `{name}` so generated dispatch and callbacks can infer the complete event family",
                             transition.event.ident
+                        ),
+                    ));
+                }
+            }
+        }
+        for generic in &sm.event_generics.params {
+            let used_by_event = sm.transitions.iter().any(|transition| {
+                transition
+                    .event
+                    .data_type
+                    .as_ref()
+                    .is_some_and(|event_type| Self::type_uses_generic_param(event_type, generic))
+            });
+            if !used_by_event {
+                let (name, span) = match generic {
+                    GenericParam::Lifetime(param) => {
+                        (param.lifetime.to_string(), param.lifetime.span())
+                    }
+                    GenericParam::Type(param) => (param.ident.to_string(), param.ident.span()),
+                    GenericParam::Const(param) => (param.ident.to_string(), param.ident.span()),
+                };
+                return Err(parse::Error::new(
+                    span,
+                    format!(
+                        "declared generic event parameter `{name}` must be used by at least one event payload"
+                    ),
+                ));
+            }
+        }
+        if let Some(context) = sm.temporary_context_type.as_ref().filter(|context| {
+            sm.event_generics
+                .params
+                .iter()
+                .any(|generic| Self::type_uses_generic_param(context, generic))
+        }) {
+            for generic in
+                sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                })
+            {
+                if !Self::type_uses_generic_param(context, generic) {
+                    let name = match generic {
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                        GenericParam::Lifetime(_) => unreachable!(),
+                    };
+                    return Err(parse::Error::new(
+                        context.span(),
+                        format!(
+                            "a generic temporary context must use declared parameter `{name}` so generated callbacks can infer the complete event family"
                         ),
                     ));
                 }

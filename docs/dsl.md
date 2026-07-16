@@ -155,6 +155,13 @@ dispatch-scoped family of monomorphizations. Concrete event types such as
 `event<Message<u32>>` remain available in every machine shape and may use the
 normal queue features.
 
+Every declared event parameter must occur in at least one event payload. Each
+external event must carry every declared type and const parameter; lifetimes may
+remain event-specific and may occur inside nested type arguments. A temporary
+context may use event parameters when the event payloads define the family. It
+must carry every declared type and const parameter so those parameters can be
+propagated to callbacks for otherwise non-generic triggers.
+
 Multiple leading `*` states define orthogonal regions exactly as in `sml.cpp`:
 
 ```rust
