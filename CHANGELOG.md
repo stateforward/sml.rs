@@ -11,7 +11,9 @@ All notable changes to this project are documented here. This project follows
 - Add dispatch-scoped lifetime, type, and const generics for typed events in
   flat `sml!` tables, including propagated bounds and `where` clauses, direct
   mutable-borrow handoffs, generated event enums, inherent dispatch, and
-  `Machine<E>` implementations without type erasure or allocation.
+  `Machine<E>` implementations without type erasure or allocation. Every
+  external event must identify all declared type and const parameters; the
+  macro diagnoses parameter subsets that cannot infer the single event family.
 
 ## 1.1.0 - 2026-07-14
 

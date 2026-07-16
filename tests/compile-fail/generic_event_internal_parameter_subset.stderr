@@ -1,0 +1,5 @@
+error: generic event `Finished` must use declared parameter `N` so generated dispatch and callbacks can infer the complete event family
+ --> tests/compile-fail/generic_event_internal_parameter_subset.rs:9:29
+  |
+9 |          Ready + completion<Finished>(Finished<T>) / finish = X,
+  |                             ^^^^^^^^

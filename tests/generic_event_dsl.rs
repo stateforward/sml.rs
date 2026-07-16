@@ -85,6 +85,34 @@ fn lifetime_parameterized_event_borrows_only_for_dispatch() {
     assert_eq!(first, "first");
 }
 
+pub struct StaticBorrow<'a>(&'a str);
+
+sml! {
+    ConcreteStatic {
+        *"idle"_s + event<StaticBorrow<'static>> / inspect_static,
+    }
+}
+
+#[derive(Default)]
+struct StaticContext {
+    inspected: usize,
+}
+
+impl ConcreteStaticStateMachineContext for StaticContext {
+    fn inspect_static(&mut self, event: &StaticBorrow<'static>) -> Result<(), ()> {
+        assert_eq!(event.0, "static");
+        self.inspected += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn concrete_static_lifetime_is_not_promoted_to_a_generic_parameter() {
+    let mut machine = ConcreteStaticStateMachine::new(StaticContext::default());
+    machine.process_event(StaticBorrow("static")).unwrap();
+    assert_eq!(machine.context().inspected, 1);
+}
+
 pub struct Operation<T> {
     input: T,
     result: Option<T>,

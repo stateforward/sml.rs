@@ -7,6 +7,25 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{parse_quote, Type};
 
+fn fresh_type_ident(generics: &syn::Generics, base: &str) -> Ident {
+    for suffix in 0_u32.. {
+        let name = if suffix == 0 {
+            base.to_owned()
+        } else {
+            format!("{base}{suffix}")
+        };
+        let occupied = generics.params.iter().any(|param| match param {
+            syn::GenericParam::Type(param) => param.ident == name,
+            syn::GenericParam::Const(param) => param.ident == name,
+            syn::GenericParam::Lifetime(_) => false,
+        });
+        if !occupied {
+            return Ident::new(&name, Span::call_site());
+        }
+    }
+    unreachable!("finite generic parameter list always leaves a fresh identifier")
+}
+
 pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let (sm_name, sm_name_span) = sm
         .name
@@ -22,6 +41,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let state_machine_context_type_name =
         format_ident!("{sm_name}StateMachineContext", span = sm_name_span);
     let event_generics = sm.event_generics_with_lifetimes(&sm.event_data.all_lifetimes);
+    let context_type_ident = fresh_type_ident(&event_generics, "__SmlContext");
+    let event_input_ident = fresh_type_ident(&event_generics, "__SmlEventInput");
     let (event_impl_generics, event_type_generics, event_where_clause) =
         event_generics.split_for_impl();
 
@@ -1128,7 +1149,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let pending_init = async_queue.then(|| quote! { pending: ::sml::utility::EventQueue::new(), });
     let new_sm_code = match sm.state_data.data_types.get(&starting_state_name) {
         Some(st) if type_matches_state(st, &starting_state_name) => quote! {
-            pub fn new(context: __SmlContext) -> Self
+            pub fn new(context: #context_type_ident) -> Self
             where
                 #st: core::default::Default,
             {
@@ -1140,7 +1161,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                 }
             }
 
-            pub const fn new_with_state_data(context: __SmlContext, state_data: #st) -> Self {
+            pub const fn new_with_state_data(context: #context_type_ident, state_data: #st) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state(state_data),
                     context,
@@ -1150,7 +1171,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         },
         Some(st) => quote! {
-            pub const fn new(context: __SmlContext, state_data: #st ) -> Self {
+            pub const fn new(context: #context_type_ident, state_data: #st ) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state (state_data),
                     context,
@@ -1160,7 +1181,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         },
         None => quote! {
-            pub const fn new(context: __SmlContext ) -> Self {
+            pub const fn new(context: #context_type_ident ) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state,
                     context,
@@ -1179,12 +1200,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let dispatch_generics = sm.event_generics_with_lifetimes(&event_unique_lifetimes);
     let (dispatch_impl_generics, _, dispatch_where_clause) = dispatch_generics.split_for_impl();
     let mut process_event_generics = dispatch_generics.clone();
-    process_event_generics.params.push(parse_quote!(EventInput));
+    process_event_generics
+        .params
+        .push(parse_quote!(#event_input_ident));
     process_event_generics
         .make_where_clause()
         .predicates
         .push(parse_quote!(
-            EventInput: Into<#events_type_name #event_type_generics>
+            #event_input_ident: Into<#events_type_name #event_type_generics>
         ));
     let (process_event_impl_generics, _, process_event_where_clause) =
         process_event_generics.split_for_impl();
@@ -1192,7 +1215,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     machine_lifetimes.extend(event_lifetimes);
     let mut machine_impl_generics = sm.event_generics_with_lifetimes(&machine_lifetimes);
     machine_impl_generics.params.push(parse_quote!(
-        __SmlContext: #state_machine_context_type_name
+        #context_type_ident: #state_machine_context_type_name
     ));
     let (machine_impl_generics, _, machine_impl_where_clause) =
         machine_impl_generics.split_for_impl();
@@ -1313,7 +1336,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let error_type = if let Some(fixed_error_type) = &sm.fixed_error_type {
         quote! { #error_type_name<#fixed_error_type> }
     } else if sm.custom_error {
-        quote! { #error_type_name<<__SmlContext as #state_machine_context_type_name>::Error> }
+        quote! { #error_type_name<<#context_type_ident as #state_machine_context_type_name>::Error> }
     } else {
         quote! {#error_type_name}
     };
@@ -1464,7 +1487,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         quote! {
             impl #machine_impl_generics
                 ::sml::Machine<#events_type_name #event_type_generics>
-                for #state_machine_type_name<#state_lifetimes __SmlContext>
+                for #state_machine_type_name<#state_lifetimes #context_type_ident>
                 #machine_impl_where_clause
             {
                 type State = #states_type_name<#state_lifetimes>;
@@ -1482,8 +1505,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         quote! {}
     };
     let terminated_trait_impl = quote! {
-        impl<#state_lifetimes __SmlContext: #state_machine_context_type_name>
-            ::sml::Terminated for #state_machine_type_name<#state_lifetimes __SmlContext>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
+            ::sml::Terminated for #state_machine_type_name<#state_lifetimes #context_type_ident>
         {
             #[inline(always)]
             fn is_terminated(&self) -> bool {
@@ -1586,15 +1609,15 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         }
 
         /// State machine structure definition.
-        pub struct #state_machine_type_name<#state_lifetimes __SmlContext: #state_machine_context_type_name> {
+        pub struct #state_machine_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name> {
             state: #states_type_name <#state_lifetimes>,
-            context: __SmlContext,
+            context: #context_type_ident,
             #deferred_field
             #pending_field
         }
 
-        impl<#state_lifetimes __SmlContext: #state_machine_context_type_name>
-            #state_machine_type_name<#state_lifetimes __SmlContext>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
+            #state_machine_type_name<#state_lifetimes #context_type_ident>
         {
             #process_completion
             #process_exception
@@ -1607,7 +1630,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
             /// Creates a new state machine with an initial state.
             #[inline(always)]
-            pub const fn new_with_state(context: __SmlContext, initial_state: #states_type_name <#state_lifetimes>) -> Self {
+            pub const fn new_with_state(context: #context_type_ident, initial_state: #states_type_name <#state_lifetimes>) -> Self {
                 #state_machine_type_name {
                     state: initial_state,
                     context,
@@ -1658,13 +1681,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
             /// Returns the current context.
             #[inline(always)]
-            pub fn context(&self) -> &__SmlContext {
+            pub fn context(&self) -> &#context_type_ident {
                 &self.context
             }
 
             /// Returns the current context as a mutable reference.
             #[inline(always)]
-            pub fn context_mut(&mut self) -> &mut __SmlContext {
+            pub fn context_mut(&mut self) -> &mut #context_type_ident {
                 &mut self.context
             }
 
@@ -1675,7 +1698,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             pub #is_async fn process_event #process_event_impl_generics (
                 &mut self,
                 #temporary_context
-                event: EventInput
+                event: #event_input_ident
             ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
             #process_event_where_clause
             {

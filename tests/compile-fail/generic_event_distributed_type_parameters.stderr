@@ -1,0 +1,5 @@
+error: generic event `First` must use declared parameter `U` so generated dispatch and callbacks can infer the complete event family
+ --> tests/compile-fail/generic_event_distributed_type_parameters.rs:8:23
+  |
+8 |         *Idle + event<First<T>> = Ready,
+  |                       ^^^^^

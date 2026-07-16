@@ -168,6 +168,71 @@ fn add_transition(
 }
 
 impl ParsedStateMachine {
+    fn type_uses_generic_param(event_type: &Type, generic: &GenericParam) -> bool {
+        struct Usage<'a> {
+            generic: &'a GenericParam,
+            used: bool,
+        }
+        impl<'ast> Visit<'ast> for Usage<'_> {
+            fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+                match self.generic {
+                    GenericParam::Type(param) => {
+                        self.used |= path.qself.is_none()
+                            && path.path.leading_colon.is_none()
+                            && path
+                                .path
+                                .segments
+                                .first()
+                                .is_some_and(|segment| segment.ident == param.ident);
+                    }
+                    // In an angle-bracketed argument, syn intentionally parses an
+                    // unbraced identifier such as `N` as a type until Rust resolves
+                    // the target parameter's kind.
+                    GenericParam::Const(param) => {
+                        self.used |= path.qself.is_none()
+                            && path.path.leading_colon.is_none()
+                            && path.path.segments.len() == 1
+                            && path
+                                .path
+                                .segments
+                                .first()
+                                .is_some_and(|segment| segment.ident == param.ident);
+                    }
+                    GenericParam::Lifetime(_) => {}
+                }
+                syn::visit::visit_type_path(self, path);
+            }
+
+            fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+                if let GenericParam::Const(param) = self.generic {
+                    self.used |= path.qself.is_none()
+                        && path.path.leading_colon.is_none()
+                        && path.path.segments.len() == 1
+                        && path
+                            .path
+                            .segments
+                            .first()
+                            .is_some_and(|segment| segment.ident == param.ident);
+                }
+                syn::visit::visit_expr_path(self, path);
+            }
+
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                self.used |= matches!(
+                    self.generic,
+                    GenericParam::Lifetime(param) if param.lifetime == *lifetime
+                );
+            }
+        }
+
+        let mut usage = Usage {
+            generic,
+            used: false,
+        };
+        usage.visit_type(event_type);
+        usage.used
+    }
+
     fn generics_with_lifetimes(
         mut generics: Generics,
         lifetimes: &lifetimes::Lifetimes,
@@ -227,36 +292,10 @@ impl ParsedStateMachine {
     }
 
     pub fn type_uses_event_generics(&self, event_type: &Type) -> bool {
-        struct Usage<'a> {
-            generics: &'a Generics,
-            used: bool,
-        }
-        impl<'ast> Visit<'ast> for Usage<'_> {
-            fn visit_ident(&mut self, ident: &'ast Ident) {
-                self.used |= self
-                    .generics
-                    .type_params()
-                    .any(|param| param.ident == *ident)
-                    || self
-                        .generics
-                        .const_params()
-                        .any(|param| param.ident == *ident);
-            }
-
-            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
-                self.used |= self
-                    .generics
-                    .lifetimes()
-                    .any(|param| param.lifetime == *lifetime);
-            }
-        }
-
-        let mut usage = Usage {
-            generics: &self.event_generics,
-            used: false,
-        };
-        usage.visit_type(event_type);
-        usage.used
+        self.event_generics
+            .params
+            .iter()
+            .any(|generic| Self::type_uses_generic_param(event_type, generic))
     }
 
     pub fn new(mut sm: StateMachine) -> parse::Result<Self> {
@@ -272,6 +311,39 @@ impl ParsedStateMachine {
                     .map_or_else(Span::call_site, Ident::span),
                 "generic events cannot use `defer` or `process(...)` because their dispatch-scoped parameters cannot be stored in the machine's fixed event queue",
             ));
+        }
+        for transition in &sm.transitions {
+            let Some(event_type) = transition.event.data_type.as_ref() else {
+                continue;
+            };
+            let uses_declared_generic = sm
+                .event_generics
+                .params
+                .iter()
+                .any(|generic| Self::type_uses_generic_param(event_type, generic));
+            if !transition.event.external && !uses_declared_generic {
+                continue;
+            }
+            for generic in
+                sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                })
+            {
+                if !Self::type_uses_generic_param(event_type, generic) {
+                    let name = match generic {
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                        GenericParam::Lifetime(_) => unreachable!(),
+                    };
+                    return Err(parse::Error::new(
+                        transition.event.ident.span(),
+                        format!(
+                            "generic event `{}` must use declared parameter `{name}` so generated dispatch and callbacks can infer the complete event family",
+                            transition.event.ident
+                        ),
+                    ));
+                }
+            }
         }
         for transition in sm
             .transitions

@@ -195,7 +195,10 @@ the event parameters, so one machine can dispatch multiple concrete
 monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
 directly to its callback and requires it to end with the synchronous dispatch.
 Bounds and `where` clauses are copied to every generated event API that needs
-them. See the [generic-event guide](docs/dsl.md#generic-event-types) and the
+them. Every external event in one generic table must carry every declared type
+and const parameter so `process_event` can infer the single generated event
+family; lifetimes may remain event-specific. See the
+[generic-event guide](docs/dsl.md#generic-event-types) and the
 [`generic_events` example](examples/generic_events.rs).
 
 ## Orthogonal and composite machines

@@ -87,9 +87,9 @@ use core::fmt::Debug;
 use sml::sml;
 
 pub struct Owned<T, const N: usize>(pub T, pub [u8; N]);
-pub struct Operation<T> {
-    pub input: T,
-    pub result: Option<T>,
+pub struct Operation<T, const N: usize> {
+    pub input: [T; N],
+    pub result: Option<[T; N]>,
 }
 
 sml! {
@@ -99,14 +99,15 @@ sml! {
         [T; N]: AsRef<[T]>,
     {
         *"idle"_s + event<Owned<T, N>> / consume,
-         "idle"_s + event<&'operation mut Operation<T>> / complete,
+         "idle"_s + event<&'operation mut Operation<T, N>> / complete,
     }
 }
 ```
 
 The trigger accepts a named type path (`event<Message<T>>`) or a shared or
 mutable reference to one (`event<&'a Message<T>>` and
-`event<&'a mut Operation<T>>`). Qualified paths and const arguments are
+`event<&'a mut Operation<T, N>>`). Qualified paths, concrete lifetimes such as
+`'static`, and const arguments are
 accepted. `unexpected_event<...>` uses the same typed form. Tuple, slice,
 array, pointer, function, trait-object, and other anonymous trigger types are
 rejected; put such data in a named event type.
@@ -124,11 +125,17 @@ Generated APIs preserve static dispatch:
 - The generated machine uses no type erasure, `Any`, trait object, allocation,
   downcast, unsafe code, or dispatch-local storage.
 
-All declared parameters must appear in at least one event type. A single
-machine value may process, for example, both `Owned<u32>` and `Owned<String>`
-when its generic callback implementation satisfies the declared bounds.
-Parameter defaults are rejected because Rust does not permit defaults on the
-generated generic callback and dispatch methods.
+Every directly dispatched external event must mention every declared type and
+const parameter. A typed internal event that uses any declared generic must do
+the same. The generated API owns one `Events<...>` family, so an event that
+omitted one of those arguments would leave dispatch or its generic callback
+unable to infer the family. The macro rejects that declaration directly instead
+of adding hidden routing. Lifetimes may remain event-specific: they are inferred
+at the call and cannot escape dispatch. A single machine value may process, for
+example, both `Owned<u32, 4>` and `Owned<String, 8>` when its generic callback
+implementation satisfies the declared bounds. Parameter defaults are rejected
+because Rust does not permit defaults on the generated generic callback and
+dispatch methods.
 
 Generic event declarations currently apply to flat tables. Orthogonal and
 composite generators have fixed event enums and reject them with a targeted

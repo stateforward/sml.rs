@@ -22,6 +22,11 @@ impl Lifetimes {
     }
 
     pub fn insert(&mut self, lifetime: &Lifetime) {
+        // `'static` is a concrete lifetime argument, not a lifetime parameter that
+        // can be repeated on a generated item.
+        if lifetime.ident == "static" {
+            return;
+        }
         if !self.lifetimes.contains(lifetime) {
             self.lifetimes.push(lifetime.to_owned());
         }
@@ -159,5 +164,11 @@ mod tests {
         let empty = Lifetimes::from_type(&ty("u8")).unwrap();
         assert!(empty.is_empty());
         assert!(quote!(#empty).is_empty());
+    }
+
+    #[test]
+    fn static_is_kept_concrete_instead_of_becoming_a_parameter() {
+        let lifetimes = Lifetimes::from_type(&ty("Message<'static>")).unwrap();
+        assert!(lifetimes.is_empty());
     }
 }
