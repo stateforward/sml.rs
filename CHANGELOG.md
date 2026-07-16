@@ -17,9 +17,10 @@ All notable changes to this project are documented here. This project follows
   rejects unused declarations, recursively collects event-specific lifetimes,
   keeps higher-ranked lifetimes local to their binders, propagates
   temporary-context generics to callbacks, filters callback bounds with omitted
-  event-specific lifetimes, reuses lifetimes shared with stored state, and
-  rejects dispatch-only type or const parameters in state and typed-exception
-  storage.
+  event-specific lifetimes, avoids unused generic initialization parameters,
+  diagnoses mutable borrowed completion origins, reuses lifetimes shared with
+  stored state, and rejects dispatch-only type or const parameters in state and
+  typed-exception storage.
 
 ## 1.1.0 - 2026-07-14
 

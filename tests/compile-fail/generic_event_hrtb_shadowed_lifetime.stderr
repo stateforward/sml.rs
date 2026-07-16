@@ -1,0 +1,5 @@
+error: declared generic event parameter `'event` must be used by at least one event payload
+ --> tests/compile-fail/generic_event_hrtb_shadowed_lifetime.rs:7:24
+  |
+7 |     HigherRankedShadow<'event, T> {
+  |                        ^^^^^^

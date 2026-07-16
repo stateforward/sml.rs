@@ -337,6 +337,8 @@ fn temporary_context_generics_propagate_to_non_generic_callbacks() {
     let mut machine = GenericTemporaryContextStateMachine::new(TemporaryContextCallbacks);
     let mut values = Vec::new();
 
+    machine.initialize().unwrap();
+
     machine
         .process_event(&mut values, TemporaryContextEvent(String::from("value")))
         .unwrap();
@@ -540,4 +542,44 @@ fn completion_callbacks_drop_bounds_for_omitted_event_specific_lifetimes() {
 
     machine.process_event(FirstLifetimeEvent(&value)).unwrap();
     assert!(machine.is_terminated());
+}
+
+pub struct InlineFirst<'short, T>(&'short T);
+pub struct InlineSecond<'long, T>(&'long T);
+
+sml! {
+    GenericInlineLifetimeBound<'short: 'long, 'long, T: 'short + 'long> {
+        *Idle + event<InlineFirst<'short, T>> / inspect_inline_first,
+         Idle + event<InlineSecond<'long, T>> / inspect_inline_second,
+    }
+}
+
+struct InlineLifetimeBoundContext;
+
+impl GenericInlineLifetimeBoundStateMachineContext for InlineLifetimeBoundContext {
+    fn inspect_inline_first<'short, T: 'short>(
+        &mut self,
+        event: &InlineFirst<'short, T>,
+    ) -> Result<(), ()> {
+        let _ = event.0;
+        Ok(())
+    }
+
+    fn inspect_inline_second<'long, T: 'long>(
+        &mut self,
+        event: &InlineSecond<'long, T>,
+    ) -> Result<(), ()> {
+        let _ = event.0;
+        Ok(())
+    }
+}
+
+#[test]
+fn callbacks_drop_inline_bounds_for_omitted_event_lifetimes() {
+    let first = 1_u32;
+    let second = 2_u32;
+    let mut machine = GenericInlineLifetimeBoundStateMachine::new(InlineLifetimeBoundContext);
+
+    machine.process_event(InlineFirst(&first)).unwrap();
+    machine.process_event(InlineSecond(&second)).unwrap();
 }

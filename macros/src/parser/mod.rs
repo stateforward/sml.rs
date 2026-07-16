@@ -176,6 +176,29 @@ impl ParsedStateMachine {
         struct Usage<'a> {
             generic: &'a GenericParam,
             used: bool,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+        }
+
+        impl Usage<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
         }
         impl<'ast> Visit<'ast> for Usage<'_> {
             fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
@@ -222,16 +245,39 @@ impl ParsedStateMachine {
             }
 
             fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
-                self.used |= matches!(
-                    self.generic,
-                    GenericParam::Lifetime(param) if param.lifetime == *lifetime
-                );
+                if !self.lifetime_is_bound(lifetime) {
+                    self.used |= matches!(
+                        self.generic,
+                        GenericParam::Lifetime(param) if param.lifetime == *lifetime
+                    );
+                }
+            }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
             }
         }
 
         let mut usage = Usage {
             generic,
             used: false,
+            bound_lifetime_scopes: Vec::new(),
         };
         usage.visit_type(event_type);
         usage.used
@@ -434,9 +480,18 @@ impl ParsedStateMachine {
             .params
             .into_iter()
             .filter_map(|mut param| match &mut param {
-                GenericParam::Lifetime(lifetime) => retained_lifetimes
-                    .contains(&lifetime.lifetime.ident.to_string())
-                    .then_some(param),
+                GenericParam::Lifetime(lifetime) => {
+                    if !retained_lifetimes.contains(&lifetime.lifetime.ident.to_string()) {
+                        return None;
+                    }
+                    lifetime.bounds = lifetime
+                        .bounds
+                        .clone()
+                        .into_iter()
+                        .filter(|bound| !omitted_lifetimes.contains(&bound.ident.to_string()))
+                        .collect();
+                    Some(param)
+                }
                 GenericParam::Type(type_param) => {
                     type_param.bounds = type_param
                         .bounds
@@ -670,10 +725,20 @@ impl ParsedStateMachine {
             .iter()
             .filter(|transition| transition.event.kind == EventKind::Completion)
         {
-            if matches!(
+            let direct_mutable_reference = matches!(
                 transition.event.data_type,
                 Some(Type::Reference(ref reference)) if reference.mutability.is_some()
-            ) {
+            );
+            let mutable_external_origin = !transition.event.wildcard
+                && sm.transitions.iter().any(|candidate| {
+                    candidate.event.external
+                        && candidate.event.ident == transition.event.ident
+                        && matches!(
+                            candidate.event.data_type,
+                            Some(Type::Reference(ref reference)) if reference.mutability.is_some()
+                        )
+                });
+            if direct_mutable_reference || mutable_external_origin {
                 return Err(parse::Error::new(
                     transition.event.ident.span(),
                     "Completion origin data cannot be a mutable reference.",

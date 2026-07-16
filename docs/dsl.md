@@ -122,6 +122,9 @@ Generated APIs preserve static dispatch:
 - Event-only lifetimes remain on the dispatch call. They are not added to
   `TypedStateMachine`, cannot be stored in machine state, and mutable borrows
   must end before dispatch returns.
+- A mutable borrowed event cannot be named by `completion<Event>` because
+  completion processing would need to retain the origin; the macro emits a
+  targeted diagnostic for this combination.
 - The generated machine uses no type erasure, `Any`, trait object, allocation,
   downcast, unsafe code, or dispatch-local storage.
 

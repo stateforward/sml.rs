@@ -195,6 +195,8 @@ the event parameters, so one machine can dispatch multiple concrete
 monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
 directly to its callbacks; the borrow lasts until dispatch completes, including
 through `.await` for an asynchronous machine.
+Mutable borrowed events cannot be retained as origin data for
+`completion<Event>`; the macro reports this unsupported combination directly.
 Bounds and `where` clauses are copied to every generated event API that needs
 them. Every declared parameter must appear in at least one event payload, and
 every external event in one generic table must carry every declared type and
