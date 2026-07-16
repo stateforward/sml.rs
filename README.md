@@ -193,7 +193,8 @@ This generates `GenericEvents<'event, T, N>` plus generic `inspect` and
 `process_event` methods. The `GenericStateMachine` value itself does not store
 the event parameters, so one machine can dispatch multiple concrete
 monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
-directly to its callback and requires it to end with the synchronous dispatch.
+directly to its callbacks; the borrow lasts until dispatch completes, including
+through `.await` for an asynchronous machine.
 Bounds and `where` clauses are copied to every generated event API that needs
 them. Every external event in one generic table must carry every declared type
 and const parameter so `process_event` can infer the single generated event
