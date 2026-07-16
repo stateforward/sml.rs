@@ -1,0 +1,5 @@
+error: typed event triggers require a named Rust type path or reference, such as `Event<T>` or `&'a mut Event<T>`
+ --> tests/compile-fail/generic_event_unsupported_type.rs:5:23
+  |
+5 |         *Idle + event<(T, T)> = X,
+  |                       ^^^^^^

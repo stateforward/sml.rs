@@ -2,7 +2,10 @@ use super::state_machine::StateMachine;
 use super::transition::StateTransitions;
 use proc_macro2::{Delimiter, Punct, Spacing, TokenStream, TokenTree};
 use quote::quote;
-use syn::{braced, bracketed, parse, token, Attribute, Ident, Token, Type};
+use syn::{
+    braced, bracketed, parse, spanned::Spanned, token, Attribute, Generics, Ident, Token, Type,
+    WhereClause,
+};
 
 /// Rust spelling of an sml.cpp transition table:
 ///
@@ -37,6 +40,21 @@ impl parse::Parse for SmlDefinition {
         };
         let mut machine = StateMachine::new();
         machine.name = name;
+        let mut event_generics: Generics = input.parse()?;
+        if input.peek(Token![where]) {
+            event_generics.where_clause = Some(input.parse::<WhereClause>()?);
+        }
+        if let Some(defaulted) = event_generics.params.iter().find(|param| match param {
+            syn::GenericParam::Type(param) => param.default.is_some(),
+            syn::GenericParam::Const(param) => param.default.is_some(),
+            syn::GenericParam::Lifetime(_) => false,
+        }) {
+            return Err(syn::Error::new(
+                defaulted.span(),
+                "generic event parameters cannot have defaults because they are propagated to generated methods",
+            ));
+        }
+        machine.event_generics = event_generics;
 
         if input.peek(token::Bracket) {
             let options;
@@ -73,18 +91,11 @@ impl parse::Parse for SmlDefinition {
         }
         let content;
         braced!(content in input);
+        let body = content.parse::<TokenStream>()?;
 
-        while !content.is_empty() {
-            let mut transition = TokenStream::new();
-            while !content.is_empty() && !content.peek(Token![,]) {
-                transition.extend([content.parse::<TokenTree>()?]);
-            }
+        for transition in split_transitions(body) {
             let transitions: StateTransitions = syn::parse2(normalize_transition(transition))?;
             machine.add_transitions(transitions);
-            if content.is_empty() {
-                break;
-            }
-            content.parse::<Token![,]>()?;
         }
 
         let mut fixed_error_type = None;
@@ -115,6 +126,45 @@ impl parse::Parse for SmlDefinition {
 
         Ok(Self { machine })
     }
+}
+
+fn split_transitions(body: TokenStream) -> Vec<TokenStream> {
+    let tokens = body.into_iter().collect::<Vec<_>>();
+    let mut transitions = Vec::new();
+    let mut current = TokenStream::new();
+    let mut angle_depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        let punct = match token {
+            TokenTree::Punct(punct) => Some(punct.as_char()),
+            _ => None,
+        };
+        match punct {
+            Some('<')
+                if !matches!(
+                    tokens.get(index + 1),
+                    Some(TokenTree::Punct(next)) if next.as_char() == '='
+                ) =>
+            {
+                angle_depth += 1;
+                current.extend([token.clone()]);
+            }
+            Some('>') if angle_depth > 0 => {
+                angle_depth -= 1;
+                current.extend([token.clone()]);
+            }
+            Some(',') if angle_depth == 0 => {
+                if !current.is_empty() {
+                    transitions.push(current);
+                    current = TokenStream::new();
+                }
+            }
+            _ => current.extend([token.clone()]),
+        }
+    }
+    if !current.is_empty() {
+        transitions.push(current);
+    }
+    transitions
 }
 
 fn normalize_direction(transition: TokenStream) -> TokenStream {
@@ -160,8 +210,11 @@ fn normalize_transition(transition: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_direction, normalize_transition, SmlDefinition, SmlDefinitions};
+    use super::{
+        normalize_direction, normalize_transition, split_transitions, SmlDefinition, SmlDefinitions,
+    };
     use quote::quote;
+    use syn::Type;
 
     #[test]
     fn reverse_transition_is_normalized_to_forward_form() {
@@ -192,6 +245,15 @@ mod tests {
     }
 
     #[test]
+    fn transition_split_ignores_generic_argument_commas() {
+        let transitions = split_transitions(quote! {
+            *Idle + event<Message<'a, T, N>> = Ready,
+            Ready + event<Done> = X,
+        });
+        assert_eq!(transitions.len(), 2);
+    }
+
+    #[test]
     fn parses_native_machine_configuration() {
         let definition: SmlDefinition = syn::parse2(quote! {
             Configured[
@@ -211,6 +273,35 @@ mod tests {
         assert!(definition.machine.temporary_context_type.is_some());
         assert_eq!(definition.machine.states_attr.len(), 1);
         assert_eq!(definition.machine.events_attr.len(), 1);
+    }
+
+    #[test]
+    fn parses_event_generics_and_where_clause() {
+        let definition: SmlDefinition = syn::parse2(quote! {
+            Generic<'a, T: Clone, const N: usize>
+            where
+                T: core::fmt::Debug,
+            {
+                *Idle + event<Message<'a, T, N>> = X,
+            }
+        })
+        .unwrap();
+
+        assert_eq!(definition.machine.event_generics.params.len(), 3);
+        assert_eq!(
+            definition
+                .machine
+                .event_generics
+                .where_clause
+                .as_ref()
+                .unwrap()
+                .predicates
+                .len(),
+            1
+        );
+        let event = &definition.machine.transitions[0].event;
+        assert_eq!(event.ident, "Message");
+        assert!(matches!(event.data_type, Some(Type::Path(_))));
     }
 
     #[test]

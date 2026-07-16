@@ -17,7 +17,8 @@ use proc_macro2::{Span, TokenStream};
 use crate::parser::event::Transition;
 use std::collections::{hash_map, HashMap};
 use std::fmt;
-use syn::{parse, Attribute, Ident, Type};
+use syn::visit::Visit;
+use syn::{parse, Attribute, GenericParam, Generics, Ident, Lifetime, LifetimeParam, Type};
 use transition::StateTransition;
 pub type TransitionMap = HashMap<String, HashMap<String, EventMapping>>;
 
@@ -83,6 +84,7 @@ pub struct ParsedStateMachine {
     pub states_events_mapping: HashMap<String, HashMap<String, EventMapping>>,
     pub entry_exit_async: bool,
     pub fixed_error_type: Option<Type>,
+    pub event_generics: Generics,
 }
 
 fn event_key(event: &event::Event) -> String {
@@ -166,7 +168,111 @@ fn add_transition(
 }
 
 impl ParsedStateMachine {
+    fn generics_with_lifetimes(
+        mut generics: Generics,
+        lifetimes: &lifetimes::Lifetimes,
+    ) -> Generics {
+        let mut missing = Vec::new();
+        for lifetime in lifetimes.as_slice() {
+            let already_declared = generics.params.iter().any(|param| {
+                matches!(param, GenericParam::Lifetime(known) if known.lifetime == *lifetime)
+            });
+            if !already_declared {
+                missing.push(GenericParam::Lifetime(LifetimeParam::new(lifetime.clone())));
+            }
+        }
+        if !missing.is_empty() {
+            let mut params = syn::punctuated::Punctuated::new();
+            params.extend(
+                generics
+                    .params
+                    .iter()
+                    .filter(|param| matches!(param, GenericParam::Lifetime(_)))
+                    .cloned(),
+            );
+            params.extend(missing);
+            params.extend(
+                generics
+                    .params
+                    .iter()
+                    .filter(|param| !matches!(param, GenericParam::Lifetime(_)))
+                    .cloned(),
+            );
+            generics.params = params;
+        }
+        if !generics.params.is_empty() {
+            generics.lt_token.get_or_insert_with(Default::default);
+            generics.gt_token.get_or_insert_with(Default::default);
+        }
+        generics
+    }
+
+    pub fn event_generics_with_lifetimes(&self, lifetimes: &lifetimes::Lifetimes) -> Generics {
+        Self::generics_with_lifetimes(self.event_generics.clone(), lifetimes)
+    }
+
+    pub fn callback_generics_with_lifetimes(
+        &self,
+        lifetimes: &lifetimes::Lifetimes,
+        event_type: Option<&Type>,
+    ) -> Generics {
+        let uses_event_generics =
+            event_type.is_some_and(|event_type| self.type_uses_event_generics(event_type));
+        let generics = if uses_event_generics {
+            self.event_generics.clone()
+        } else {
+            Generics::default()
+        };
+        Self::generics_with_lifetimes(generics, lifetimes)
+    }
+
+    pub fn type_uses_event_generics(&self, event_type: &Type) -> bool {
+        struct Usage<'a> {
+            generics: &'a Generics,
+            used: bool,
+        }
+        impl<'ast> Visit<'ast> for Usage<'_> {
+            fn visit_ident(&mut self, ident: &'ast Ident) {
+                self.used |= self
+                    .generics
+                    .type_params()
+                    .any(|param| param.ident == *ident)
+                    || self
+                        .generics
+                        .const_params()
+                        .any(|param| param.ident == *ident);
+            }
+
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                self.used |= self
+                    .generics
+                    .lifetimes()
+                    .any(|param| param.lifetime == *lifetime);
+            }
+        }
+
+        let mut usage = Usage {
+            generics: &self.event_generics,
+            used: false,
+        };
+        usage.visit_type(event_type);
+        usage.used
+    }
+
     pub fn new(mut sm: StateMachine) -> parse::Result<Self> {
+        if !sm.event_generics.params.is_empty()
+            && sm
+                .transitions
+                .iter()
+                .any(|transition| transition.defer || !transition.process_events.is_empty())
+        {
+            return Err(parse::Error::new(
+                sm.name
+                    .as_ref()
+                    .map_or_else(Span::call_site, Ident::span),
+                "generic events cannot use `defer` or `process(...)` because their dispatch-scoped parameters cannot be stored in the machine's fixed event queue",
+            ));
+        }
         for transition in sm
             .transitions
             .iter()
@@ -356,6 +462,7 @@ impl ParsedStateMachine {
             states_events_mapping,
             entry_exit_async: sm.entry_exit_async,
             fixed_error_type: sm.fixed_error_type,
+            event_generics: sm.event_generics,
         })
     }
 }

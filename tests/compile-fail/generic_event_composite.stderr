@@ -1,0 +1,5 @@
+error: generic event declarations are currently supported by flat `sml!` tables; composite tables do not yet have dispatch-scoped generic event enums
+ --> tests/compile-fail/generic_event_composite.rs:7:5
+  |
+7 |     Child<T> {
+  |     ^^^^^

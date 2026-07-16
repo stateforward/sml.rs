@@ -2,6 +2,31 @@ use crate::parser::transition::GuardExpression;
 use crate::parser::AsyncIdent;
 use syn::{parenthesized, parse, spanned::Spanned, token, Ident, LitStr, Token, Type};
 
+fn external_event_type(input: parse::ParseStream) -> syn::Result<(Ident, Type)> {
+    let event_type = input.parse::<Type>()?;
+    fn type_ident(event_type: &Type) -> Option<Ident> {
+        match event_type {
+            Type::Path(path) if path.qself.is_none() => path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.clone()),
+            Type::Reference(reference) => type_ident(&reference.elem),
+            _ => None,
+        }
+    }
+    let ident = match type_ident(&event_type) {
+        Some(ident) => ident,
+        _ => {
+            return Err(parse::Error::new(
+                event_type.span(),
+                "typed event triggers require a named Rust type path or reference, such as `Event<T>` or `&'a mut Event<T>`",
+            ))
+        }
+    };
+    Ok((ident, event_type))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
     Normal,
@@ -64,22 +89,32 @@ impl parse::Parse for Event {
             input.parse::<Token![::]>()?;
             first = input.parse()?;
         }
-        let (ident, kind, wildcard, external) = if first == "event" && input.peek(Token![<]) {
+        let (ident, explicit_type, kind, wildcard, external) = if first == "event"
+            && input.peek(Token![<])
+        {
             input.parse::<Token![<]>()?;
-            let ident = input.parse::<Ident>()?;
+            let (ident, event_type) = external_event_type(input)?;
             input.parse::<Token![>]>()?;
-            (ident, EventKind::Normal, false, true)
+            (ident, Some(event_type), EventKind::Normal, false, true)
         } else if (first == "unexpected" || first == "unexpected_event") && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
-            let (ident, wildcard) = if input.peek(Token![_]) {
+            let (ident, explicit_type, wildcard) = if input.peek(Token![_]) {
                 input.parse::<Token![_]>()?;
-                (Ident::new("__AnyEvent", first.span()), true)
+                (Ident::new("__AnyEvent", first.span()), None, true)
             } else {
-                (input.parse::<Ident>()?, false)
+                let (ident, event_type) = external_event_type(input)?;
+                let explicit_type = (first == "unexpected_event").then_some(event_type);
+                (ident, explicit_type, false)
             };
             input.parse::<Token![>]>()?;
             let external = first == "unexpected_event" && !wildcard;
-            (ident, EventKind::Unexpected, wildcard, external)
+            (
+                ident,
+                explicit_type,
+                EventKind::Unexpected,
+                wildcard,
+                external,
+            )
         } else if (first == "on_entry" || first == "on_exit") && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
             input.parse::<Token![_]>()?;
@@ -89,7 +124,7 @@ impl parse::Parse for Event {
             } else {
                 EventKind::Exit
             };
-            (first, kind, false, false)
+            (first, None, kind, false, false)
         } else if first == "completion" && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
             let (ident, wildcard) = if input.peek(Token![_]) {
@@ -99,7 +134,7 @@ impl parse::Parse for Event {
                 (input.parse::<Ident>()?, false)
             };
             input.parse::<Token![>]>()?;
-            (ident, EventKind::Completion, wildcard, false)
+            (ident, None, EventKind::Completion, wildcard, false)
         } else if first == "exception" && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
             let (ident, wildcard) = if input.peek(Token![_]) {
@@ -109,9 +144,9 @@ impl parse::Parse for Event {
                 (input.parse::<Ident>()?, false)
             };
             input.parse::<Token![>]>()?;
-            (ident, EventKind::Exception, wildcard, false)
+            (ident, None, EventKind::Exception, wildcard, false)
         } else {
-            (first, EventKind::Normal, false, false)
+            (first, None, EventKind::Normal, false, false)
         };
 
         // Possible type on the event
@@ -137,6 +172,8 @@ impl parse::Parse for Event {
             }
 
             Some(input)
+        } else if let Some(event_type) = explicit_type {
+            Some(event_type)
         } else if external || (kind == EventKind::Exception && !wildcard) {
             let event_type: Type = syn::parse_quote_spanned!(ident.span()=> #ident);
             Some(event_type)
@@ -164,7 +201,7 @@ impl parse::Parse for Event {
 #[cfg(test)]
 mod tests {
     use super::{Event, EventKind};
-    use syn::parse_str;
+    use syn::{parse_str, Type};
 
     #[test]
     fn parses_normal_unexpected_and_completion_events() {
@@ -222,6 +259,14 @@ mod tests {
         let exception: Event = parse_str("+ exception<MyError>").unwrap();
         assert_eq!(exception.kind, EventKind::Exception);
         assert!(exception.data_type.is_some());
+
+        let generic: Event = parse_str("+ event<module::Message<'a, T, 4>>").unwrap();
+        assert_eq!(generic.ident, "Message");
+        let generic_type = generic.data_type.as_ref().unwrap();
+        assert_eq!(
+            quote::quote!(#generic_type).to_string(),
+            quote::quote!(module::Message<'a, T, 4>).to_string()
+        );
     }
 
     #[test]
@@ -253,5 +298,13 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("wildcard trigger"));
+        let borrowed: Event = parse_str("+ event<&'a mut Message<T>>").unwrap();
+        assert_eq!(borrowed.ident, "Message");
+        assert!(matches!(borrowed.data_type, Some(Type::Reference(_))));
+
+        assert!(parse_str::<Event>("+ event<(T, U)>")
+            .unwrap_err()
+            .to_string()
+            .contains("named Rust type path or reference"));
     }
 }

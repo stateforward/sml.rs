@@ -1,0 +1,5 @@
+error: expected `,`
+ --> tests/compile-fail/generic_event_malformed_syntax.rs:6:17
+  |
+6 |     Malformed<T where T: Clone> {
+  |                 ^^^^^

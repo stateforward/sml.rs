@@ -51,7 +51,7 @@ ordinary Rust types and can be passed directly to `process_event`.
 
 ```text
 sml! {
-    MachineName {
+    MachineName [<event generic parameters>] [where bounds] {
         transition (, transition)* [,]
     }
 }
@@ -76,6 +76,67 @@ A leading `*` selects the initial state. Omitting the target makes a true
 internal transition: no exit or entry callbacks run. An explicit target equal
 to the source is an external self-transition, so exit and entry callbacks do
 run. `X` is the terminal state.
+
+## Generic event types
+
+Flat tables declare Rust lifetime, type, and const parameters immediately after
+the machine name. Bounds may be inline or in an ordinary `where` clause:
+
+```rust
+use core::fmt::Debug;
+use sml::sml;
+
+pub struct Owned<T, const N: usize>(pub T, pub [u8; N]);
+pub struct Operation<T> {
+    pub input: T,
+    pub result: Option<T>,
+}
+
+sml! {
+    Typed<'operation, T, const N: usize>
+    where
+        T: Clone + Debug + 'operation,
+        [T; N]: AsRef<[T]>,
+    {
+        *"idle"_s + event<Owned<T, N>> / consume,
+         "idle"_s + event<&'operation mut Operation<T>> / complete,
+    }
+}
+```
+
+The trigger accepts a named type path (`event<Message<T>>`) or a shared or
+mutable reference to one (`event<&'a Message<T>>` and
+`event<&'a mut Operation<T>>`). Qualified paths and const arguments are
+accepted. `unexpected_event<...>` uses the same typed form. Tuple, slice,
+array, pointer, function, trait-object, and other anonymous trigger types are
+rejected; put such data in a named event type.
+
+Generated APIs preserve static dispatch:
+
+- `TypedEvents<'operation, T, N>` stores the concrete event or reference.
+- Each affected context callback is a generic trait method with the declared
+  bounds and `where` clause.
+- The inherent `process_event` method and synchronous `Machine<Events<...>>`
+  implementation are monomorphized for each concrete argument set.
+- Event-only lifetimes remain on the dispatch call. They are not added to
+  `TypedStateMachine`, cannot be stored in machine state, and mutable borrows
+  must end before dispatch returns.
+- The generated machine uses no type erasure, `Any`, trait object, allocation,
+  downcast, unsafe code, or dispatch-local storage.
+
+All declared parameters must appear in at least one event type. A single
+machine value may process, for example, both `Owned<u32>` and `Owned<String>`
+when its generic callback implementation satisfies the declared bounds.
+Parameter defaults are rejected because Rust does not permit defaults on the
+generated generic callback and dispatch methods.
+
+Generic event declarations currently apply to flat tables. Orthogonal and
+composite generators have fixed event enums and reject them with a targeted
+diagnostic. Generic events also reject `/ defer` and `/ process(...)`: those
+operations store events in the machine's fixed queue, which cannot hold a
+dispatch-scoped family of monomorphizations. Concrete event types such as
+`event<Message<u32>>` remain available in every machine shape and may use the
+normal queue features.
 
 Multiple leading `*` states define orthogonal regions exactly as in `sml.cpp`:
 

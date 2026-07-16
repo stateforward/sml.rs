@@ -1,0 +1,5 @@
+error: generic event declarations are currently supported by flat `sml!` tables; orthogonal tables do not yet have dispatch-scoped generic event enums
+ --> tests/compile-fail/generic_event_orthogonal.rs:6:5
+  |
+6 |     Orthogonal<T> {
+  |     ^^^^^^^^^^

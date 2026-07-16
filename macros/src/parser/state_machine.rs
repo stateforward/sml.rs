@@ -1,5 +1,5 @@
 use super::transition::{StateTransition, StateTransitions};
-use syn::{braced, parse, spanned::Spanned, token, Attribute, Ident, Token, Type};
+use syn::{braced, parse, spanned::Spanned, token, Attribute, Generics, Ident, Token, Type};
 
 #[derive(Debug, Clone)]
 pub struct StateMachine {
@@ -11,6 +11,7 @@ pub struct StateMachine {
     pub events_attr: Vec<Attribute>,
     pub entry_exit_async: bool,
     pub fixed_error_type: Option<Type>,
+    pub event_generics: Generics,
 }
 
 impl StateMachine {
@@ -24,6 +25,7 @@ impl StateMachine {
             events_attr: Vec::new(),
             entry_exit_async: false,
             fixed_error_type: None,
+            event_generics: Generics::default(),
         }
     }
 

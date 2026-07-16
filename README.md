@@ -168,6 +168,36 @@ This is the ownership-safe counterpart to `sml.cpp` callbacks that mutate a
 destination state object. A machine has one callback error type; use a Rust
 enum when several error variants need distinct exception routing.
 
+Flat tables may declare dispatch-scoped event generics on the machine header:
+
+```rust
+use core::fmt::Debug;
+use sml::sml;
+
+pub struct Message<'a, T, const N: usize> {
+    pub value: &'a T,
+    pub bytes: [u8; N],
+}
+
+sml! {
+    Generic<'event, T, const N: usize>
+    where
+        T: Debug + 'event,
+    {
+        *"idle"_s + event<Message<'event, T, N>> / inspect,
+    }
+}
+```
+
+This generates `GenericEvents<'event, T, N>` plus generic `inspect` and
+`process_event` methods. The `GenericStateMachine` value itself does not store
+the event parameters, so one machine can dispatch multiple concrete
+monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
+directly to its callback and requires it to end with the synchronous dispatch.
+Bounds and `where` clauses are copied to every generated event API that needs
+them. See the [generic-event guide](docs/dsl.md#generic-event-types) and the
+[`generic_events` example](examples/generic_events.rs).
+
 ## Orthogonal and composite machines
 
 Multiple `*` rows create orthogonal regions. One borrowed event is broadcast
