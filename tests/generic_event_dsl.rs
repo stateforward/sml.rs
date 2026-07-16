@@ -268,7 +268,7 @@ struct EventSpecificCompletionContext {
 }
 
 impl EventSpecificCompletionStateMachineContext for EventSpecificCompletionContext {
-    fn observe_second<'a, 'b, T: Clone + 'a + 'b, const N: usize>(
+    fn observe_second<'b, T: Clone + 'b, const N: usize>(
         &mut self,
         event: &SecondOrigin<'b, T, N>,
     ) -> Result<(), ()> {
@@ -276,7 +276,7 @@ impl EventSpecificCompletionStateMachineContext for EventSpecificCompletionConte
         Ok(())
     }
 
-    fn finish_origin<'a, 'b, T: Clone + 'a + 'b, const N: usize>(
+    fn finish_origin<'a, T: Clone + 'a, const N: usize>(
         &mut self,
         event: &FirstOrigin<'a, T, N>,
     ) -> Result<(), ()> {
@@ -452,4 +452,95 @@ fn event_specific_lifetimes_are_collected_from_nested_type_arguments() {
     machine
         .process_event(NestedLifetimeEvent(Some(&value), String::from("nested")))
         .unwrap();
+}
+
+pub struct HigherRankedEvent<F, T>(F, std::marker::PhantomData<T>);
+
+sml! {
+    GenericHigherRanked<T> {
+        *Idle + event<HigherRankedEvent<for<'borrow> fn(&'borrow T), T>> / inspect_higher_ranked = X,
+    }
+}
+
+struct HigherRankedContext;
+
+impl GenericHigherRankedStateMachineContext for HigherRankedContext {
+    fn inspect_higher_ranked<T>(
+        &mut self,
+        event: &HigherRankedEvent<for<'borrow> fn(&'borrow T), T>,
+    ) -> Result<(), ()> {
+        let _ = (&event.0, &event.1);
+        Ok(())
+    }
+}
+
+#[test]
+fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
+    fn observe(_: &u32) {}
+
+    let event: HigherRankedEvent<for<'borrow> fn(&'borrow u32), u32> =
+        HigherRankedEvent(observe, std::marker::PhantomData);
+    let mut machine = GenericHigherRankedStateMachine::new(HigherRankedContext);
+
+    machine.process_event(event).unwrap();
+    assert!(machine.is_terminated());
+}
+
+trait CompletionLifetimeMarker {}
+impl<T: ?Sized> CompletionLifetimeMarker for &T {}
+
+pub struct FirstLifetimeEvent<'first, T>(&'first T);
+
+impl<T> Copy for FirstLifetimeEvent<'_, T> {}
+
+impl<T> Clone for FirstLifetimeEvent<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+pub struct SecondLifetimeEvent<'second, T>(&'second T);
+
+sml! {
+    GenericCompletionLifetimeBound<'first, 'second, T: 'first + 'second>
+    where
+        &'second T: CompletionLifetimeMarker,
+    {
+        *Idle + event<FirstLifetimeEvent<'first, T>> = Waiting,
+         Waiting + completion<FirstLifetimeEvent> / finish_first = X,
+         Waiting + event<SecondLifetimeEvent<'second, T>> / observe_second_lifetime = X,
+    }
+}
+
+struct CompletionLifetimeBoundContext;
+
+impl GenericCompletionLifetimeBoundStateMachineContext for CompletionLifetimeBoundContext {
+    fn finish_first<'first, T: 'first>(
+        &mut self,
+        event: &FirstLifetimeEvent<'first, T>,
+    ) -> Result<(), ()> {
+        let _ = event.0;
+        Ok(())
+    }
+
+    fn observe_second_lifetime<'second, T: 'second>(
+        &mut self,
+        event: &SecondLifetimeEvent<'second, T>,
+    ) -> Result<(), ()>
+    where
+        &'second T: CompletionLifetimeMarker,
+    {
+        let _ = event.0;
+        Ok(())
+    }
+}
+
+#[test]
+fn completion_callbacks_drop_bounds_for_omitted_event_specific_lifetimes() {
+    let value = 11_u32;
+    let mut machine =
+        GenericCompletionLifetimeBoundStateMachine::new(CompletionLifetimeBoundContext);
+
+    machine.process_event(FirstLifetimeEvent(&value)).unwrap();
+    assert!(machine.is_terminated());
 }

@@ -30,9 +30,9 @@ struct Context {
 }
 
 impl GenericEventsStateMachineContext for Context {
-    fn observe<'operation, T>(&mut self, event: &Message<T>) -> Result<(), ()>
+    fn observe<T>(&mut self, event: &Message<T>) -> Result<(), ()>
     where
-        T: Clone + Debug + 'operation,
+        T: Clone + Debug,
     {
         let _ = format_args!("{:?}", event.0);
         self.observed += 1;

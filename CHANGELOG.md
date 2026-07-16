@@ -15,9 +15,11 @@ All notable changes to this project are documented here. This project follows
   external event must identify all declared type and const parameters; the
   macro diagnoses parameter subsets that cannot infer the single event family,
   rejects unused declarations, recursively collects event-specific lifetimes,
-  propagates temporary-context generics to callbacks, reuses lifetimes shared
-  with stored state, and rejects dispatch-only type or const parameters in state
-  and typed-exception storage.
+  keeps higher-ranked lifetimes local to their binders, propagates
+  temporary-context generics to callbacks, filters callback bounds with omitted
+  event-specific lifetimes, reuses lifetimes shared with stored state, and
+  rejects dispatch-only type or const parameters in state and typed-exception
+  storage.
 
 ## 1.1.0 - 2026-07-14
 

@@ -162,6 +162,12 @@ context may use event parameters when the event payloads define the family. It
 must carry every declared type and const parameter so those parameters can be
 propagated to callbacks for otherwise non-generic triggers.
 
+Higher-ranked lifetimes remain local to their binder, so a payload such as
+`event<Message<for<'borrow> fn(&'borrow T), T>>` does not add `'borrow` to the
+generated event family. Callback and completion APIs retain only the
+event-specific lifetimes, bounds, and `where` predicates required by their own
+payloads.
+
 Multiple leading `*` states define orthogonal regions exactly as in `sml.cpp`:
 
 ```rust

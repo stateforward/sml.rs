@@ -1,8 +1,11 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use std::ops::Sub;
+use std::{collections::HashSet, ops::Sub};
 use syn::visit::{self, Visit};
-use syn::{parse, spanned::Spanned, Lifetime, Type, TypeReference};
+use syn::{
+    parse, spanned::Spanned, BoundLifetimes, GenericParam, Lifetime, TraitBound, Type, TypeBareFn,
+    TypeReference,
+};
 
 #[derive(Default, Debug, Clone)]
 pub struct Lifetimes {
@@ -52,11 +55,36 @@ impl Lifetimes {
         struct Collector<'a> {
             lifetimes: &'a mut Lifetimes,
             missing_reference_lifetime: Option<proc_macro2::Span>,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+        }
+
+        impl Collector<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
         }
 
         impl<'ast> Visit<'ast> for Collector<'_> {
             fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
-                self.lifetimes.insert(lifetime);
+                if !self.lifetime_is_bound(lifetime) {
+                    self.lifetimes.insert(lifetime);
+                }
             }
 
             fn visit_type_reference(&mut self, reference: &'ast TypeReference) {
@@ -65,11 +93,32 @@ impl Lifetimes {
                 }
                 visit::visit_type_reference(self, reference);
             }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
+            }
         }
 
         let mut collector = Collector {
             lifetimes: self,
             missing_reference_lifetime: None,
+            bound_lifetime_scopes: Vec::new(),
         };
         collector.visit_type(data_type);
         collector.missing_reference_lifetime.map_or(Ok(()), |span| {
@@ -146,6 +195,15 @@ mod tests {
     fn rejects_reference_without_explicit_lifetime() {
         let error = Lifetimes::from_type(&ty("&str")).unwrap_err();
         assert!(error.to_string().contains("lifetime is not defined"));
+    }
+
+    #[test]
+    fn excludes_higher_ranked_bound_lifetimes() {
+        let lifetimes = Lifetimes::from_type(&ty(
+            "Wrapper<for<'local> fn(&'local u8), dyn for<'bound> Trait<'bound>, &'event u8>",
+        ))
+        .unwrap();
+        assert_eq!(quote!(#lifetimes).to_string(), "'event ,");
     }
 
     #[test]

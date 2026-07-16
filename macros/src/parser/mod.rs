@@ -18,8 +18,11 @@ use syn::spanned::Spanned;
 use crate::parser::event::Transition;
 use std::collections::{hash_map, HashMap, HashSet};
 use std::fmt;
-use syn::visit::Visit;
-use syn::{parse, Attribute, GenericParam, Generics, Ident, Lifetime, LifetimeParam, Type};
+use syn::visit::{self, Visit};
+use syn::{
+    parse, Attribute, BoundLifetimes, GenericParam, Generics, Ident, Lifetime, LifetimeParam,
+    TraitBound, Type, TypeBareFn,
+};
 use transition::StateTransition;
 pub type TransitionMap = HashMap<String, HashMap<String, EventMapping>>;
 
@@ -282,18 +285,33 @@ impl ParsedStateMachine {
         lifetimes: &lifetimes::Lifetimes,
         event_type: Option<&Type>,
     ) -> Generics {
+        let temporary_context_uses_event_generics = self.temporary_context_uses_event_generics();
         let uses_event_generics = event_type
             .is_some_and(|event_type| self.type_uses_event_generics(event_type))
-            || self
-                .temporary_context_type
-                .as_ref()
-                .is_some_and(|context| self.type_uses_event_generics(context));
+            || temporary_context_uses_event_generics;
         let generics = if uses_event_generics {
             self.event_generics.clone()
         } else {
             Generics::default()
         };
-        Self::generics_with_lifetimes(generics, lifetimes)
+        let mut callback_lifetimes = lifetimes.clone();
+        if temporary_context_uses_event_generics {
+            let context = self
+                .temporary_context_type
+                .as_ref()
+                .expect("generic temporary context exists");
+            for param in self.event_generics.lifetimes() {
+                if Self::type_uses_generic_param(context, &GenericParam::Lifetime(param.clone())) {
+                    callback_lifetimes.insert(&param.lifetime);
+                }
+            }
+        }
+        let generics = Self::generics_with_lifetimes(generics, &callback_lifetimes);
+        if uses_event_generics {
+            self.filter_event_generic_lifetimes(generics, &callback_lifetimes)
+        } else {
+            generics
+        }
     }
 
     pub fn completion_generics_with_lifetimes(
@@ -313,6 +331,15 @@ impl ParsedStateMachine {
             return generics;
         }
 
+        generics = self.filter_event_generic_lifetimes(generics, lifetimes);
+        generics
+    }
+
+    fn filter_event_generic_lifetimes(
+        &self,
+        mut generics: Generics,
+        lifetimes: &lifetimes::Lifetimes,
+    ) -> Generics {
         let retained_lifetimes: HashSet<_> = lifetimes
             .as_slice()
             .iter()
@@ -331,10 +358,54 @@ impl ParsedStateMachine {
         struct OmittedLifetime<'a> {
             omitted: &'a HashSet<String>,
             found: bool,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+        }
+        impl OmittedLifetime<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
         }
         impl<'ast> Visit<'ast> for OmittedLifetime<'_> {
             fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
-                self.found |= self.omitted.contains(&lifetime.ident.to_string());
+                if !self.lifetime_is_bound(lifetime) {
+                    self.found |= self.omitted.contains(&lifetime.ident.to_string());
+                }
+            }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
             }
         }
         fn bound_uses_omitted_lifetime(
@@ -344,6 +415,7 @@ impl ParsedStateMachine {
             let mut usage = OmittedLifetime {
                 omitted,
                 found: false,
+                bound_lifetime_scopes: Vec::new(),
             };
             usage.visit_type_param_bound(bound);
             usage.found
@@ -352,6 +424,7 @@ impl ParsedStateMachine {
             let mut usage = OmittedLifetime {
                 omitted,
                 found: false,
+                bound_lifetime_scopes: Vec::new(),
             };
             usage.visit_type(data_type);
             usage.found
