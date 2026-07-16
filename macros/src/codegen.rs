@@ -1162,7 +1162,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         .collect();
 
     let starting_state = &sm.starting_state;
-    let starting_state_name = starting_state.to_string();
     let initial_entry_arms: Vec<_> = sm
         .states
         .iter()
@@ -1173,11 +1172,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             } else {
                 quote! { #states_type_name::#state }
             };
-            let entry_action = if state_name == &starting_state_name {
-                entry_actions.get(state_name).cloned().unwrap_or_default()
-            } else {
-                TokenStream::new()
-            };
+            let entry_action = entry_actions.get(state_name).cloned().unwrap_or_default();
             quote! {
                 #pattern => {
                     self.context.#entry_ident()#entry_exit_await;
@@ -1198,6 +1193,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
     // create a token stream for creating a new machine.  If the starting state contains data, then
     // add a second argument to pass this initial data
+    let starting_state_name = starting_state.to_string();
     let deferred_init = has_deferred_events.then(|| {
         quote! { deferred: ::sml::utility::EventQueue::new(), }
     });
@@ -1350,7 +1346,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let (temporary_context_impl_generics, _, temporary_context_where_clause) =
         temporary_context_generics.split_for_impl();
     let initialize_uses_temporary_context = sm.temporary_context_type.is_some()
-        && (has_anonymous_completion || entry_actions.contains_key(&starting_state_name));
+        && (has_anonymous_completion || !entry_actions.is_empty());
     let initialize_generics = if initialize_uses_temporary_context {
         temporary_context_generics.clone()
     } else {

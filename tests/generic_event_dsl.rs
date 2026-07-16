@@ -396,10 +396,13 @@ impl GenericLaterEntryStateMachineContext for LaterEntryContext {
 }
 
 #[test]
-fn initialize_omits_generic_context_for_later_state_entry_actions() {
+fn initialize_runs_later_state_entry_actions_with_generic_context() {
     let mut machine = GenericLaterEntryStateMachine::new(LaterEntryContext);
+    let mut values = TemporaryEntryValues(vec![String::from("value")]);
 
-    machine.initialize().unwrap();
+    machine.set_state(GenericLaterEntryStates::Ready);
+    machine.initialize(&mut values).unwrap();
+    assert!(values.0.is_empty());
 }
 
 pub struct TemporaryLifecycleEvent<T>(T);
