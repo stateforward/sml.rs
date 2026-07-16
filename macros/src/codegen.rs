@@ -5,21 +5,47 @@ use crate::parser::transition::visit_guards;
 use crate::parser::{lifetimes::Lifetimes, transition::EvalAction, AsyncIdent, ParsedStateMachine};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
+use std::collections::HashSet;
+use syn::visit::Visit;
 use syn::{parse_quote, Type};
 
-fn fresh_type_ident(generics: &syn::Generics, base: &str) -> Ident {
+#[derive(Default)]
+struct SourceIdents(HashSet<String>);
+
+impl<'ast> Visit<'ast> for SourceIdents {
+    fn visit_ident(&mut self, ident: &'ast Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+fn source_idents(sm: &ParsedStateMachine, event_generics: &syn::Generics) -> SourceIdents {
+    let mut idents = SourceIdents::default();
+    idents.visit_generics(event_generics);
+    for data_type in sm
+        .state_data
+        .data_types
+        .values()
+        .chain(sm.event_data.data_types.values())
+    {
+        idents.visit_type(data_type);
+    }
+    if let Some(temporary_context) = &sm.temporary_context_type {
+        idents.visit_type(temporary_context);
+    }
+    if let Some(error_type) = &sm.fixed_error_type {
+        idents.visit_type(error_type);
+    }
+    idents
+}
+
+fn fresh_type_ident(reserved: &mut SourceIdents, base: &str) -> Ident {
     for suffix in 0_u32.. {
         let name = if suffix == 0 {
             base.to_owned()
         } else {
             format!("{base}{suffix}")
         };
-        let occupied = generics.params.iter().any(|param| match param {
-            syn::GenericParam::Type(param) => param.ident == name,
-            syn::GenericParam::Const(param) => param.ident == name,
-            syn::GenericParam::Lifetime(_) => false,
-        });
-        if !occupied {
+        if reserved.0.insert(name.clone()) {
             return Ident::new(&name, Span::call_site());
         }
     }
@@ -41,8 +67,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let state_machine_context_type_name =
         format_ident!("{sm_name}StateMachineContext", span = sm_name_span);
     let event_generics = sm.event_generics_with_lifetimes(&sm.event_data.all_lifetimes);
-    let context_type_ident = fresh_type_ident(&event_generics, "__SmlContext");
-    let event_input_ident = fresh_type_ident(&event_generics, "__SmlEventInput");
+    let mut reserved_idents = source_idents(sm, &event_generics);
+    let context_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlContext");
+    let event_input_ident = fresh_type_ident(&mut reserved_idents, "__SmlEventInput");
     let (event_impl_generics, event_type_generics, event_where_clause) =
         event_generics.split_for_impl();
 
@@ -1262,7 +1289,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             .filter(|event_type| sm.type_uses_event_generics(event_type))
     });
     let completion_generics =
-        sm.callback_generics_with_lifetimes(&completion_lifetimes, completion_generic_type);
+        sm.completion_generics_with_lifetimes(&completion_lifetimes, completion_generic_type);
     let (completion_impl_generics, completion_type_generics, completion_where_clause) =
         completion_generics.split_for_impl();
     let completion_origin_clone_arms: Vec<_> = completion_events

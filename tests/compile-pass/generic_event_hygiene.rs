@@ -37,4 +37,30 @@ fn main() {
     CollisionStateMachine::new(CollisionContext)
         .process_event(CollisionEvent(1_u8, 2_u16, 3_u32))
         .unwrap();
+    BoundNamesStateMachine::new(BoundNamesContext)
+        .process_event(BoundPayload(BoundValue))
+        .unwrap();
 }
+
+trait Accepts<T> {}
+
+struct __SmlContext;
+struct __SmlEventInput;
+struct BoundValue;
+
+impl Accepts<__SmlContext> for BoundValue {}
+impl Accepts<__SmlEventInput> for BoundValue {}
+
+pub struct BoundPayload<T>(T);
+
+sml! {
+    BoundNames<T>
+    where
+        T: Accepts<__SmlContext> + Accepts<__SmlEventInput>,
+    {
+        *Idle + event<BoundPayload<T>> = X,
+    }
+}
+
+struct BoundNamesContext;
+impl BoundNamesStateMachineContext for BoundNamesContext {}

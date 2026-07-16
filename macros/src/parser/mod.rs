@@ -15,7 +15,7 @@ use input_state::InputState;
 use proc_macro2::{Span, TokenStream};
 
 use crate::parser::event::Transition;
-use std::collections::{hash_map, HashMap};
+use std::collections::{hash_map, HashMap, HashSet};
 use std::fmt;
 use syn::visit::Visit;
 use syn::{parse, Attribute, GenericParam, Generics, Ident, Lifetime, LifetimeParam, Type};
@@ -289,6 +289,139 @@ impl ParsedStateMachine {
             Generics::default()
         };
         Self::generics_with_lifetimes(generics, lifetimes)
+    }
+
+    pub fn completion_generics_with_lifetimes(
+        &self,
+        lifetimes: &lifetimes::Lifetimes,
+        event_type: Option<&Type>,
+    ) -> Generics {
+        let uses_event_generics =
+            event_type.is_some_and(|event_type| self.type_uses_event_generics(event_type));
+        let generics = if uses_event_generics {
+            self.event_generics.clone()
+        } else {
+            Generics::default()
+        };
+        let mut generics = Self::generics_with_lifetimes(generics, lifetimes);
+        if !uses_event_generics {
+            return generics;
+        }
+
+        let retained_lifetimes: HashSet<_> = lifetimes
+            .as_slice()
+            .iter()
+            .map(|lifetime| lifetime.ident.to_string())
+            .collect();
+        let omitted_lifetimes: HashSet<_> = self
+            .event_generics
+            .lifetimes()
+            .map(|param| param.lifetime.ident.to_string())
+            .filter(|lifetime| !retained_lifetimes.contains(lifetime))
+            .collect();
+        if omitted_lifetimes.is_empty() {
+            return generics;
+        }
+
+        struct OmittedLifetime<'a> {
+            omitted: &'a HashSet<String>,
+            found: bool,
+        }
+        impl<'ast> Visit<'ast> for OmittedLifetime<'_> {
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                self.found |= self.omitted.contains(&lifetime.ident.to_string());
+            }
+        }
+        fn bound_uses_omitted_lifetime(
+            omitted: &HashSet<String>,
+            bound: &syn::TypeParamBound,
+        ) -> bool {
+            let mut usage = OmittedLifetime {
+                omitted,
+                found: false,
+            };
+            usage.visit_type_param_bound(bound);
+            usage.found
+        }
+        fn type_uses_omitted_lifetime(omitted: &HashSet<String>, data_type: &Type) -> bool {
+            let mut usage = OmittedLifetime {
+                omitted,
+                found: false,
+            };
+            usage.visit_type(data_type);
+            usage.found
+        }
+
+        generics.params = generics
+            .params
+            .into_iter()
+            .filter_map(|mut param| match &mut param {
+                GenericParam::Lifetime(lifetime) => retained_lifetimes
+                    .contains(&lifetime.lifetime.ident.to_string())
+                    .then_some(param),
+                GenericParam::Type(type_param) => {
+                    type_param.bounds = type_param
+                        .bounds
+                        .clone()
+                        .into_iter()
+                        .filter(|bound| !bound_uses_omitted_lifetime(&omitted_lifetimes, bound))
+                        .collect();
+                    Some(param)
+                }
+                GenericParam::Const(_) => Some(param),
+            })
+            .collect();
+
+        if let Some(where_clause) = &mut generics.where_clause {
+            where_clause.predicates = where_clause
+                .predicates
+                .clone()
+                .into_iter()
+                .filter_map(|mut predicate| {
+                    let retain = match &mut predicate {
+                        syn::WherePredicate::Lifetime(lifetime_predicate) => {
+                            if omitted_lifetimes
+                                .contains(&lifetime_predicate.lifetime.ident.to_string())
+                            {
+                                return None;
+                            }
+                            lifetime_predicate.bounds = lifetime_predicate
+                                .bounds
+                                .clone()
+                                .into_iter()
+                                .filter(|bound| {
+                                    !omitted_lifetimes.contains(&bound.ident.to_string())
+                                })
+                                .collect();
+                            !lifetime_predicate.bounds.is_empty()
+                        }
+                        syn::WherePredicate::Type(type_predicate) => {
+                            if type_uses_omitted_lifetime(
+                                &omitted_lifetimes,
+                                &type_predicate.bounded_ty,
+                            ) {
+                                return None;
+                            }
+                            type_predicate.bounds = type_predicate
+                                .bounds
+                                .clone()
+                                .into_iter()
+                                .filter(|bound| {
+                                    !bound_uses_omitted_lifetime(&omitted_lifetimes, bound)
+                                })
+                                .collect();
+                            !type_predicate.bounds.is_empty()
+                        }
+                        _ => true,
+                    };
+                    retain.then_some(predicate)
+                })
+                .collect();
+            if where_clause.predicates.is_empty() {
+                generics.where_clause = None;
+            }
+        }
+        generics
     }
 
     pub fn type_uses_event_generics(&self, event_type: &Type) -> bool {

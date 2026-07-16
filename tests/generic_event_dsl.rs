@@ -217,3 +217,60 @@ fn generic_owned_event_propagates_into_origin_aware_completion() {
     assert!(machine.is_terminated());
     assert_eq!(machine.context().finished, 1);
 }
+
+#[derive(Clone)]
+pub struct FirstOrigin<'a, T, const N: usize>(&'a T, [u8; N]);
+
+#[derive(Clone)]
+pub struct SecondOrigin<'b, T, const N: usize>(&'b T, [u8; N]);
+
+sml! {
+    EventSpecificCompletion<'a, 'b, T, const N: usize>
+    where
+        T: Clone + 'a + 'b,
+    {
+        *Idle + event<FirstOrigin<'a, T, N>> = Completing,
+         Idle + event<SecondOrigin<'b, T, N>> / observe_second,
+         Completing + completion<FirstOrigin> / finish_origin = X,
+    }
+}
+
+#[derive(Default)]
+struct EventSpecificCompletionContext {
+    finished: usize,
+}
+
+impl EventSpecificCompletionStateMachineContext for EventSpecificCompletionContext {
+    fn observe_second<'a, 'b, T: Clone + 'a + 'b, const N: usize>(
+        &mut self,
+        event: &SecondOrigin<'b, T, N>,
+    ) -> Result<(), ()> {
+        let _ = (event.0, event.1.len());
+        Ok(())
+    }
+
+    fn finish_origin<'a, 'b, T: Clone + 'a + 'b, const N: usize>(
+        &mut self,
+        event: &FirstOrigin<'a, T, N>,
+    ) -> Result<(), ()> {
+        let _ = (event.0, event.1.len());
+        self.finished += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn completion_origin_keeps_only_the_lifetimes_used_by_its_variants() {
+    let value = String::from("origin");
+    let mut machine =
+        EventSpecificCompletionStateMachine::new(EventSpecificCompletionContext::default());
+    machine
+        .process_event(SecondOrigin(&value, [1_u8; 2]))
+        .unwrap();
+    machine
+        .process_event(FirstOrigin(&value, [0_u8; 4]))
+        .unwrap();
+
+    assert!(machine.is_terminated());
+    assert_eq!(machine.context().finished, 1);
+}
