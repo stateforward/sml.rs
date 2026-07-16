@@ -13,11 +13,16 @@ use state_machine::StateMachine;
 
 use input_state::InputState;
 use proc_macro2::{Span, TokenStream};
+use syn::spanned::Spanned;
 
 use crate::parser::event::Transition;
-use std::collections::{hash_map, HashMap};
+use std::collections::{hash_map, HashMap, HashSet};
 use std::fmt;
-use syn::{parse, Attribute, Ident, Type};
+use syn::visit::{self, Visit};
+use syn::{
+    parse, Attribute, BoundLifetimes, GenericParam, Generics, Ident, Lifetime, LifetimeParam,
+    TraitBound, Type, TypeBareFn,
+};
 use transition::StateTransition;
 pub type TransitionMap = HashMap<String, HashMap<String, EventMapping>>;
 
@@ -83,6 +88,7 @@ pub struct ParsedStateMachine {
     pub states_events_mapping: HashMap<String, HashMap<String, EventMapping>>,
     pub entry_exit_async: bool,
     pub fixed_error_type: Option<Type>,
+    pub event_generics: Generics,
 }
 
 fn event_key(event: &event::Event) -> String {
@@ -166,16 +172,573 @@ fn add_transition(
 }
 
 impl ParsedStateMachine {
+    fn type_uses_generic_param(event_type: &Type, generic: &GenericParam) -> bool {
+        struct Usage<'a> {
+            generic: &'a GenericParam,
+            used: bool,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+        }
+
+        impl Usage<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
+        }
+        impl<'ast> Visit<'ast> for Usage<'_> {
+            fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+                match self.generic {
+                    GenericParam::Type(param) => {
+                        self.used |= path.qself.is_none()
+                            && path.path.leading_colon.is_none()
+                            && path
+                                .path
+                                .segments
+                                .first()
+                                .is_some_and(|segment| segment.ident == param.ident);
+                    }
+                    // In an angle-bracketed argument, syn intentionally parses an
+                    // unbraced identifier such as `N` as a type until Rust resolves
+                    // the target parameter's kind.
+                    GenericParam::Const(param) => {
+                        self.used |= path.qself.is_none()
+                            && path.path.leading_colon.is_none()
+                            && path.path.segments.len() == 1
+                            && path
+                                .path
+                                .segments
+                                .first()
+                                .is_some_and(|segment| segment.ident == param.ident);
+                    }
+                    GenericParam::Lifetime(_) => {}
+                }
+                syn::visit::visit_type_path(self, path);
+            }
+
+            fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+                if let GenericParam::Const(param) = self.generic {
+                    self.used |= path.qself.is_none()
+                        && path.path.leading_colon.is_none()
+                        && path.path.segments.len() == 1
+                        && path
+                            .path
+                            .segments
+                            .first()
+                            .is_some_and(|segment| segment.ident == param.ident);
+                }
+                syn::visit::visit_expr_path(self, path);
+            }
+
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                if !self.lifetime_is_bound(lifetime) {
+                    self.used |= matches!(
+                        self.generic,
+                        GenericParam::Lifetime(param) if param.lifetime == *lifetime
+                    );
+                }
+            }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
+            }
+        }
+
+        let mut usage = Usage {
+            generic,
+            used: false,
+            bound_lifetime_scopes: Vec::new(),
+        };
+        usage.visit_type(event_type);
+        usage.used
+    }
+
+    fn generics_with_lifetimes(
+        mut generics: Generics,
+        lifetimes: &lifetimes::Lifetimes,
+    ) -> Generics {
+        let mut missing = Vec::new();
+        for lifetime in lifetimes.as_slice() {
+            let already_declared = generics.params.iter().any(|param| {
+                matches!(param, GenericParam::Lifetime(known) if known.lifetime == *lifetime)
+            });
+            if !already_declared {
+                missing.push(GenericParam::Lifetime(LifetimeParam::new(lifetime.clone())));
+            }
+        }
+        if !missing.is_empty() {
+            let mut params = syn::punctuated::Punctuated::new();
+            params.extend(
+                generics
+                    .params
+                    .iter()
+                    .filter(|param| matches!(param, GenericParam::Lifetime(_)))
+                    .cloned(),
+            );
+            params.extend(missing);
+            params.extend(
+                generics
+                    .params
+                    .iter()
+                    .filter(|param| !matches!(param, GenericParam::Lifetime(_)))
+                    .cloned(),
+            );
+            generics.params = params;
+        }
+        if !generics.params.is_empty() {
+            generics.lt_token.get_or_insert_with(Default::default);
+            generics.gt_token.get_or_insert_with(Default::default);
+        }
+        generics
+    }
+
+    pub fn event_generics_with_lifetimes(&self, lifetimes: &lifetimes::Lifetimes) -> Generics {
+        Self::generics_with_lifetimes(self.event_generics.clone(), lifetimes)
+    }
+
+    pub fn callback_generics_with_lifetimes(
+        &self,
+        lifetimes: &lifetimes::Lifetimes,
+        event_type: Option<&Type>,
+    ) -> Generics {
+        let temporary_context_uses_event_generics = self.temporary_context_uses_event_generics();
+        let uses_event_generics = event_type
+            .is_some_and(|event_type| self.type_uses_event_generics(event_type))
+            || temporary_context_uses_event_generics;
+        let generics = if uses_event_generics {
+            self.event_generics.clone()
+        } else {
+            Generics::default()
+        };
+        let mut callback_lifetimes = lifetimes.clone();
+        if temporary_context_uses_event_generics {
+            let context = self
+                .temporary_context_type
+                .as_ref()
+                .expect("generic temporary context exists");
+            for param in self.event_generics.lifetimes() {
+                if Self::type_uses_generic_param(context, &GenericParam::Lifetime(param.clone())) {
+                    callback_lifetimes.insert(&param.lifetime);
+                }
+            }
+        }
+        let generics = Self::generics_with_lifetimes(generics, &callback_lifetimes);
+        if uses_event_generics {
+            self.filter_event_generic_lifetimes(generics, &callback_lifetimes)
+        } else {
+            generics
+        }
+    }
+
+    pub fn completion_generics_with_lifetimes(
+        &self,
+        lifetimes: &lifetimes::Lifetimes,
+        event_type: Option<&Type>,
+    ) -> Generics {
+        let uses_event_generics =
+            event_type.is_some_and(|event_type| self.type_uses_event_generics(event_type));
+        let generics = if uses_event_generics {
+            self.event_generics.clone()
+        } else {
+            Generics::default()
+        };
+        let mut generics = Self::generics_with_lifetimes(generics, lifetimes);
+        if !uses_event_generics {
+            return generics;
+        }
+
+        generics = self.filter_event_generic_lifetimes(generics, lifetimes);
+        generics
+    }
+
+    fn filter_event_generic_lifetimes(
+        &self,
+        mut generics: Generics,
+        lifetimes: &lifetimes::Lifetimes,
+    ) -> Generics {
+        let retained_lifetimes: HashSet<_> = lifetimes
+            .as_slice()
+            .iter()
+            .map(|lifetime| lifetime.ident.to_string())
+            .collect();
+        let omitted_lifetimes: HashSet<_> = self
+            .event_generics
+            .lifetimes()
+            .map(|param| param.lifetime.ident.to_string())
+            .filter(|lifetime| !retained_lifetimes.contains(lifetime))
+            .collect();
+        if omitted_lifetimes.is_empty() {
+            return generics;
+        }
+
+        struct OmittedLifetime<'a> {
+            omitted: &'a HashSet<String>,
+            found: bool,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+        }
+        impl OmittedLifetime<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
+        }
+        impl<'ast> Visit<'ast> for OmittedLifetime<'_> {
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                if !self.lifetime_is_bound(lifetime) {
+                    self.found |= self.omitted.contains(&lifetime.ident.to_string());
+                }
+            }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
+            }
+        }
+        fn bound_uses_omitted_lifetime(
+            omitted: &HashSet<String>,
+            bound: &syn::TypeParamBound,
+        ) -> bool {
+            let mut usage = OmittedLifetime {
+                omitted,
+                found: false,
+                bound_lifetime_scopes: Vec::new(),
+            };
+            usage.visit_type_param_bound(bound);
+            usage.found
+        }
+        fn type_uses_omitted_lifetime(omitted: &HashSet<String>, data_type: &Type) -> bool {
+            let mut usage = OmittedLifetime {
+                omitted,
+                found: false,
+                bound_lifetime_scopes: Vec::new(),
+            };
+            usage.visit_type(data_type);
+            usage.found
+        }
+
+        generics.params = generics
+            .params
+            .into_iter()
+            .filter_map(|mut param| match &mut param {
+                GenericParam::Lifetime(lifetime) => {
+                    if !retained_lifetimes.contains(&lifetime.lifetime.ident.to_string()) {
+                        return None;
+                    }
+                    lifetime.bounds = lifetime
+                        .bounds
+                        .clone()
+                        .into_iter()
+                        .filter(|bound| !omitted_lifetimes.contains(&bound.ident.to_string()))
+                        .collect();
+                    Some(param)
+                }
+                GenericParam::Type(type_param) => {
+                    type_param.bounds = type_param
+                        .bounds
+                        .clone()
+                        .into_iter()
+                        .filter(|bound| !bound_uses_omitted_lifetime(&omitted_lifetimes, bound))
+                        .collect();
+                    Some(param)
+                }
+                GenericParam::Const(_) => Some(param),
+            })
+            .collect();
+
+        if let Some(where_clause) = &mut generics.where_clause {
+            where_clause.predicates = where_clause
+                .predicates
+                .clone()
+                .into_iter()
+                .filter_map(|mut predicate| {
+                    let retain = match &mut predicate {
+                        syn::WherePredicate::Lifetime(lifetime_predicate) => {
+                            if omitted_lifetimes
+                                .contains(&lifetime_predicate.lifetime.ident.to_string())
+                            {
+                                return None;
+                            }
+                            lifetime_predicate.bounds = lifetime_predicate
+                                .bounds
+                                .clone()
+                                .into_iter()
+                                .filter(|bound| {
+                                    !omitted_lifetimes.contains(&bound.ident.to_string())
+                                })
+                                .collect();
+                            !lifetime_predicate.bounds.is_empty()
+                        }
+                        syn::WherePredicate::Type(type_predicate) => {
+                            if type_uses_omitted_lifetime(
+                                &omitted_lifetimes,
+                                &type_predicate.bounded_ty,
+                            ) {
+                                return None;
+                            }
+                            type_predicate.bounds = type_predicate
+                                .bounds
+                                .clone()
+                                .into_iter()
+                                .filter(|bound| {
+                                    !bound_uses_omitted_lifetime(&omitted_lifetimes, bound)
+                                })
+                                .collect();
+                            !type_predicate.bounds.is_empty()
+                        }
+                        _ => true,
+                    };
+                    retain.then_some(predicate)
+                })
+                .collect();
+            if where_clause.predicates.is_empty() {
+                generics.where_clause = None;
+            }
+        }
+        generics
+    }
+
+    pub fn type_uses_event_generics(&self, event_type: &Type) -> bool {
+        self.event_generics
+            .params
+            .iter()
+            .any(|generic| Self::type_uses_generic_param(event_type, generic))
+    }
+
+    pub fn temporary_context_uses_event_generics(&self) -> bool {
+        self.temporary_context_type
+            .as_ref()
+            .is_some_and(|context| self.type_uses_event_generics(context))
+    }
+
     pub fn new(mut sm: StateMachine) -> parse::Result<Self> {
+        if !sm.event_generics.params.is_empty()
+            && sm
+                .transitions
+                .iter()
+                .any(|transition| transition.defer || !transition.process_events.is_empty())
+        {
+            return Err(parse::Error::new(
+                sm.name
+                    .as_ref()
+                    .map_or_else(Span::call_site, Ident::span),
+                "generic events cannot use `defer` or `process(...)` because their dispatch-scoped parameters cannot be stored in the machine's fixed event queue",
+            ));
+        }
+        for transition in &sm.transitions {
+            for (state, data_type) in [
+                (
+                    &transition.in_state.ident,
+                    transition.in_state.data_type.as_ref(),
+                ),
+                (
+                    &transition.out_state.ident,
+                    transition.out_state.data_type.as_ref(),
+                ),
+            ] {
+                let Some(data_type) = data_type else {
+                    continue;
+                };
+                for generic in sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                }) {
+                    if Self::type_uses_generic_param(data_type, generic) {
+                        let name = match generic {
+                            GenericParam::Type(param) => param.ident.to_string(),
+                            GenericParam::Const(param) => param.ident.to_string(),
+                            GenericParam::Lifetime(_) => unreachable!(),
+                        };
+                        return Err(parse::Error::new(
+                            state.span(),
+                            format!(
+                                "stored state data cannot use dispatch-scoped generic event parameter `{name}`; only lifetimes may be shared with machine state"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        for transition in &sm.transitions {
+            let Some(event_type) = transition.event.data_type.as_ref() else {
+                continue;
+            };
+            if transition.event.kind == EventKind::Exception {
+                if let Some(generic) = sm
+                    .event_generics
+                    .params
+                    .iter()
+                    .find(|generic| Self::type_uses_generic_param(event_type, generic))
+                {
+                    let name = match generic {
+                        GenericParam::Lifetime(param) => param.lifetime.to_string(),
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                    };
+                    return Err(parse::Error::new(
+                        transition.event.ident.span(),
+                        format!(
+                            "typed exception payloads cannot use dispatch-scoped generic event parameter `{name}`"
+                        ),
+                    ));
+                }
+            }
+            let uses_declared_generic = sm
+                .event_generics
+                .params
+                .iter()
+                .any(|generic| Self::type_uses_generic_param(event_type, generic));
+            if !transition.event.external && !uses_declared_generic {
+                continue;
+            }
+            for generic in
+                sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                })
+            {
+                if !Self::type_uses_generic_param(event_type, generic) {
+                    let name = match generic {
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                        GenericParam::Lifetime(_) => unreachable!(),
+                    };
+                    return Err(parse::Error::new(
+                        transition.event.ident.span(),
+                        format!(
+                            "generic event `{}` must use declared parameter `{name}` so generated dispatch and callbacks can infer the complete event family",
+                            transition.event.ident
+                        ),
+                    ));
+                }
+            }
+        }
+        for generic in &sm.event_generics.params {
+            let used_by_event = sm.transitions.iter().any(|transition| {
+                transition
+                    .event
+                    .data_type
+                    .as_ref()
+                    .is_some_and(|event_type| Self::type_uses_generic_param(event_type, generic))
+            });
+            if !used_by_event {
+                let (name, span) = match generic {
+                    GenericParam::Lifetime(param) => {
+                        (param.lifetime.to_string(), param.lifetime.span())
+                    }
+                    GenericParam::Type(param) => (param.ident.to_string(), param.ident.span()),
+                    GenericParam::Const(param) => (param.ident.to_string(), param.ident.span()),
+                };
+                return Err(parse::Error::new(
+                    span,
+                    format!(
+                        "declared generic event parameter `{name}` must be used by at least one event payload"
+                    ),
+                ));
+            }
+        }
+        if let Some(context) = sm.temporary_context_type.as_ref().filter(|context| {
+            sm.event_generics
+                .params
+                .iter()
+                .any(|generic| Self::type_uses_generic_param(context, generic))
+        }) {
+            for generic in
+                sm.event_generics.params.iter().filter(|generic| {
+                    matches!(generic, GenericParam::Type(_) | GenericParam::Const(_))
+                })
+            {
+                if !Self::type_uses_generic_param(context, generic) {
+                    let name = match generic {
+                        GenericParam::Type(param) => param.ident.to_string(),
+                        GenericParam::Const(param) => param.ident.to_string(),
+                        GenericParam::Lifetime(_) => unreachable!(),
+                    };
+                    return Err(parse::Error::new(
+                        context.span(),
+                        format!(
+                            "a generic temporary context must use declared parameter `{name}` so generated callbacks can infer the complete event family"
+                        ),
+                    ));
+                }
+            }
+        }
         for transition in sm
             .transitions
             .iter()
             .filter(|transition| transition.event.kind == EventKind::Completion)
         {
-            if matches!(
+            let direct_mutable_reference = matches!(
                 transition.event.data_type,
                 Some(Type::Reference(ref reference)) if reference.mutability.is_some()
-            ) {
+            );
+            let mutable_external_origin = !transition.event.wildcard
+                && sm.transitions.iter().any(|candidate| {
+                    candidate.event.external
+                        && candidate.event.ident == transition.event.ident
+                        && matches!(
+                            candidate.event.data_type,
+                            Some(Type::Reference(ref reference)) if reference.mutability.is_some()
+                        )
+                });
+            if direct_mutable_reference || mutable_external_origin {
                 return Err(parse::Error::new(
                     transition.event.ident.span(),
                     "Completion origin data cannot be a mutable reference.",
@@ -356,6 +919,7 @@ impl ParsedStateMachine {
             states_events_mapping,
             entry_exit_async: sm.entry_exit_async,
             fixed_error_type: sm.fixed_error_type,
+            event_generics: sm.event_generics,
         })
     }
 }

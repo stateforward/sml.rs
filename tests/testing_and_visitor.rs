@@ -50,3 +50,32 @@ fn initialize_runs_the_initial_entry_hook() {
     assert!(matches!(sm.initialize().unwrap(), InspectableStates::Idle));
     assert_eq!(sm.context().entries, 1);
 }
+
+sml! {
+    InitializeInjected {
+        *Idle + Start = Ready,
+         Ready + on_entry<_> / record_ready,
+    }
+}
+
+#[derive(Default)]
+struct InitializeInjectedContext {
+    ready_entries: usize,
+}
+
+impl InitializeInjectedStateMachineContext for InitializeInjectedContext {
+    fn record_ready(&mut self) -> Result<(), ()> {
+        self.ready_entries += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn initialize_runs_configured_entry_action_for_injected_state() {
+    let mut sm = InitializeInjectedStateMachine::new(InitializeInjectedContext::default());
+
+    sm.set_state(InitializeInjectedStates::Ready);
+    sm.initialize().unwrap();
+
+    assert_eq!(sm.context().ready_entries, 1);
+}

@@ -6,6 +6,22 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Add dispatch-scoped lifetime, type, and const generics for typed events in
+  flat `sml!` tables, including propagated bounds and `where` clauses, direct
+  mutable-borrow handoffs, generated event enums, inherent dispatch, and
+  `Machine<E>` implementations without type erasure or allocation. Every
+  external event must identify all declared type and const parameters; the
+  macro diagnoses parameter subsets that cannot infer the single event family,
+  rejects unused declarations, recursively collects event-specific lifetimes,
+  keeps higher-ranked lifetimes local to their binders, propagates
+  temporary-context generics to callbacks, filters callback bounds with omitted
+  event-specific lifetimes, avoids unused generic initialization parameters,
+  diagnoses mutable borrowed completion origins, reuses lifetimes shared with
+  stored state, and rejects dispatch-only type or const parameters in state and
+  typed-exception storage.
+
 ## 1.1.0 - 2026-07-14
 
 ### Breaking

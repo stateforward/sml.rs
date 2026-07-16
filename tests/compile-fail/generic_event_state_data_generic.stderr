@@ -1,0 +1,5 @@
+error: stored state data cannot use dispatch-scoped generic event parameter `T`; only lifetimes may be shared with machine state
+ --> tests/compile-fail/generic_event_state_data_generic.rs:8:49
+  |
+8 |         *"idle"_s + event<Message<T>> / store = "ready"_s(Stored<T>),
+  |                                                 ^^^^^^^^^

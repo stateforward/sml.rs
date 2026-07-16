@@ -168,6 +168,55 @@ This is the ownership-safe counterpart to `sml.cpp` callbacks that mutate a
 destination state object. A machine has one callback error type; use a Rust
 enum when several error variants need distinct exception routing.
 
+Flat tables may declare dispatch-scoped event generics on the machine header:
+
+```rust
+use core::fmt::Debug;
+use sml::sml;
+
+pub struct Message<'a, T, const N: usize> {
+    pub value: &'a T,
+    pub bytes: [u8; N],
+}
+
+sml! {
+    Generic<'event, T, const N: usize>
+    where
+        T: Debug + 'event,
+    {
+        *"idle"_s + event<Message<'event, T, N>> / inspect,
+    }
+}
+```
+
+This generates `GenericEvents<'event, T, N>` plus generic `inspect` and
+`process_event` methods. The `GenericStateMachine` value itself does not store
+the event parameters, so one machine can dispatch multiple concrete
+monomorphizations. `event<&'event mut Operation<T>>` passes the mutable borrow
+directly to its callbacks; the borrow lasts until dispatch completes, including
+through `.await` for an asynchronous machine.
+Mutable borrowed events cannot be retained as origin data for
+`completion<Event>`; the macro reports this unsupported combination directly.
+Bounds and `where` clauses are copied to every generated event API that needs
+them. Every declared parameter must appear in at least one event payload, and
+every external event in one generic table must carry every declared type and
+const parameter so `process_event` can infer the single generated event family;
+lifetimes may remain event-specific, including inside nested type arguments.
+Higher-ranked lifetimes such as `for<'borrow> fn(&'borrow T)` remain bound inside
+the payload type rather than becoming event-family parameters; the equivalent
+bare-function elision `fn(&T)` remains implicitly late-bound. Generated callback
+signatures retain only the event-specific lifetimes and predicates they use.
+Temporary contexts may use event parameters and propagate them to every callback,
+but they must carry every declared type and const parameter and do not by
+themselves define an event family. See the
+[generic-event guide](docs/dsl.md#generic-event-types) and the
+[`generic_events` example](examples/generic_events.rs).
+
+Because type and const parameters are dispatch-scoped, they cannot appear in
+stored state data or typed exception payloads. A declared lifetime may be
+shared with state data; generated dispatch methods reuse that machine lifetime.
+A `where` clause requires at least one declared parameter.
+
 ## Orthogonal and composite machines
 
 Multiple `*` rows create orthogonal regions. One borrowed event is broadcast

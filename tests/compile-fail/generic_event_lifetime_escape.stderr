@@ -1,0 +1,7 @@
+error: lifetime may not live long enough
+  --> tests/compile-fail/generic_event_lifetime_escape.rs:17:9
+   |
+16 |     fn retain<'event>(&mut self, event: &Borrowed<'event>) -> Result<(), ()> {
+   |               ------ lifetime `'event` defined here
+17 |         self.retained = Some(event.0);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ assignment requires that `'event` must outlive `'static`

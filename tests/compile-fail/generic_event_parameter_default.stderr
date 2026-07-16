@@ -1,0 +1,5 @@
+error: generic event parameters cannot have defaults because they are propagated to generated methods
+ --> tests/compile-fail/generic_event_parameter_default.rs:6:15
+  |
+6 |     Defaulted<T = u32> {
+  |               ^

@@ -1,0 +1,5 @@
+error: generic event `Message` must use declared parameter `N` so generated dispatch and callbacks can infer the complete event family
+ --> tests/compile-fail/generic_event_missing_const_parameter.rs:7:23
+  |
+7 |         *Idle + event<Message<T>> = X,
+  |                       ^^^^^^^

@@ -1,0 +1,5 @@
+error: typed exception payloads cannot use dispatch-scoped generic event parameter `T`
+ --> tests/compile-fail/generic_event_exception_generic.rs:9:27
+  |
+9 |          Idle + exception<Recover>(Recover<T>) / recover = X,
+  |                           ^^^^^^^

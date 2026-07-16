@@ -1,0 +1,5 @@
+error: generic events cannot use `defer` or `process(...)` because their dispatch-scoped parameters cannot be stored in the machine's fixed event queue
+ --> tests/compile-fail/generic_event_defer.rs:6:5
+  |
+6 |     Deferred<T> {
+  |     ^^^^^^^^

@@ -1,7 +1,11 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use std::ops::Sub;
-use syn::{parse, spanned::Spanned, GenericArgument, Lifetime, PathArguments, Type};
+use std::{collections::HashSet, ops::Sub};
+use syn::visit::{self, Visit};
+use syn::{
+    parse, spanned::Spanned, BoundLifetimes, GenericParam, Lifetime, TraitBound, Type, TypeBareFn,
+    TypeReference,
+};
 
 #[derive(Default, Debug, Clone)]
 pub struct Lifetimes {
@@ -22,6 +26,11 @@ impl Lifetimes {
     }
 
     pub fn insert(&mut self, lifetime: &Lifetime) {
+        // `'static` is a concrete lifetime argument, not a lifetime parameter that
+        // can be repeated on a generated item.
+        if lifetime.ident == "static" {
+            return;
+        }
         if !self.lifetimes.contains(lifetime) {
             self.lifetimes.push(lifetime.to_owned());
         }
@@ -43,38 +52,88 @@ impl Lifetimes {
 
     /// Extracts lifetimes from a [`Type`]
     pub fn insert_from_type(&mut self, data_type: &Type) -> Result<(), parse::Error> {
-        match data_type {
-            Type::Reference(tr) => {
-                if let Some(lifetime) = &tr.lifetime {
-                    self.insert(lifetime);
-                } else {
-                    return Err(parse::Error::new(
-                        data_type.span(),
-                        "This event's data lifetime is not defined, consider adding a lifetime.",
-                    ));
-                }
-            }
-            Type::Path(tp) => {
-                let punct = &tp.path.segments;
-                for p in punct.iter() {
-                    if let PathArguments::AngleBracketed(abga) = &p.arguments {
-                        for arg in &abga.args {
-                            if let GenericArgument::Lifetime(lifetime) = &arg {
-                                self.insert(lifetime);
-                            }
-                        }
-                    }
-                }
-            }
-            Type::Tuple(tuple) => {
-                for elem in tuple.elems.iter() {
-                    self.insert_from_type(elem)?;
-                }
-            }
-            _ => {}
+        struct Collector<'a> {
+            lifetimes: &'a mut Lifetimes,
+            missing_reference_lifetime: Option<proc_macro2::Span>,
+            bound_lifetime_scopes: Vec<HashSet<String>>,
+            bare_fn_depth: usize,
         }
 
-        Ok(())
+        impl Collector<'_> {
+            fn push_bound_lifetimes(&mut self, lifetimes: &BoundLifetimes) {
+                self.bound_lifetime_scopes.push(
+                    lifetimes
+                        .lifetimes
+                        .iter()
+                        .filter_map(|param| match param {
+                            GenericParam::Lifetime(param) => Some(param.lifetime.ident.to_string()),
+                            GenericParam::Type(_) | GenericParam::Const(_) => None,
+                        })
+                        .collect(),
+                );
+            }
+
+            fn lifetime_is_bound(&self, lifetime: &Lifetime) -> bool {
+                self.bound_lifetime_scopes
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.contains(&lifetime.ident.to_string()))
+            }
+        }
+
+        impl<'ast> Visit<'ast> for Collector<'_> {
+            fn visit_lifetime(&mut self, lifetime: &'ast Lifetime) {
+                if !self.lifetime_is_bound(lifetime) {
+                    self.lifetimes.insert(lifetime);
+                }
+            }
+
+            fn visit_type_reference(&mut self, reference: &'ast TypeReference) {
+                if reference.lifetime.is_none()
+                    && self.bare_fn_depth == 0
+                    && self.missing_reference_lifetime.is_none()
+                {
+                    self.missing_reference_lifetime = Some(reference.span());
+                }
+                visit::visit_type_reference(self, reference);
+            }
+
+            fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                self.bare_fn_depth += 1;
+                if let Some(lifetimes) = &bare_fn.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_type_bare_fn(self, bare_fn);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_type_bare_fn(self, bare_fn);
+                }
+                self.bare_fn_depth -= 1;
+            }
+
+            fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
+                if let Some(lifetimes) = &trait_bound.lifetimes {
+                    self.push_bound_lifetimes(lifetimes);
+                    visit::visit_trait_bound(self, trait_bound);
+                    self.bound_lifetime_scopes.pop();
+                } else {
+                    visit::visit_trait_bound(self, trait_bound);
+                }
+            }
+        }
+
+        let mut collector = Collector {
+            lifetimes: self,
+            missing_reference_lifetime: None,
+            bound_lifetime_scopes: Vec::new(),
+            bare_fn_depth: 0,
+        };
+        collector.visit_type(data_type);
+        collector.missing_reference_lifetime.map_or(Ok(()), |span| {
+            Err(parse::Error::new(
+                span,
+                "This event's data lifetime is not defined, consider adding a lifetime.",
+            ))
+        })
     }
 }
 
@@ -133,15 +192,31 @@ mod tests {
 
     #[test]
     fn extracts_nested_and_generic_lifetimes_without_duplicates() {
-        let lifetimes = Lifetimes::from_type(&ty("(&'a str, Wrapper<'b, &'a u8>)")).unwrap();
-        assert_eq!(lifetimes.as_slice().len(), 2);
-        assert_eq!(quote!(#lifetimes).to_string(), "'a , 'b ,");
+        let lifetimes =
+            Lifetimes::from_type(&ty("(&'a str, Wrapper<'b, Option<&'c u8>, &'a u8>)")).unwrap();
+        assert_eq!(lifetimes.as_slice().len(), 3);
+        assert_eq!(quote!(#lifetimes).to_string(), "'a , 'b , 'c ,");
     }
 
     #[test]
     fn rejects_reference_without_explicit_lifetime() {
         let error = Lifetimes::from_type(&ty("&str")).unwrap_err();
         assert!(error.to_string().contains("lifetime is not defined"));
+    }
+
+    #[test]
+    fn excludes_higher_ranked_bound_lifetimes() {
+        let lifetimes = Lifetimes::from_type(&ty(
+            "Wrapper<for<'local> fn(&'local u8), dyn for<'bound> Trait<'bound>, &'event u8>",
+        ))
+        .unwrap();
+        assert_eq!(quote!(#lifetimes).to_string(), "'event ,");
+    }
+
+    #[test]
+    fn accepts_implicitly_late_bound_bare_function_lifetimes() {
+        let lifetimes = Lifetimes::from_type(&ty("Wrapper<fn(&u8), &'event u8>")).unwrap();
+        assert_eq!(quote!(#lifetimes).to_string(), "'event ,");
     }
 
     #[test]
@@ -159,5 +234,11 @@ mod tests {
         let empty = Lifetimes::from_type(&ty("u8")).unwrap();
         assert!(empty.is_empty());
         assert!(quote!(#empty).is_empty());
+    }
+
+    #[test]
+    fn static_is_kept_concrete_instead_of_becoming_a_parameter() {
+        let lifetimes = Lifetimes::from_type(&ty("Message<'static>")).unwrap();
+        assert!(lifetimes.is_empty());
     }
 }

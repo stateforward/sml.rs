@@ -42,6 +42,21 @@ pub fn sml(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             })
         });
         if has_composite {
+            if let Some(machine) = input
+                .machines
+                .iter()
+                .find(|machine| !machine.event_generics.params.is_empty())
+            {
+                return syn::Error::new(
+                    machine.name.as_ref().map_or_else(
+                        proc_macro2::Span::call_site,
+                        proc_macro2::Ident::span,
+                    ),
+                    "generic event declarations are currently supported by flat `sml!` tables; composite tables do not yet have dispatch-scoped generic event enums",
+                )
+                .to_compile_error()
+                .into();
+            }
             return match composite_codegen::generate_code(&input.machines) {
                 Ok(code) => code.into(),
                 Err(error) => error.to_compile_error().into(),
@@ -65,6 +80,17 @@ pub fn sml(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .count()
         > 1
     {
+        if !machine.event_generics.params.is_empty() {
+            return syn::Error::new(
+                machine.name.as_ref().map_or_else(
+                    proc_macro2::Span::call_site,
+                    proc_macro2::Ident::span,
+                ),
+                "generic event declarations are currently supported by flat `sml!` tables; orthogonal tables do not yet have dispatch-scoped generic event enums",
+            )
+            .to_compile_error()
+            .into();
+        }
         return match orthogonal_codegen::generate_code(&machine) {
             Ok(code) => code.into(),
             Err(error) => error.to_compile_error().into(),

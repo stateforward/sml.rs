@@ -1,0 +1,5 @@
+error: declared generic event parameter `T` must be used by at least one event payload
+ --> tests/compile-fail/generic_event_unused_parameter.rs:4:12
+  |
+4 |     Unused<T> {
+  |            ^

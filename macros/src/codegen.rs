@@ -5,7 +5,52 @@ use crate::parser::transition::visit_guards;
 use crate::parser::{lifetimes::Lifetimes, transition::EvalAction, AsyncIdent, ParsedStateMachine};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::Type;
+use std::collections::HashSet;
+use syn::visit::Visit;
+use syn::{parse_quote, Type};
+
+#[derive(Default)]
+struct SourceIdents(HashSet<String>);
+
+impl<'ast> Visit<'ast> for SourceIdents {
+    fn visit_ident(&mut self, ident: &'ast Ident) {
+        self.0.insert(ident.to_string());
+    }
+}
+
+fn source_idents(sm: &ParsedStateMachine, event_generics: &syn::Generics) -> SourceIdents {
+    let mut idents = SourceIdents::default();
+    idents.visit_generics(event_generics);
+    for data_type in sm
+        .state_data
+        .data_types
+        .values()
+        .chain(sm.event_data.data_types.values())
+    {
+        idents.visit_type(data_type);
+    }
+    if let Some(temporary_context) = &sm.temporary_context_type {
+        idents.visit_type(temporary_context);
+    }
+    if let Some(error_type) = &sm.fixed_error_type {
+        idents.visit_type(error_type);
+    }
+    idents
+}
+
+fn fresh_type_ident(reserved: &mut SourceIdents, base: &str) -> Ident {
+    for suffix in 0_u32.. {
+        let name = if suffix == 0 {
+            base.to_owned()
+        } else {
+            format!("{base}{suffix}")
+        };
+        if reserved.0.insert(name.clone()) {
+            return Ident::new(&name, Span::call_site());
+        }
+    }
+    unreachable!("finite generic parameter list always leaves a fresh identifier")
+}
 
 pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let (sm_name, sm_name_span) = sm
@@ -21,6 +66,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let state_machine_type_name = format_ident!("{sm_name}StateMachine", span = sm_name_span);
     let state_machine_context_type_name =
         format_ident!("{sm_name}StateMachineContext", span = sm_name_span);
+    let event_generics = sm.event_generics_with_lifetimes(&sm.event_data.all_lifetimes);
+    let mut reserved_idents = source_idents(sm, &event_generics);
+    let context_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlContext");
+    let event_input_ident = fresh_type_ident(&mut reserved_idents, "__SmlEventInput");
+    let (event_impl_generics, event_type_generics, event_where_clause) =
+        event_generics.split_for_impl();
 
     // Get only the unique states
     let mut state_list: Vec<_> = sm.states.values().collect();
@@ -286,6 +337,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                             quote! { error_data }
                         } else {
                             match sm.event_data.data_types.get(&mapping.event.to_string()) {
+                                Some(Type::Reference(_)) if mapping.event_external => {
+                                    quote! { event_data }
+                                }
                                 Some(_)
                                     if mapping.event_external
                                         && mapping.event_kind == EventKind::Completion =>
@@ -493,6 +547,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                 all_lifetimes.extend(&in_state_lifetimes);
                 all_lifetimes.extend(&out_state_lifetimes);
                 all_lifetimes.extend(&event_lifetimes);
+                let callback_generics = sm.callback_generics_with_lifetimes(
+                    &all_lifetimes,
+                    sm.event_data.data_types.get(&event),
+                );
+                let (callback_impl_generics, _, callback_where_clause) =
+                    callback_generics.split_for_impl();
 
                 // Create the guard traits for user implementation
                 if let Some(guard_expression) = &transition.guard {
@@ -512,7 +572,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                             guard_list.extend(quote! {
                             #[allow(missing_docs)]
                             #[allow(clippy::result_unit_err)]
-                            #is_async fn #guard <#all_lifetimes> (&self, #temporary_context #state_data #event_data) -> Result<bool,#custom_error>;
+                            #is_async fn #guard #callback_impl_generics (&self, #temporary_context #state_data #event_data) -> Result<bool,#custom_error> #callback_where_clause;
                         });
                         };
                         Ok(())
@@ -537,10 +597,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                             guard_list.extend(quote! {
                                 #[allow(missing_docs)]
                                 #[allow(clippy::result_unit_err)]
-                                #is_async fn #guard<#all_lifetimes>(
+                                #is_async fn #guard #callback_impl_generics(
                                     &self,
                                     #temporary_context #state_data #event_data
-                                ) -> Result<bool, #custom_error>;
+                                ) -> Result<bool, #custom_error> #callback_where_clause;
                             });
                         }
                         Ok(())
@@ -593,6 +653,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         quote! { error_data: &#error_type }
                     } else {
                         match sm.event_data.data_types.get(&event) {
+                            Some(et @ Type::Reference(_)) if event_mapping.event_external => {
+                                quote! { event_data: #et }
+                            }
                             Some(et) if event_mapping.event_external => {
                                 quote! { event_data: &#et }
                             }
@@ -609,7 +672,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         action_list.extend(quote! {
                             #[allow(missing_docs)]
                             #[allow(clippy::unused_unit)]
-                            #is_async fn #action <#all_lifetimes> (&mut self, #temporary_context #state_data #event_data) -> #return_type;
+                            #is_async fn #action #callback_impl_generics (&mut self, #temporary_context #state_data #event_data) -> #return_type #callback_where_clause;
                         });
                     }
                 }
@@ -625,16 +688,19 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         quote! {}
                     };
                     let event_data = match sm.event_data.data_types.get(&event) {
+                        Some(et @ Type::Reference(_)) if event_mapping.event_external => {
+                            quote! { event_data: #et }
+                        }
                         Some(et) if event_mapping.event_external => quote! { event_data: &#et },
                         Some(et) => quote! { event_data: #et },
                         None => quote! {},
                     };
                     action_list.extend(quote! {
                         #[allow(missing_docs)]
-                        #is_async fn #action<#all_lifetimes>(
+                        #is_async fn #action #callback_impl_generics(
                             &mut self,
                             #temporary_context #state_data #event_data
-                        ) -> Result<(), #custom_error>;
+                        ) -> Result<(), #custom_error> #callback_where_clause;
                     });
                 }
             }
@@ -1070,6 +1136,30 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         })
         .collect();
+    let anonymous_completion_state_arms: Vec<TokenStream> = transitions
+        .values()
+        .zip(in_states.iter().zip(events.iter().zip(code_blocks.iter())))
+        .filter_map(|(event_mappings, (in_state, (events, code_blocks)))| {
+            event_mappings
+                .values()
+                .zip(events.iter().zip(code_blocks.iter()))
+                .find(|(mapping, _)| {
+                    mapping.event_kind == EventKind::Completion && mapping.event_wildcard
+                })
+                .map(|(_, (_, code_block))| {
+                    quote! {
+                        #states_type_name::#in_state => {
+                            #code_block
+
+                            #[allow(unreachable_code)]
+                            {
+                                Ok(false)
+                            }
+                        }
+                    }
+                })
+        })
+        .collect();
 
     let starting_state = &sm.starting_state;
     let initial_entry_arms: Vec<_> = sm
@@ -1110,7 +1200,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let pending_init = async_queue.then(|| quote! { pending: ::sml::utility::EventQueue::new(), });
     let new_sm_code = match sm.state_data.data_types.get(&starting_state_name) {
         Some(st) if type_matches_state(st, &starting_state_name) => quote! {
-            pub fn new(context: T) -> Self
+            pub fn new(context: #context_type_ident) -> Self
             where
                 #st: core::default::Default,
             {
@@ -1122,7 +1212,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                 }
             }
 
-            pub const fn new_with_state_data(context: T, state_data: #st) -> Self {
+            pub const fn new_with_state_data(context: #context_type_ident, state_data: #st) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state(state_data),
                     context,
@@ -1132,7 +1222,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         },
         Some(st) => quote! {
-            pub const fn new(context: T, state_data: #st ) -> Self {
+            pub const fn new(context: #context_type_ident, state_data: #st ) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state (state_data),
                     context,
@@ -1142,7 +1232,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         },
         None => quote! {
-            pub const fn new(context: T ) -> Self {
+            pub const fn new(context: #context_type_ident ) -> Self {
                 #state_machine_type_name {
                     state: #states_type_name::#starting_state,
                     context,
@@ -1158,13 +1248,54 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
     // lifetimes that exists in #events_type_name but not in #states_type_name
     let event_unique_lifetimes = event_lifetimes - state_lifetimes;
+    let mut dispatch_generics = sm.event_generics_with_lifetimes(&event_unique_lifetimes);
+    dispatch_generics.params = dispatch_generics
+        .params
+        .into_iter()
+        .filter(|param| {
+            !matches!(
+                param,
+                syn::GenericParam::Lifetime(param)
+                    if state_lifetimes.as_slice().contains(&param.lifetime)
+            )
+        })
+        .collect();
+    let (dispatch_impl_generics, _, dispatch_where_clause) = dispatch_generics.split_for_impl();
+    let mut process_event_generics = dispatch_generics.clone();
+    process_event_generics
+        .params
+        .push(parse_quote!(#event_input_ident));
+    process_event_generics
+        .make_where_clause()
+        .predicates
+        .push(parse_quote!(
+            #event_input_ident: Into<#events_type_name #event_type_generics>
+        ));
+    let (process_event_impl_generics, _, process_event_where_clause) =
+        process_event_generics.split_for_impl();
+    let mut machine_lifetimes = state_lifetimes.clone();
+    machine_lifetimes.extend(event_lifetimes);
+    let mut machine_impl_generics = sm.event_generics_with_lifetimes(&machine_lifetimes);
+    machine_impl_generics.params.push(parse_quote!(
+        #context_type_ident: #state_machine_context_type_name
+    ));
+    let (machine_impl_generics, _, machine_impl_where_clause) =
+        machine_impl_generics.split_for_impl();
     let external_event_conversions: Vec<_> = external_events
         .iter()
         .map(|event| {
+            let event_type = sm
+                .event_data
+                .data_types
+                .get(&event.to_string())
+                .expect("external events carry their concrete type");
             quote! {
-                impl<#event_lifetimes> From<#event> for #events_type_name<#event_lifetimes> {
+                impl #event_impl_generics From<#event_type>
+                    for #events_type_name #event_type_generics
+                    #event_where_clause
+                {
                     #[inline(always)]
-                    fn from(event: #event) -> Self {
+                    fn from(event: #event_type) -> Self {
                         Self::#event(event)
                     }
                 }
@@ -1186,6 +1317,43 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             }
         })
         .collect();
+    let completion_generic_type = completion_events.iter().find_map(|event| {
+        sm.event_data
+            .data_types
+            .get(&event.to_string())
+            .filter(|event_type| sm.type_uses_event_generics(event_type))
+    });
+    let completion_origin_generics =
+        sm.completion_generics_with_lifetimes(&completion_lifetimes, completion_generic_type);
+    let (
+        completion_origin_impl_generics,
+        completion_origin_type_generics,
+        completion_origin_where_clause,
+    ) = completion_origin_generics.split_for_impl();
+    let temporary_context_uses_event_generics = sm.temporary_context_uses_event_generics();
+    let process_completion_generics = if temporary_context_uses_event_generics {
+        sm.event_generics_with_lifetimes(&completion_lifetimes)
+    } else {
+        completion_origin_generics.clone()
+    };
+    let (process_completion_impl_generics, _, process_completion_where_clause) =
+        process_completion_generics.split_for_impl();
+    let temporary_context_generics = if temporary_context_uses_event_generics {
+        sm.event_generics.clone()
+    } else {
+        syn::Generics::default()
+    };
+    let (temporary_context_impl_generics, _, temporary_context_where_clause) =
+        temporary_context_generics.split_for_impl();
+    let initialize_uses_temporary_context = sm.temporary_context_type.is_some()
+        && (has_anonymous_completion || !entry_actions.is_empty());
+    let initialize_generics = if initialize_uses_temporary_context {
+        temporary_context_generics.clone()
+    } else {
+        syn::Generics::default()
+    };
+    let (initialize_impl_generics, _, initialize_where_clause) =
+        initialize_generics.split_for_impl();
     let completion_origin_clone_arms: Vec<_> = completion_events
         .iter()
         .map(|event| {
@@ -1218,7 +1386,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     };
     let completion_origin_definition = if has_completion_events {
         quote! {
-            enum #completion_origin_type_name<#completion_lifetimes> {
+            enum #completion_origin_type_name #completion_origin_impl_generics
+                #completion_origin_where_clause
+            {
                 #anonymous_completion_variant
                 #(#completion_origin_variants),*
             }
@@ -1255,9 +1425,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let error_type = if let Some(fixed_error_type) = &sm.fixed_error_type {
         quote! { #error_type_name<#fixed_error_type> }
     } else if sm.custom_error {
-        quote! {
-            #error_type_name<<T as #state_machine_context_type_name>::Error>
-        }
+        quote! { #error_type_name<<#context_type_ident as #state_machine_context_type_name>::Error> }
     } else {
         quote! {#error_type_name}
     };
@@ -1265,13 +1433,33 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let process_completion = if has_completion_events {
         quote! {
             #[inline]
-            #is_async fn process_completion<#completion_lifetimes>(
+            #is_async fn process_completion #process_completion_impl_generics(
                 &mut self,
                 #temporary_context
-                origin: &#completion_origin_type_name<#completion_lifetimes>
-            ) -> Result<bool, #error_type> {
+                origin: &#completion_origin_type_name #completion_origin_type_generics
+            ) -> Result<bool, #error_type>
+                #process_completion_where_clause
+            {
                 match self.state {
                     #(#completion_state_arms),*
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let process_anonymous_completion = if has_anonymous_completion {
+        quote! {
+            #[inline]
+            #is_async fn process_anonymous_completion #temporary_context_impl_generics(
+                &mut self,
+                #temporary_context
+            ) -> Result<bool, #error_type>
+                #temporary_context_where_clause
+            {
+                match self.state {
+                    #(#anonymous_completion_state_arms,)*
+                    _ => Ok(false),
                 }
             }
         }
@@ -1289,11 +1477,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     });
     let process_exception = if has_exception_handlers {
         quote! {
-            #is_async fn process_exception(
+            #is_async fn process_exception #temporary_context_impl_generics(
                 &mut self,
                 #temporary_context
                 error: #error_type,
-            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type> {
+            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type>
+                #temporary_context_where_clause
+            {
                 #exception_error_binding
                 match self.state {
                     #(#exception_state_arms,)*
@@ -1338,11 +1528,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     };
     let queued_dispatch = async_queue.then(|| {
         quote! {
-            async fn dispatch_queued<#event_unique_lifetimes>(
+            async fn dispatch_queued #dispatch_impl_generics(
                 &mut self,
                 #temporary_context
-                event: #events_type_name<#event_lifetimes>,
-            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type> {
+                event: #events_type_name #event_type_generics,
+            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type>
+                #dispatch_where_clause
+            {
                 #capture_completion_origin
                 self.context.log_process_event(self.state(), &event);
                 #event_dispatch
@@ -1360,13 +1552,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         }
     } else {
         quote! {
-            let event: #events_type_name<#event_lifetimes> = event.into();
+            let event: #events_type_name #event_type_generics = event.into();
             #capture_completion_origin
             self.context.log_process_event(self.state(), &event);
             #event_dispatch
         }
     };
-    let initialize_context = if has_anonymous_completion {
+    let initialize_context = if initialize_uses_temporary_context {
         temporary_context.clone()
     } else {
         quote! {}
@@ -1374,11 +1566,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let initialize = {
         let stabilize = if has_anonymous_completion {
             quote! {
-                let completion_origin =
-                    #completion_origin_type_name::__AnyCompletion;
-                while self.process_completion(
+                while self.process_anonymous_completion(
                     #completion_context_call
-                    &completion_origin
                 )#completion_await? {}
             }
         } else {
@@ -1387,10 +1576,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         quote! {
             /// Enters the initial state and runs anonymous `completion<_>`
             /// transitions until the machine reaches a stable state.
-            pub #is_async fn initialize(
+            pub #is_async fn initialize #initialize_impl_generics(
                 &mut self,
                 #initialize_context
-            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type> {
+            ) -> Result<&#states_type_name<#state_lifetimes>, #error_type>
+                #initialize_where_clause
+            {
                 match self.state {
                     #(#initial_entry_arms),*
                 }
@@ -1402,16 +1593,17 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
     let machine_trait_impl = if !is_async_state_machine && sm.temporary_context_type.is_none() {
         quote! {
-            impl<#state_lifetimes #event_unique_lifetimes T: #state_machine_context_type_name>
-                ::sml::Machine<#events_type_name<#event_lifetimes>>
-                for #state_machine_type_name<#state_lifetimes T>
+            impl #machine_impl_generics
+                ::sml::Machine<#events_type_name #event_type_generics>
+                for #state_machine_type_name<#state_lifetimes #context_type_ident>
+                #machine_impl_where_clause
             {
                 type State = #states_type_name<#state_lifetimes>;
 
                 #[inline]
                 fn process_event(
                     &mut self,
-                    event: #events_type_name<#event_lifetimes>
+                    event: #events_type_name #event_type_generics
                 ) -> bool {
                     self.process_event(event).is_ok()
                 }
@@ -1421,8 +1613,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         quote! {}
     };
     let terminated_trait_impl = quote! {
-        impl<#state_lifetimes T: #state_machine_context_type_name>
-            ::sml::Terminated for #state_machine_type_name<#state_lifetimes T>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
+            ::sml::Terminated for #state_machine_type_name<#state_lifetimes #context_type_ident>
         {
             #[inline(always)]
             fn is_terminated(&self) -> bool {
@@ -1434,10 +1626,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let states_attr_list = &sm.states_attr;
     let events_attr_list = &sm.events_attr;
     let deferred_field = has_deferred_events.then(|| {
-        quote! { deferred: ::sml::utility::EventQueue<#events_type_name<#event_lifetimes>, 16>, }
+        quote! { deferred: ::sml::utility::EventQueue<#events_type_name #event_type_generics, 16>, }
     });
     let pending_field = async_queue.then(|| {
-        quote! { pending: ::sml::utility::EventQueue<#events_type_name<#event_lifetimes>, 16>, }
+        quote! { pending: ::sml::utility::EventQueue<#events_type_name #event_type_generics, 16>, }
     });
     // Build the states and events output
     quote! {
@@ -1453,7 +1645,11 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             /// Called at the beginning of a state machine's `process_event()`. No-op by
             /// default but can be overridden in implementations of a state machine's
             /// `StateMachineContext` trait.
-            fn log_process_event(&self, current_state: & #states_type_name, event: & #events_type_name) {}
+            fn log_process_event #event_impl_generics(
+                &self,
+                current_state: &#states_type_name,
+                event: &#events_type_name #event_type_generics,
+            ) #event_where_clause {}
 
             /// Called after executing a guard during `process_event()`. No-op by
             /// default but can be overridden in implementations of a state machine's
@@ -1487,14 +1683,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         /// List of auto-generated events.
         #[allow(missing_docs)]
         #(#events_attr_list)*
-        pub enum #events_type_name <#event_lifetimes> { #(#event_list),* }
+        pub enum #events_type_name #event_impl_generics #event_where_clause {
+            #(#event_list),*
+        }
 
         #(#external_event_conversions)*
 
         #completion_origin_definition
 
         /// Manually define PartialEq for #events_type_name based on variant only to address issue-#21
-        impl<#event_lifetimes> PartialEq for #events_type_name <#event_lifetimes> {
+        impl #event_impl_generics PartialEq for #events_type_name #event_type_generics
+            #event_where_clause
+        {
             fn eq(&self, other: &Self) -> bool {
                 use core::mem::discriminant;
                 discriminant(self) == discriminant(other)
@@ -1517,15 +1717,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         }
 
         /// State machine structure definition.
-        pub struct #state_machine_type_name<#state_lifetimes T: #state_machine_context_type_name> {
+        pub struct #state_machine_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name> {
             state: #states_type_name <#state_lifetimes>,
-            context: T,
+            context: #context_type_ident,
             #deferred_field
             #pending_field
         }
 
-        impl<#state_lifetimes T: #state_machine_context_type_name> #state_machine_type_name<#state_lifetimes T> {
-            #process_completion
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
+            #state_machine_type_name<#state_lifetimes #context_type_ident>
+        {
+        #process_completion
+        #process_anonymous_completion
             #process_exception
             #initialize
             #queued_dispatch
@@ -1536,7 +1739,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
             /// Creates a new state machine with an initial state.
             #[inline(always)]
-            pub const fn new_with_state(context: T, initial_state: #states_type_name <#state_lifetimes>) -> Self {
+            pub const fn new_with_state(context: #context_type_ident, initial_state: #states_type_name <#state_lifetimes>) -> Self {
                 #state_machine_type_name {
                     state: initial_state,
                     context,
@@ -1587,13 +1790,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
             /// Returns the current context.
             #[inline(always)]
-            pub fn context(&self) -> &T {
+            pub fn context(&self) -> &#context_type_ident {
                 &self.context
             }
 
             /// Returns the current context as a mutable reference.
             #[inline(always)]
-            pub fn context_mut(&mut self) -> &mut T {
+            pub fn context_mut(&mut self) -> &mut #context_type_ident {
                 &mut self.context
             }
 
@@ -1601,13 +1804,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
             ///
             /// It will return `Ok(&NextState)` if the transition was successful, or `Err(#error_type_name)`
             /// if there was an error in the transition.
-            pub #is_async fn process_event <#event_unique_lifetimes EventInput> (
+            pub #is_async fn process_event #process_event_impl_generics (
                 &mut self,
                 #temporary_context
-                event: EventInput
+                event: #event_input_ident
             ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
-            where
-                EventInput: Into<#events_type_name<#event_lifetimes>>,
+            #process_event_where_clause
             {
                 #public_dispatch
             }

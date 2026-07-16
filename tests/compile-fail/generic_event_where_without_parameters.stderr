@@ -1,0 +1,5 @@
+error: a generic event `where` clause requires declared parameters after the machine name
+ --> tests/compile-fail/generic_event_where_without_parameters.rs:5:5
+  |
+5 |     where
+  |     ^^^^^
