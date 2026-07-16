@@ -18,14 +18,14 @@ context by value, and has no runtime allocator or dynamic dispatch.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.1" }
+sml = { package = "stateforward-sml", version = "1.2" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.1", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "1.2", features = ["graphviz"] }
 ```
 
 ## Quick start

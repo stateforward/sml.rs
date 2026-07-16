@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+## 1.2.0 - 2026-07-16
+
 ### Added
 
 - Add dispatch-scoped lifetime, type, and const generics for typed events in
