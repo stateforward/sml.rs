@@ -166,7 +166,8 @@ Higher-ranked lifetimes remain local to their binder, so a payload such as
 `event<Message<for<'borrow> fn(&'borrow T), T>>` does not add `'borrow` to the
 generated event family. Callback and completion APIs retain only the
 event-specific lifetimes, bounds, and `where` predicates required by their own
-payloads.
+payloads. Rust's implicit late binding in a bare function payload such as
+`fn(&T)` is supported as well.
 
 Multiple leading `*` states define orthogonal regions exactly as in `sml.cpp`:
 

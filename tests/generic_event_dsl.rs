@@ -458,17 +458,14 @@ pub struct HigherRankedEvent<F, T>(F, std::marker::PhantomData<T>);
 
 sml! {
     GenericHigherRanked<T> {
-        *Idle + event<HigherRankedEvent<for<'borrow> fn(&'borrow T), T>> / inspect_higher_ranked = X,
+        *Idle + event<HigherRankedEvent<fn(&T), T>> / inspect_higher_ranked = X,
     }
 }
 
 struct HigherRankedContext;
 
 impl GenericHigherRankedStateMachineContext for HigherRankedContext {
-    fn inspect_higher_ranked<T>(
-        &mut self,
-        event: &HigherRankedEvent<for<'borrow> fn(&'borrow T), T>,
-    ) -> Result<(), ()> {
+    fn inspect_higher_ranked<T>(&mut self, event: &HigherRankedEvent<fn(&T), T>) -> Result<(), ()> {
         let _ = (&event.0, &event.1);
         Ok(())
     }
@@ -478,7 +475,7 @@ impl GenericHigherRankedStateMachineContext for HigherRankedContext {
 fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
     fn observe(_: &u32) {}
 
-    let event: HigherRankedEvent<for<'borrow> fn(&'borrow u32), u32> =
+    let event: HigherRankedEvent<fn(&u32), u32> =
         HigherRankedEvent(observe, std::marker::PhantomData);
     let mut machine = GenericHigherRankedStateMachine::new(HigherRankedContext);
 

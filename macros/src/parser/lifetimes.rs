@@ -56,6 +56,7 @@ impl Lifetimes {
             lifetimes: &'a mut Lifetimes,
             missing_reference_lifetime: Option<proc_macro2::Span>,
             bound_lifetime_scopes: Vec<HashSet<String>>,
+            bare_fn_depth: usize,
         }
 
         impl Collector<'_> {
@@ -88,13 +89,17 @@ impl Lifetimes {
             }
 
             fn visit_type_reference(&mut self, reference: &'ast TypeReference) {
-                if reference.lifetime.is_none() && self.missing_reference_lifetime.is_none() {
+                if reference.lifetime.is_none()
+                    && self.bare_fn_depth == 0
+                    && self.missing_reference_lifetime.is_none()
+                {
                     self.missing_reference_lifetime = Some(reference.span());
                 }
                 visit::visit_type_reference(self, reference);
             }
 
             fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
+                self.bare_fn_depth += 1;
                 if let Some(lifetimes) = &bare_fn.lifetimes {
                     self.push_bound_lifetimes(lifetimes);
                     visit::visit_type_bare_fn(self, bare_fn);
@@ -102,6 +107,7 @@ impl Lifetimes {
                 } else {
                     visit::visit_type_bare_fn(self, bare_fn);
                 }
+                self.bare_fn_depth -= 1;
             }
 
             fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {
@@ -119,6 +125,7 @@ impl Lifetimes {
             lifetimes: self,
             missing_reference_lifetime: None,
             bound_lifetime_scopes: Vec::new(),
+            bare_fn_depth: 0,
         };
         collector.visit_type(data_type);
         collector.missing_reference_lifetime.map_or(Ok(()), |span| {
@@ -203,6 +210,12 @@ mod tests {
             "Wrapper<for<'local> fn(&'local u8), dyn for<'bound> Trait<'bound>, &'event u8>",
         ))
         .unwrap();
+        assert_eq!(quote!(#lifetimes).to_string(), "'event ,");
+    }
+
+    #[test]
+    fn accepts_implicitly_late_bound_bare_function_lifetimes() {
+        let lifetimes = Lifetimes::from_type(&ty("Wrapper<fn(&u8), &'event u8>")).unwrap();
         assert_eq!(quote!(#lifetimes).to_string(), "'event ,");
     }
 

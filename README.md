@@ -201,7 +201,8 @@ every external event in one generic table must carry every declared type and
 const parameter so `process_event` can infer the single generated event family;
 lifetimes may remain event-specific, including inside nested type arguments.
 Higher-ranked lifetimes such as `for<'borrow> fn(&'borrow T)` remain bound inside
-the payload type rather than becoming event-family parameters. Generated callback
+the payload type rather than becoming event-family parameters; the equivalent
+bare-function elision `fn(&T)` remains implicitly late-bound. Generated callback
 signatures retain only the event-specific lifetimes and predicates they use.
 Temporary contexts may use event parameters and propagate them to every callback,
 but they must carry every declared type and const parameter and do not by
