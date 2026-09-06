@@ -1,5 +1,9 @@
 use core::fmt::Debug;
-use sml::{sml, Machine};
+use sml::{sml, sml_policies, Machine};
+
+sml_policies!(TestingPolicies {
+    testing: sml::TestingPolicy,
+});
 
 pub struct Owned<T>(T);
 
@@ -397,10 +401,14 @@ impl GenericLaterEntryStateMachineContext for LaterEntryContext {
 
 #[test]
 fn initialize_runs_later_state_entry_actions_with_generic_context() {
-    let mut machine = GenericLaterEntryStateMachine::new(LaterEntryContext);
+    let mut machine: GenericLaterEntryStateMachine<LaterEntryContext, TestingPolicies> =
+        GenericLaterEntryStateMachine::new_with_policy(
+            LaterEntryContext,
+            TestingPolicies::default(),
+        );
     let mut values = TemporaryEntryValues(vec![String::from("value")]);
 
-    machine.set_state(GenericLaterEntryStates::Ready);
+    machine.set_current_states(GenericLaterEntryStates::Ready);
     machine.initialize(&mut values).unwrap();
     assert!(values.0.is_empty());
 }

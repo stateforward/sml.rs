@@ -4,7 +4,11 @@
 //! transition to the same output state can be described more succinctly
 #![deny(missing_docs)]
 
-use sml::sml;
+use sml::{sml, sml_policies};
+
+sml_policies!(TestingPolicies {
+    testing: sml::TestingPolicy,
+});
 
 // sml! {
 //     transitions: {
@@ -43,7 +47,8 @@ pub struct Context;
 impl BatteryStateMachineContext for Context {}
 
 fn main() {
-    let mut sm = BatteryStateMachine::new(Context);
+    let mut sm: BatteryStateMachine<Context, TestingPolicies> =
+        BatteryStateMachine::new_with_policy(Context, TestingPolicies::default());
 
     assert!(matches!(sm.state(), &BatteryStates::Idle));
 
@@ -73,23 +78,23 @@ fn main() {
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
     assert!(matches!(sm.state(), &BatteryStates::Discharged));
 
-    sm = BatteryStateMachine::new_with_state(Context, BatteryStates::Idle);
+    sm.set_current_states(BatteryStates::Idle);
     let r = sm.process_event(BatteryEvents::FaultDetected);
     assert!(matches!(r, Ok(&BatteryStates::Fault)));
 
-    sm = BatteryStateMachine::new_with_state(Context, BatteryStates::Charging);
+    sm.set_current_states(BatteryStates::Charging);
     let r = sm.process_event(BatteryEvents::FaultDetected);
     assert!(matches!(r, Ok(&BatteryStates::Fault)));
 
-    sm = BatteryStateMachine::new_with_state(Context, BatteryStates::Charged);
+    sm.set_current_states(BatteryStates::Charged);
     let r = sm.process_event(BatteryEvents::FaultDetected);
     assert!(matches!(r, Ok(&BatteryStates::Fault)));
 
-    sm = BatteryStateMachine::new_with_state(Context, BatteryStates::Discharging);
+    sm.set_current_states(BatteryStates::Discharging);
     let r = sm.process_event(BatteryEvents::FaultDetected);
     assert!(matches!(r, Ok(&BatteryStates::Fault)));
 
-    sm = BatteryStateMachine::new_with_state(Context, BatteryStates::Discharged);
+    sm.set_current_states(BatteryStates::Discharged);
     let r = sm.process_event(BatteryEvents::FaultDetected);
     assert!(matches!(r, Ok(&BatteryStates::Fault)));
 

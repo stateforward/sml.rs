@@ -6,6 +6,16 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+## 1.4.0 - 2026-09-04
+
+### Added
+
+- Add composable logger, observer, dispatch, thread-safety, testing, and queue
+  policies for generated machines.
+- Add static generated event/state names and owner-only policy accessors.
+- Add allocation-free `visit_current_events` queries for static event payload
+  types from the active flat, composite, and orthogonal states.
+
 ## 1.2.0 - 2026-07-16
 
 ### Added
@@ -51,7 +61,6 @@ All notable changes to this project are documented here. This project follows
 ## 1.0.0 - 2026-07-11
 
 ### Added
-
 - Add a C++-shaped transition-table DSL with native flat, composite,
   orthogonal, completion, exception, history, deferred, and processed-event
   semantics.

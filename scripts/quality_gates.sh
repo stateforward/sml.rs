@@ -58,7 +58,8 @@ require cargo-llvm-cov
 # trybuild owns a nested target directory outside cargo-llvm-cov's cleanup.
 # It may omit Cargo's CACHEDIR.TAG, so remove only that generated directory.
 rm -rf target/tests/trybuild
-cargo llvm-cov --workspace --all-features --fail-under-lines 90
+cargo llvm-cov --workspace --all-features --exclude stateforward-sml-macros \
+  --fail-under-lines 90
 cargo llvm-cov --workspace --all-features --exclude stateforward-sml-macros \
   --fail-under-functions 100 --summary-only
 

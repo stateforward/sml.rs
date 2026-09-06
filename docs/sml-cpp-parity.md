@@ -28,9 +28,9 @@ allows it; callback bodies and ownership remain Rust-native.
 | Terminal state semantics | Supported | Flat/orthogonal/composite machines recognize `X`; parent completion can depend on child termination |
 | Runtime event-ID dispatch table | Supported | Allocation-free `utility::DispatchTable` with checked O(1) routing; `tests/sdl_adapter.rs` covers the SDL-style orthogonal adapter |
 | State-machine pool and batch dispatch | Supported | Storage-generic `utility::SmPool`, indexed events, reset, and batch APIs |
-| Testing/state override API | Supported | `new_with_state` and `set_state` enable focused transition tests and restoration |
+| Testing/state override API | Supported | `TestingPolicy` gates `set_current_states` for focused transition tests and restoration; flat machines pass one state and orthogonal machines pass one per region |
 | Visitor/introspection API | Supported | Flat, orthogonal, and composite state queries/visitors operate without allocation |
-| Dispatch policy selection | Rust-native | Generated enum matches let LLVM select jump tables/branches; no runtime policy is required |
+| Dispatch policy selection | Supported | `JumpTable`, `BranchStm`, `SwitchStm`, and custom policies can admit events and select same-event candidates while the generated guard/action engine retains semantic control |
 | Diagram generation | Supported for flat tables | The `graphviz` feature renders `sml_<Machine>.svg` when `dot` is available and otherwise retains DOT under `OUT_DIR` |
 
 ## Performance invariant
@@ -127,6 +127,71 @@ allocation. The pool topologies differ and therefore measure policy tradeoffs,
 not a like-for-like language primitive. The C++ completed-run median excludes
 eight five-second timeouts, which are retained as part of the result.
 
+### Compile-time cost
+
+`benchmarks/compare_compile_time.py` measures clean native release builds and
+player-source edit rebuilds for equivalent Rust and C++ programs. It uses a
+temporary Rust consumer with only `sml.rs` as a dependency, excludes lockfile
+generation and downloads, and alternates language order across samples.
+
+The 2026-07-11 seven-run medians on Apple Silicon were:
+
+| Toolchain | Clean release build | Player edit and rebuild |
+|---|---:|---:|
+| Rust 1.94.0 | 4.714 s | 1.828 s |
+| Apple Clang 16.0.0 | 0.462 s | 0.457 s |
+
+Rust took 10.20 times as long for a clean build and 4.00 times as long for the
+edit rebuild. This is a known developer-experience tradeoff: Rust compiles the
+procedural-macro dependency stack and performs LTO, while the C++ program
+parses the header-only SML implementation inside one translation unit.
+
+### State-machine pool invariant
+
+`benchmarks/compare_sm_pool.py` compares the public Rust `SmPool` and C++
+`sm_pool` APIs over identical compact storage, indices, and event counts. The
+2026-07-11 medians from 21 rotated native-release runs were:
+
+| Path | Local | Random |
+|---|---:|---:|
+| Rust flat array | 0.312 ns/event | 0.335 ns/event |
+| C++ flat array | 0.275 ns/event | 0.282 ns/event |
+| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event |
+| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event |
+| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
+| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
+
+The Rust batch path performed zero timed allocations, beat C++ `sm_pool` by
+23.6% locally and 22.6% under random access, and remained within 16.0% and
+10.4% of its corresponding flat-array baselines. Pool throughput at or above
+C++ and zero steady-state allocations are cutover invariants for pooled
+state-machine workloads.
+
+### Async and scheduler policies
+
+`benchmarks/compare_extended.py` builds and alternates the Rust harnesses in
+`examples/async_allocator_benchmark.rs` and
+`examples/thread_pool_benchmark.rs` against the C++ policy harnesses in
+`benchmarks/async_allocator_cpp.cpp` and `benchmarks/thread_pool_cpp.cpp`.
+
+On 2026-07-11, 21 requested runs produced:
+
+| Policy path | Median | Reliability |
+|---|---:|---:|
+| Rust stack-polled async façade | 0.361 ns/event | 21/21 |
+| C++ inline `co_sm` | 1.982 ns/event | 21/21 |
+| Rust native async callbacks | 3.372 ns/event | 21/21 |
+| C++ pooled coroutine allocator | 21.506 ns/event | 21/21 |
+| C++ heap coroutine allocator | 49.427 ns/event | 21/21 |
+| Rust fixed-lane worker pool | 259.255 ns/task | 21/21 |
+| C++ fixed-ring thread pool | 1,139.283 ns/task | 13/21 |
+
+Both Rust timed paths reported zero allocations. The C++ allocator variants
+force the coroutine-frame path; the inline policy intentionally bypasses frame
+allocation. The pool topologies differ and therefore measure policy tradeoffs,
+not a like-for-like language primitive. The C++ completed-run median excludes
+eight five-second timeouts, which are retained as part of the result.
+
 ## Final verification
 
 <!-- enforced quality commands from scripts/quality_gates.sh and .github/workflows/*.yml -->
@@ -139,10 +204,11 @@ The cutover audit and every subsequent push use the repository gate:
 
 CI additionally requires Linux, macOS, and Windows tests, dependency and
 license policy, public API compatibility, an instrumented AddressSanitizer
-runtime harness, Miri, and a bounded libFuzzer run. Coverage fails below 90%
-workspace line coverage or below 100% runtime function coverage; this matches
-the sibling project's line threshold while making complete runtime API
-execution explicit.
+runtime harness, Miri, and a bounded libFuzzer run. Runtime coverage fails
+below 90% line coverage or below 100% function coverage; the compile-time
+procedural-macro implementation is excluded from that report while its unit
+tests remain in the workspace test gates. This matches the sibling project's
+line threshold while making complete runtime API execution explicit.
 
 An exact filename reconciliation found 25 upstream `example/*.cpp` programs
 and the same 25 named modules in `tests/sml_cpp_examples.rs`, with no missing

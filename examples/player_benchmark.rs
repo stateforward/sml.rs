@@ -1,6 +1,6 @@
 //! CD-player throughput workload matching `sml.cpp/benchmark/simple/sml_player_sm.hpp`.
 
-use sml::{sml, Machine};
+use sml::{sml, BranchStm, Dispatch, Machine, Policies, PolicyBundle, SwitchStm};
 use std::time::Instant;
 
 pub struct OpenClose;
@@ -59,6 +59,20 @@ impl PlayerStateMachineContext for Context {
     }
 }
 
+#[derive(Default)]
+struct AllowAll;
+
+impl Dispatch for AllowAll {
+    #[inline(always)]
+    fn dispatch(&self, _event: &'static str) -> bool {
+        true
+    }
+}
+
+type BranchPolicies = PolicyBundle<(), (), BranchStm>;
+type SwitchPolicies = PolicyBundle<(), (), SwitchStm>;
+type CustomPolicies = PolicyBundle<(), (), AllowAll>;
+
 // Equivalent to sml.cpp's barrier: expose the machine address and clobber
 // memory without adding std::hint::black_box's pointer-to-pointer temporary.
 #[inline(always)]
@@ -74,6 +88,11 @@ fn barrier<T>(value: &mut T) {
 
 #[inline(always)]
 fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
+    let _ = Machine::process_event(sm, event);
+}
+
+#[inline(always)]
+fn process_with_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
@@ -131,9 +150,64 @@ async fn run_async(sm: &mut PlayerStateMachine<Context>) {
     }
 }
 
+fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
+    for _ in 0..1_000_000 {
+        process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::CdDetected(CdDetected));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::Play(Play));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::Pause(Pause));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::EndPause(EndPause));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::Pause(Pause));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::Stop(Stop));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::Stop(Stop));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
+        barrier(sm);
+        process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
+        barrier(sm);
+    }
+}
+
+fn run_policy_benchmark<P: Policies>(label: &str, policy: P) {
+    let mut sm = PlayerStateMachine::new_with_policy(Context, policy);
+    let start = Instant::now();
+    run_policy(&mut sm);
+    let elapsed = start.elapsed();
+
+    assert!(matches!(sm.state(), PlayerStates::Empty));
+    println!(
+        "{label} {} ns total; {:.3} ns/event",
+        elapsed.as_nanos(),
+        elapsed.as_nanos() as f64 / 11_000_000.0
+    );
+}
+
 fn main() {
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "branch" {
+        run_policy_benchmark("branch", BranchPolicies::default());
+        return;
+    }
+    if mode == "switch" {
+        run_policy_benchmark("switch", SwitchPolicies::default());
+        return;
+    }
+    if mode == "custom" {
+        run_policy_benchmark("custom", CustomPolicies::default());
+        return;
+    }
+
     let mut sm = PlayerStateMachine::new(Context);
-    let async_mode = std::env::args().nth(1).as_deref() == Some("async");
+    let async_mode = mode == "async";
     let start = Instant::now();
     if async_mode {
         smol::block_on(run_async(&mut sm));

@@ -6,6 +6,7 @@ mod codegen;
 mod composite_codegen;
 #[cfg(feature = "graphviz")]
 mod diagramgen;
+mod event_codegen;
 mod orthogonal_codegen;
 mod parser;
 mod validation;
