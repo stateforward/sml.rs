@@ -64,7 +64,7 @@ impl AsyncIdent {
     }
 }
 impl fmt::Display for AsyncIdent {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_async {
             write!(f, "{}().await", self.ident)
         } else {

@@ -29,6 +29,13 @@ The crate has no default features and works on `no_std` targets. Enable
 sml = { package = "stateforward-sml", version = "1.4", features = ["graphviz"] }
 ```
 
+The runtime and procedural-macro crates both forbid unsafe Rust. The generated
+machines use ordinary ownership and borrowing, and the default queues use
+bounded storage with checked indexing and overflow-safe counters. A custom
+`ThreadSafety` policy does not make a machine shareable by itself: generated
+event processing still requires `&mut self`, so shared access must use an
+owner-provided synchronization boundary.
+
 ## Quick start
 
 ```rust
@@ -244,8 +251,10 @@ lock state itself; generated machines may mutate the other policy slots while
 the guard is held.
 
 `TestingPolicy` opts a machine into the `set_current_states` helper;
-production `NoPolicy` machines do not expose that state mutation method. Flat
-machines pass one state; orthogonal machines pass one state per region.
+production `NoPolicy` machines do not expose that state mutation method. The
+capability marker is sealed, so a custom production policy cannot opt itself
+into state mutation. Flat machines pass one state; orthogonal machines pass
+one state per region.
 `PolicyBundle` also selects the defer and process queue factories, allowing a
 bounded ring or another user-owned allocation-free container to implement
 `Queue<E>`.

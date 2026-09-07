@@ -20,7 +20,7 @@ pub struct SmlDefinitions {
 }
 
 impl parse::Parse for SmlDefinitions {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut machines = Vec::new();
         while !input.is_empty() {
             machines.push(input.parse::<SmlDefinition>()?.machine);
@@ -31,7 +31,7 @@ impl parse::Parse for SmlDefinitions {
 }
 
 impl parse::Parse for SmlDefinition {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         let name = if input.peek(Token![_]) {
             input.parse::<Token![_]>()?;
             None

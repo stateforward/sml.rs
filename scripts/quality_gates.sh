@@ -19,12 +19,19 @@ require() {
 
 require cargo
 require python3
+require rg
 
 section format
 cargo fmt --all -- --check
 
 section clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+section source-safety
+if rg -n --glob '*.rs' '\bunsafe[[:space:]]+(fn|trait|impl)\b|\bunsafe[[:space:]]*\{' src macros; then
+  echo "Unsafe Rust is forbidden in the runtime and procedural-macro crates." >&2
+  exit 1
+fi
 
 section tests
 cargo test --workspace --all-features
@@ -58,9 +65,15 @@ require cargo-llvm-cov
 # trybuild owns a nested target directory outside cargo-llvm-cov's cleanup.
 # It may omit Cargo's CACHEDIR.TAG, so remove only that generated directory.
 rm -rf target/tests/trybuild
-cargo llvm-cov --workspace --all-features --exclude stateforward-sml-macros \
+# The workspace run is the authoritative coverage measurement: macro expansion
+# tests exercise the procedural-macro generators through the runtime crate.
+# Keep a separate runtime-only function gate because the macro crate's own unit
+# tests cannot execute generated code when built in isolation.
+cargo llvm-cov --workspace --all-features \
   --fail-under-lines 90
-cargo llvm-cov --workspace --all-features --exclude stateforward-sml-macros \
+cargo llvm-cov --workspace --all-features \
+  --fail-under-functions 95 --summary-only
+cargo llvm-cov --package stateforward-sml --all-features \
   --fail-under-functions 100 --summary-only
 
 echo

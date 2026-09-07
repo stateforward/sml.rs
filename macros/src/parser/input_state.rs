@@ -11,7 +11,7 @@ pub struct InputState {
 }
 
 impl parse::Parse for InputState {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         // Check for starting state definition
         let start = input.parse::<Token![*]>().is_ok();
 

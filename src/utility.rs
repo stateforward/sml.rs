@@ -189,9 +189,18 @@ impl<E, const N: usize> EventQueue<E, N> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
         }
-        let tail = (self.head + self.len) % N;
-        self.events[tail] = Some(event);
-        self.len += 1;
+        // Compute the tail without adding two values that may each be close
+        // to `usize::MAX`. The queue invariant guarantees `self.len <= N`.
+        let tail = if self.head >= N.saturating_sub(self.len) {
+            self.head.saturating_sub(N.saturating_sub(self.len))
+        } else {
+            self.head.saturating_add(self.len)
+        };
+        let Some(slot) = self.events.get_mut(tail) else {
+            return Err(QueueFull);
+        };
+        *slot = Some(event);
+        self.len = self.len.saturating_add(1);
         Ok(())
     }
 
@@ -200,9 +209,17 @@ impl<E, const N: usize> EventQueue<E, N> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
         }
-        self.head = (self.head + N - 1) % N;
-        self.events[self.head] = Some(event);
-        self.len += 1;
+        let new_head = if self.head == 0 {
+            N.saturating_sub(1)
+        } else {
+            self.head.saturating_sub(1)
+        };
+        let Some(slot) = self.events.get_mut(new_head) else {
+            return Err(QueueFull);
+        };
+        self.head = new_head;
+        *slot = Some(event);
+        self.len = self.len.saturating_add(1);
         Ok(())
     }
 
@@ -211,10 +228,14 @@ impl<E, const N: usize> EventQueue<E, N> {
         if self.len == 0 {
             return None;
         }
-        let event = self.events[self.head].take();
-        self.head = (self.head + 1) % N;
-        self.len -= 1;
-        event
+        let event = self.events.get_mut(self.head).and_then(Option::take)?;
+        self.head = if self.head == N.saturating_sub(1) {
+            0
+        } else {
+            self.head.saturating_add(1)
+        };
+        self.len = self.len.saturating_sub(1);
+        Some(event)
     }
 
     /// Drops all queued events.
@@ -251,9 +272,11 @@ pub struct DispatchSummary {
 
 impl DispatchSummary {
     fn record(&mut self, status: DispatchStatus) {
-        self.dispatched += 1;
-        self.handled += usize::from(status.handled);
-        self.transitioned += usize::from(status.transitioned);
+        self.dispatched = self.dispatched.saturating_add(1);
+        self.handled = self.handled.saturating_add(usize::from(status.handled));
+        self.transitioned = self
+            .transitioned
+            .saturating_add(usize::from(status.transitioned));
     }
 }
 
@@ -440,7 +463,7 @@ impl<S> OrthogonalRegions<S> {
         E: Clone,
     {
         self.regions.as_mut().iter_mut().fold(0, |handled, region| {
-            handled + usize::from(Machine::process_event(region, event.clone()))
+            handled.saturating_add(usize::from(Machine::process_event(region, event.clone())))
         })
     }
 }
@@ -501,11 +524,11 @@ impl<S> SmPool<S> {
         F: FnMut(&mut M, E),
     {
         let machines = self.storage.as_mut();
-        let mut handled = 0;
+        let mut handled: usize = 0;
         for index in indices {
             if let Some(machine) = machines.get_mut(index) {
                 dispatch(machine, event.clone());
-                handled += 1;
+                handled = handled.saturating_add(1);
             }
         }
         handled
@@ -521,11 +544,11 @@ impl<S> SmPool<S> {
         F: FnMut(&mut M, E),
     {
         let machines = self.storage.as_mut();
-        let mut handled = 0;
+        let mut handled: usize = 0;
         for IndexedEvent { index, event } in events {
             if let Some(machine) = machines.get_mut(index) {
                 dispatch(machine, event);
-                handled += 1;
+                handled = handled.saturating_add(1);
             }
         }
         handled

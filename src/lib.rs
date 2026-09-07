@@ -4,7 +4,31 @@
 //! mirrors the `sml.cpp` transition-table DSL.
 #![doc = include_str!("../docs/dsl.md")]
 #![no_std]
+#![forbid(unsafe_code)]
+#![deny(
+    elided_lifetimes_in_paths,
+    missing_docs,
+    rust_2018_idioms,
+    unsafe_op_in_unsafe_fn,
+    unused_must_use
+)]
+#![deny(
+    clippy::all,
+    clippy::arithmetic_side_effects,
+    clippy::dbg_macro,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::mem_forget,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable,
+    clippy::unwrap_used
+)]
 
+// Generated code refers to the runtime through the stable `::sml` path,
+// including when a machine is declared from this crate's own tests.
+#[allow(unused_extern_crates)]
 extern crate self as sml;
 
 pub use sml_macros::sml;
@@ -14,8 +38,9 @@ pub mod utility;
 
 pub use policy::{
     BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger, NoPolicy,
-    Observer, Policies, PolicyBundle, ProcessQueue, Queue, QueuePolicy, RawMutex, StateName,
-    SwitchStm, Testing, TestingAccess, TestingPolicy, ThreadSafe, ThreadSafety,
+    Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts, ProcessQueue, Queue,
+    QueuePolicy, RawMutex, StateName, SwitchStm, Testing, TestingAccess, TestingPolicy, ThreadSafe,
+    ThreadSafety,
 };
 
 /// Marker and name access for a static typed event payload.

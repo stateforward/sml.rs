@@ -18,6 +18,12 @@ sml! {
     }
 }
 
+sml! {
+    CurrentEventsWithoutExternalEvents {
+        *Empty + completion<_> = Ready,
+    }
+}
+
 #[derive(Default)]
 struct FlatContext {
     guard_calls: Cell<usize>,
@@ -99,6 +105,10 @@ impl CurrentEventsOrthogonalStateMachineContext for OrthogonalContext {}
 struct MultiContext;
 
 impl CurrentEventsMultiParentStateMachineContext for MultiContext {}
+
+struct EmptyEventContext;
+
+impl CurrentEventsWithoutExternalEventsStateMachineContext for EmptyEventContext {}
 
 #[derive(Default)]
 struct Capture {
@@ -198,4 +208,18 @@ fn catch_all_is_not_reported_but_specific_unexpected_events_are() {
 
     assert_event::<FlatSpecificUnexpected>(&capture);
     assert_eq!(capture.ids.len(), 3);
+}
+
+#[test]
+fn event_names_are_exhaustive_when_the_event_enum_has_no_variants() {
+    let machine = CurrentEventsWithoutExternalEventsStateMachine::new(EmptyEventContext);
+    let mut capture = Capture::default();
+
+    machine.visit_current_events(&mut capture);
+
+    assert!(capture.ids.is_empty());
+    assert_eq!(
+        CurrentEventsWithoutExternalEventsEvents::EVENT_NAMES,
+        &[] as &[&str]
+    );
 }

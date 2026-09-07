@@ -1,6 +1,21 @@
-#![recursion_limit = "512"]
+//! Procedural macro implementation for the `stateforward-sml` state-machine DSL.
 
-extern crate proc_macro;
+#![recursion_limit = "512"]
+#![forbid(unsafe_code)]
+#![deny(
+    elided_lifetimes_in_paths,
+    missing_docs,
+    rust_2018_idioms,
+    unsafe_op_in_unsafe_fn,
+    unused_must_use
+)]
+#![deny(
+    clippy::all,
+    clippy::dbg_macro,
+    clippy::mem_forget,
+    clippy::todo,
+    clippy::unimplemented
+)]
 
 mod codegen;
 mod composite_codegen;

@@ -10,7 +10,7 @@ pub struct OutputState {
 }
 
 impl parse::Parse for OutputState {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
             let (internal_transition, mut ident) = if input.peek(Token![_]) {

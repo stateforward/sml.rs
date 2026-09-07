@@ -27,19 +27,19 @@ impl StateMachineContext for Context {
 fn main() {
     let mut sm = StateMachine::new(Context(0));
     assert!(matches!(sm.state(), &States::State1));
-    assert!(sm.context.0 == 0);
+    assert!(sm.context().0 == 0);
 
     // triggers action
     let r = sm.process_event(Events::Event1);
     assert!(matches!(r, Ok(&States::State2)));
-    assert!(sm.context.0 == 1);
+    assert!(sm.context().0 == 1);
 
     let r = sm.process_event(Events::Event2);
     assert!(matches!(r, Ok(&States::State1)));
-    assert!(sm.context.0 == 1);
+    assert!(sm.context().0 == 1);
 
     // triggers the same action
     let r = sm.process_event(Events::Event2);
     assert!(matches!(r, Ok(&States::State3)));
-    assert!(sm.context.0 == 2);
+    assert!(sm.context().0 == 2);
 }

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Keep thread-safety guards in a separate generated storage slot so policy
+  logging and event processing use ordinary safe Rust borrowing with no raw
+  pointer or unsafe-code path.
+- Preserve context process-event callbacks and report policy actions only after
+  the action succeeds.
+- Seal the testing-only state override capability so production policies cannot
+  opt themselves into `set_current_states`.
+
 ## 1.4.0 - 2026-09-04
 
 ### Added

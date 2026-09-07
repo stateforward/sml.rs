@@ -71,27 +71,15 @@ pub(crate) fn visit_calls(specs: &EventSpecs) -> TokenStream {
 pub(crate) fn names_table(
     specs: &EventSpecs,
     events_name: &Ident,
-    lifetimes: &crate::parser::lifetimes::Lifetimes,
+    generics: &syn::Generics,
 ) -> TokenStream {
-    if specs.is_empty() {
-        return TokenStream::new();
-    }
     let names = specs.values().map(|spec| &spec.name);
-    if lifetimes.is_empty() {
-        quote! {
-            impl #events_name {
-                /// The generated variant names for the typed event payloads
-                /// in this machine, in deterministic order.
-                pub const EVENT_NAMES: &'static [&'static str] = &[#(#names),*];
-            }
-        }
-    } else {
-        quote! {
-            impl<#lifetimes> #events_name<#lifetimes> {
-                /// The generated variant names for the typed event payloads
-                /// in this machine, in deterministic order.
-                pub const EVENT_NAMES: &'static [&'static str] = &[#(#names),*];
-            }
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        impl #impl_generics #events_name #type_generics #where_clause {
+            /// The generated variant names for the typed event payloads
+            /// in this machine, in deterministic order.
+            pub const EVENT_NAMES: &'static [&'static str] = &[#(#names),*];
         }
     }
 }

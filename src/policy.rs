@@ -116,19 +116,11 @@ impl Dispatch for SwitchStm {
 
 /// A lock policy used around event processing.
 ///
-/// The generated machine holds the returned guard while it mutably processes
-/// the machine. Implementations must therefore use `self` only as the lock
-/// state and must not return a guard that aliases, retains, or exposes the
-/// policy bundle or any of its other policy slots. This is the invariant that
-/// permits generated machines to lock one policy slot while mutating the
-/// machine and the remaining policy slots.
-/// # Safety
-///
-/// An implementation must ensure that the guard borrows only the lock state
-/// represented by `Self`. It must not retain or expose aliases to the policy
-/// bundle, the machine, or any other policy slot. Generated machines use this
-/// guarantee when they hold the guard while mutably processing the machine.
-pub unsafe trait ThreadSafety {
+/// Generated machines store this policy slot separately from the other policy
+/// slots before processing begins. Consequently a normal borrowed guard, such
+/// as `std::sync::MutexGuard`, can safely live while the machine mutates its
+/// state, context, queues, and other policy slots.
+pub trait ThreadSafety {
     /// The guard held during processing.
     type Guard<'a>
     where
@@ -138,7 +130,7 @@ pub unsafe trait ThreadSafety {
     fn lock(&self) -> Self::Guard<'_>;
 }
 
-unsafe impl ThreadSafety for () {
+impl ThreadSafety for () {
     type Guard<'a>
         = ()
     where
@@ -163,7 +155,7 @@ pub trait RawMutex {
 }
 
 /// Wraps a raw mutex as a [`ThreadSafety`] policy.
-pub struct ThreadSafe<L: RawMutex>(pub L);
+pub struct ThreadSafe<L: RawMutex>(L);
 
 impl<L: RawMutex> ThreadSafe<L> {
     /// Creates a thread-safety policy from a raw mutex.
@@ -172,7 +164,7 @@ impl<L: RawMutex> ThreadSafe<L> {
     }
 }
 
-unsafe impl<L: RawMutex> ThreadSafety for ThreadSafe<L> {
+impl<L: RawMutex> ThreadSafety for ThreadSafe<L> {
     type Guard<'a>
         = L::Guard<'a>
     where
@@ -194,7 +186,10 @@ impl<T> RawMutex for std::sync::Mutex<T> {
     where
         Self: 'a;
 
+    #[allow(clippy::expect_used)]
     fn lock(&self) -> Self::Guard<'_> {
+        // The trait cannot report poisoning. Fail closed rather than resuming
+        // processing after a panic may have left owner state inconsistent.
         std::sync::Mutex::lock(self).expect("sml policy mutex poisoned")
     }
 }
@@ -211,27 +206,33 @@ impl<T> RawMutex for spin::Mutex<T> {
     }
 }
 
-/// Controls whether state override helpers are available.
-pub trait Testing {
-    /// Whether this policy opts into state-control helpers.
-    const ENABLED: bool;
+/// Marks a policy as a state-control policy.
+///
+/// The generated state override helpers require [`TestingAccess`] rather than
+/// a runtime flag. This keeps production machines from carrying a branch or
+/// relying on a value that could be changed after construction.
+pub trait Testing {}
+
+impl Testing for () {}
+
+mod testing_access {
+    pub trait Sealed {}
 }
 
-impl Testing for () {
-    const ENABLED: bool = false;
-}
-
-/// Enables focused state setup and restoration helpers.
+/// Provides focused state setup and restoration helpers.
 #[derive(Default)]
 pub struct TestingPolicy;
 
-impl Testing for TestingPolicy {
-    const ENABLED: bool = true;
-}
+impl Testing for TestingPolicy {}
 
 /// Grants access to state setup helpers on a generated machine.
-pub trait TestingAccess {}
+///
+/// This trait is sealed and is implemented only for [`TestingPolicy`]. A
+/// custom policy cannot opt a production machine into state mutation by
+/// implementing this marker.
+pub trait TestingAccess: testing_access::Sealed {}
 
+impl testing_access::Sealed for TestingPolicy {}
 impl TestingAccess for TestingPolicy {}
 
 /// A queue implementation used by generated defer/process storage.
@@ -293,6 +294,29 @@ impl QueuePolicy for DefaultQueuePolicy {
     fn new_queue<E>(&self) -> Self::Queue<E> {
         EventQueue::new()
     }
+}
+
+/// The non-locking slots stored by a [`PolicyBundle`].
+pub struct PolicyBundleParts<
+    L = (),
+    O = (),
+    D = JumpTable,
+    T = (),
+    DQ = DefaultQueuePolicy,
+    PQ = DefaultQueuePolicy,
+> {
+    /// Logger instance.
+    pub logger: L,
+    /// Observer instance.
+    pub observer: O,
+    /// Testing marker instance.
+    pub testing: T,
+    /// Defer queue factory.
+    pub defer_queue: DQ,
+    /// Process queue factory.
+    pub process_queue: PQ,
+    /// Dispatch strategy instance.
+    pub dispatch: D,
 }
 
 /// A composable policy bundle.
@@ -365,6 +389,30 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
             dispatch,
         }
     }
+
+    /// Splits the lock slot from the other policy slots.
+    pub fn into_parts(self) -> (PolicyBundleParts<L, O, D, T, DQ, PQ>, S) {
+        let Self {
+            logger,
+            observer,
+            thread_safe,
+            testing,
+            defer_queue,
+            process_queue,
+            dispatch,
+        } = self;
+        (
+            PolicyBundleParts {
+                logger,
+                observer,
+                testing,
+                defer_queue,
+                process_queue,
+                dispatch,
+            },
+            thread_safe,
+        )
+    }
 }
 
 impl<L, O, D, S, T, DQ, PQ> Default for PolicyBundle<L, O, D, S, T, DQ, PQ>
@@ -389,8 +437,91 @@ where
     }
 }
 
-/// Describes the policy slots a generated machine uses.
+/// Describes the non-locking policy slots used by a generated machine.
+pub trait PolicyParts {
+    /// Logger slot.
+    type Logger: Logger;
+    /// Observer slot.
+    type Observer: Observer;
+    /// Dispatch slot.
+    type Dispatch: Dispatch;
+    /// Testing slot.
+    type Testing: Testing;
+    /// Deferred queue slot.
+    type DeferQueue<E>: Queue<E>;
+    /// Process queue slot.
+    type ProcessQueue<E>: Queue<E>;
+    /// Borrows the logger.
+    fn logger(&self) -> &Self::Logger;
+    /// Mutably borrows the logger.
+    fn logger_mut(&mut self) -> &mut Self::Logger;
+    /// Borrows the observer.
+    fn observer(&self) -> &Self::Observer;
+    /// Mutably borrows the observer.
+    fn observer_mut(&mut self) -> &mut Self::Observer;
+    /// Borrows the dispatch strategy.
+    fn dispatch(&self) -> &Self::Dispatch;
+    /// Borrows the testing policy.
+    fn testing(&self) -> &Self::Testing;
+    /// Creates the generated deferred queue.
+    fn new_defer_queue<E>(&self) -> Self::DeferQueue<E>;
+    /// Creates the generated process queue.
+    fn new_process_queue<E>(&self) -> Self::ProcessQueue<E>;
+}
+
+impl<L, O, D, T, DQ, PQ> PolicyParts for PolicyBundleParts<L, O, D, T, DQ, PQ>
+where
+    L: Logger,
+    O: Observer,
+    D: Dispatch,
+    T: Testing,
+    DQ: QueuePolicy,
+    PQ: QueuePolicy,
+{
+    type Logger = L;
+    type Observer = O;
+    type Dispatch = D;
+    type Testing = T;
+    type DeferQueue<E> = DQ::Queue<E>;
+    type ProcessQueue<E> = PQ::Queue<E>;
+
+    fn logger(&self) -> &Self::Logger {
+        &self.logger
+    }
+
+    fn logger_mut(&mut self) -> &mut Self::Logger {
+        &mut self.logger
+    }
+
+    fn observer(&self) -> &Self::Observer {
+        &self.observer
+    }
+
+    fn observer_mut(&mut self) -> &mut Self::Observer {
+        &mut self.observer
+    }
+
+    fn dispatch(&self) -> &Self::Dispatch {
+        &self.dispatch
+    }
+
+    fn testing(&self) -> &Self::Testing {
+        &self.testing
+    }
+
+    fn new_defer_queue<E>(&self) -> Self::DeferQueue<E> {
+        self.defer_queue.new_queue()
+    }
+
+    fn new_process_queue<E>(&self) -> Self::ProcessQueue<E> {
+        self.process_queue.new_queue()
+    }
+}
+
+/// Describes the complete policy supplied to a generated machine.
 pub trait Policies {
+    /// Non-locking policy slots.
+    type Parts: PolicyParts;
     /// Logger slot.
     type Logger: Logger;
     /// Observer slot.
@@ -424,6 +555,10 @@ pub trait Policies {
     fn new_defer_queue<E>(&self) -> Self::DeferQueue<E>;
     /// Creates the generated process queue.
     fn new_process_queue<E>(&self) -> Self::ProcessQueue<E>;
+
+    /// Splits the lock slot from the slots that may be mutably used while the
+    /// processing lock is held.
+    fn into_parts(self) -> (Self::Parts, Self::ThreadSafe);
 }
 
 impl<L, O, D, S, T, DQ, PQ> Policies for PolicyBundle<L, O, D, S, T, DQ, PQ>
@@ -436,6 +571,7 @@ where
     DQ: QueuePolicy,
     PQ: QueuePolicy,
 {
+    type Parts = PolicyBundleParts<L, O, D, T, DQ, PQ>;
     type Logger = L;
     type Observer = O;
     type Dispatch = D;
@@ -479,6 +615,10 @@ where
     fn new_process_queue<E>(&self) -> Self::ProcessQueue<E> {
         self.process_queue.new_queue()
     }
+
+    fn into_parts(self) -> (Self::Parts, Self::ThreadSafe) {
+        PolicyBundle::into_parts(self)
+    }
 }
 
 /// The default policy bundle. Its fields are all zero-sized.
@@ -490,7 +630,57 @@ pub struct NoPolicy {
     dispatch: JumpTable,
 }
 
+/// The non-locking slots in [`NoPolicy`].
+pub struct NoPolicyParts {
+    logger: (),
+    observer: (),
+    testing: (),
+    dispatch: JumpTable,
+}
+
+impl PolicyParts for NoPolicyParts {
+    type Logger = ();
+    type Observer = ();
+    type Dispatch = JumpTable;
+    type Testing = ();
+    type DeferQueue<E> = EventQueue<E, 16>;
+    type ProcessQueue<E> = EventQueue<E, 16>;
+
+    fn logger(&self) -> &Self::Logger {
+        &self.logger
+    }
+
+    fn logger_mut(&mut self) -> &mut Self::Logger {
+        &mut self.logger
+    }
+
+    fn observer(&self) -> &Self::Observer {
+        &self.observer
+    }
+
+    fn observer_mut(&mut self) -> &mut Self::Observer {
+        &mut self.observer
+    }
+
+    fn dispatch(&self) -> &Self::Dispatch {
+        &self.dispatch
+    }
+
+    fn testing(&self) -> &Self::Testing {
+        &self.testing
+    }
+
+    fn new_defer_queue<E>(&self) -> Self::DeferQueue<E> {
+        EventQueue::new()
+    }
+
+    fn new_process_queue<E>(&self) -> Self::ProcessQueue<E> {
+        EventQueue::new()
+    }
+}
+
 impl Policies for NoPolicy {
+    type Parts = NoPolicyParts;
     type Logger = ();
     type Observer = ();
     type Dispatch = JumpTable;
@@ -533,6 +723,25 @@ impl Policies for NoPolicy {
 
     fn new_process_queue<E>(&self) -> Self::ProcessQueue<E> {
         EventQueue::new()
+    }
+
+    fn into_parts(self) -> (Self::Parts, Self::ThreadSafe) {
+        let Self {
+            logger,
+            observer,
+            thread_safe,
+            testing,
+            dispatch,
+        } = self;
+        (
+            NoPolicyParts {
+                logger,
+                observer,
+                testing,
+                dispatch,
+            },
+            thread_safe,
+        )
     }
 }
 
@@ -721,17 +930,16 @@ mod tests {
         assert!(JumpTable.dispatch("event"));
         assert!(BranchStm.dispatch("event"));
         assert!(SwitchStm.dispatch("event"));
-        const {
-            assert!(!<() as Testing>::ENABLED);
-            assert!(TestingPolicy::ENABLED);
-        }
+        fn assert_testing<T: Testing>() {}
+        assert_testing::<()>();
+        assert_testing::<TestingPolicy>();
     }
 
     #[test]
     fn queue_and_policy_accessors_are_all_allocation_free() {
         let mut queue: EventQueue<u8, 2> = <EventQueue<u8, 2> as Queue<u8>>::new();
-        <EventQueue<u8, 2> as Queue<u8>>::defer(&mut queue, 1).unwrap();
-        <EventQueue<u8, 2> as Queue<u8>>::process(&mut queue, 2).unwrap();
+        assert!(<EventQueue<u8, 2> as Queue<u8>>::defer(&mut queue, 1).is_ok());
+        assert!(<EventQueue<u8, 2> as Queue<u8>>::process(&mut queue, 2).is_ok());
         assert_eq!(<EventQueue<u8, 2> as Queue<u8>>::pop(&mut queue), Some(2));
         assert_eq!(<EventQueue<u8, 2> as Queue<u8>>::pop(&mut queue), Some(1));
         assert_eq!(<EventQueue<u8, 2> as Queue<u8>>::pop(&mut queue), None);
@@ -739,7 +947,7 @@ mod tests {
         let queue_policy = DefaultQueuePolicy;
         let mut default_queue: EventQueue<u8, 16> =
             <DefaultQueuePolicy as QueuePolicy>::new_queue(&queue_policy);
-        <EventQueue<u8, 16> as Queue<u8>>::defer(&mut default_queue, 3).unwrap();
+        assert!(<EventQueue<u8, 16> as Queue<u8>>::defer(&mut default_queue, 3).is_ok());
         assert_eq!(
             <EventQueue<u8, 16> as Queue<u8>>::pop(&mut default_queue),
             Some(3)
@@ -762,6 +970,10 @@ mod tests {
         let _ = Policies::testing(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&bundle);
+        let (bundle_parts, _) = Policies::into_parts(bundle);
+        let _ = PolicyParts::testing(&bundle_parts);
+        let _: EventQueue<u8, 16> = PolicyParts::new_defer_queue(&bundle_parts);
+        let _: EventQueue<u8, 16> = PolicyParts::new_process_queue(&bundle_parts);
 
         let mut no_policy = NoPolicy::default();
         let _ = Policies::logger(&no_policy);
@@ -773,6 +985,10 @@ mod tests {
         let _ = Policies::testing(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&no_policy);
+        let (no_policy_parts, _) = Policies::into_parts(no_policy);
+        let _ = PolicyParts::logger(&no_policy_parts);
+        let _ = PolicyParts::observer(&no_policy_parts);
+        let _ = PolicyParts::testing(&no_policy_parts);
     }
 
     #[cfg(feature = "std")]

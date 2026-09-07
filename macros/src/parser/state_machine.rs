@@ -50,7 +50,7 @@ impl StateMachine {
 }
 
 impl parse::Parse for StateMachine {
-    fn parse(input: parse::ParseStream) -> parse::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> parse::Result<Self> {
         let mut statemachine = StateMachine::new();
 
         loop {

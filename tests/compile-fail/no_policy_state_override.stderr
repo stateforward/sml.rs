@@ -1,0 +1,23 @@
+error[E0599]: the method `set_current_states` exists for struct `ProductionMachineStateMachine<Context>`, but its trait bounds were not satisfied
+  --> tests/compile-fail/no_policy_state_override.rs:19:13
+   |
+ 5 | / sml! {
+ 6 | |     ProductionMachine {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_- method `set_current_states` not found for this struct
+...
+19 |       machine.set_current_states(ProductionMachineStates::Ready);
+   |               ^^^^^^^^^^^^^^^^^^
+   |
+note: trait bound `(): TestingAccess` was not satisfied
+  --> tests/compile-fail/no_policy_state_override.rs:5:1
+   |
+ 5 | / sml! {
+ 6 | |     ProductionMachine {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_^
+   = note: this error originates in the macro `sml` (in Nightly builds, run with -Z macro-backtrace for more info)
