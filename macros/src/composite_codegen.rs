@@ -1,11 +1,12 @@
 //! Native child-first composite state-machine generation.
 
+use crate::event_codegen::{add_spec, is_query_event, is_static_type, names_table, EventSpecs};
 use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap};
 use syn::{parse, spanned::Spanned, Type};
 
@@ -128,7 +129,12 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let parent = &normalized_parent;
     let child = &normalized_child;
 
-    let parent_name = parent.name.as_ref().expect("named sml definition");
+    let parent_name = parent.name.as_ref().ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tables must have a named parent",
+        )
+    })?;
     let child_state_variant =
         crate::parser::state_ident(&child_reference.to_string(), child_reference.span());
     let parent_states_name = format_ident!("{}States", parent_name);
@@ -137,6 +143,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let context_name = format_ident!("{}StateMachineContext", parent_name);
     let machine_name = format_ident!("{}StateMachine", parent_name);
     let error_name = format_ident!("{}Error", parent_name);
+    let core_name = format_ident!("__Sml{}StateMachineCore", parent_name);
+    let policy_name = format_ident!("__SmlPolicy");
     let is_async_machine = [parent, child].iter().any(|machine| {
         machine.entry_exit_async
             || machine.transitions.iter().any(|transition| {
@@ -192,17 +200,24 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let child_initial_value = child_state_types
         .contains_key(&child_initial.to_string())
         .then(|| quote! { (core::default::Default::default()) });
-    let new_const =
+    let _new_const =
         (parent_state_types.is_empty() && child_state_types.is_empty()).then(|| quote! { const });
     let deferred_field = has_deferred_events.then(|| {
-        quote! { deferred: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            deferred: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_name>,
+        }
     });
-    let deferred_init =
-        has_deferred_events.then(|| quote! { deferred: ::sml::utility::EventQueue::new(), });
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, });
     let pending_field = async_queue.then(|| {
-        quote! { pending: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            pending: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::ProcessQueue<#events_name>,
+        }
     });
-    let pending_init = async_queue.then(|| quote! { pending: ::sml::utility::EventQueue::new(), });
+    let pending_init = async_queue.then(|| quote! { pending, });
+    let deferred_local = has_deferred_events
+        .then(|| quote! { let deferred = ::sml::PolicyParts::new_defer_queue(&policy); });
+    let pending_local = async_queue
+        .then(|| quote! { let pending = ::sml::PolicyParts::new_process_queue(&policy); });
     let events = collect_events(parent, child)?;
     let event_variants = events.values().map(|event| {
         let ident = &event.ident;
@@ -212,16 +227,156 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             quote! { #ident }
         }
     });
-    let conversions = events.values().filter(|event| event.external).map(|event| {
+    let event_name_arms = events.values().map(|event| {
         let ident = &event.ident;
-        let ty = event.ty.as_ref().expect("external event type");
+        if event.ty.is_some() {
+            quote! { #events_name::#ident(..) => stringify!(#ident), }
+        } else {
+            quote! { #events_name::#ident => stringify!(#ident), }
+        }
+    });
+    let event_name_match = if events.is_empty() {
+        quote! { match *self {} }
+    } else {
+        quote! { match self { #(#event_name_arms)* } }
+    };
+    let event_name_impl = quote! {
+        impl ::sml::EventName for #events_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                #event_name_match
+            }
+        }
+    };
+    let parent_state_name_arms = parent_states.values().map(|state| {
+        if parent_state_types.contains_key(&state.to_string()) {
+            quote! { #parent_states_name::#state(..) => stringify!(#state), }
+        } else {
+            quote! { #parent_states_name::#state => stringify!(#state), }
+        }
+    });
+    let child_state_name_arms = child_states.values().map(|state| {
+        if child_state_types.contains_key(&state.to_string()) {
+            quote! { #child_states_name::#state(..) => stringify!(#state), }
+        } else {
+            quote! { #child_states_name::#state => stringify!(#state), }
+        }
+    });
+    let state_name_impl = quote! {
+        impl ::sml::StateName for #parent_states_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                match self { #(#parent_state_name_arms)* }
+            }
+        }
+        impl ::sml::StateName for #child_states_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                match self { #(#child_state_name_arms)* }
+            }
+        }
+    };
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
+                impl From<#ty> for #events_name {
+                    #[inline(always)]
+                    fn from(event: #ty) -> Self { Self::#ident(event) }
+                }
+            })
+        })
+        .collect::<parse::Result<Vec<_>>>()?;
+
+    let mut event_specs = EventSpecs::new();
+    let mut event_queries = BTreeMap::<String, (Type, Vec<TokenStream>)>::new();
+    for transition in &parent.transitions {
+        if !is_query_event(transition.event.kind, transition.event.wildcard) {
+            continue;
+        }
+        let Some(event_type) = transition.event.data_type.as_ref() else {
+            continue;
+        };
+        if !is_static_type(event_type) || transition.in_state.wildcard {
+            continue;
+        }
+        add_spec(
+            &mut event_specs,
+            &transition.event.ident,
+            transition.event.kind,
+            transition.event.wildcard,
+            Some(event_type),
+        );
+        let source = &transition.in_state.ident;
+        let state_pattern = if parent_state_types.contains_key(&source.to_string()) {
+            quote! { #parent_states_name::#source(..) }
+        } else {
+            quote! { #parent_states_name::#source }
+        };
+        let condition = quote! { matches!(&self.state, #state_pattern) };
+        event_queries
+            .entry(event_type.to_token_stream().to_string())
+            .or_insert_with(|| (event_type.clone(), Vec::new()))
+            .1
+            .push(condition);
+    }
+    for transition in &child.transitions {
+        if !is_query_event(transition.event.kind, transition.event.wildcard) {
+            continue;
+        }
+        let Some(event_type) = transition.event.data_type.as_ref() else {
+            continue;
+        };
+        if !is_static_type(event_type) || transition.in_state.wildcard {
+            continue;
+        }
+        add_spec(
+            &mut event_specs,
+            &transition.event.ident,
+            transition.event.kind,
+            transition.event.wildcard,
+            Some(event_type),
+        );
+        let source = &transition.in_state.ident;
+        let state_pattern = if child_state_types.contains_key(&source.to_string()) {
+            quote! { #child_states_name::#source(..) }
+        } else {
+            quote! { #child_states_name::#source }
+        };
+        let condition = quote! {
+            matches!(&self.state, #parent_states_name::#child_state_variant)
+                && matches!(&self.child_state, #state_pattern)
+        };
+        event_queries
+            .entry(event_type.to_token_stream().to_string())
+            .or_insert_with(|| (event_type.clone(), Vec::new()))
+            .1
+            .push(condition);
+    }
+    let event_query_calls = event_queries.values().map(|(event_type, conditions)| {
         quote! {
-            impl From<#ty> for #events_name {
-                #[inline(always)]
-                fn from(event: #ty) -> Self { Self::#ident(event) }
+            if #(#conditions)||* {
+                visitor.visit::<#event_type>();
             }
         }
     });
+    let event_names_table = names_table(&event_specs, &events_name, &syn::Generics::default());
+    let visit_current_events = quote! {
+        /// Visits each static typed event payload with a transition from the
+        /// active child or its parent state. Guards and context are not observed.
+        #[inline(always)]
+        fn __sml_visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            #(#event_query_calls)*
+        }
+    };
     let fixed_error_type = parent
         .fixed_error_type
         .as_ref()
@@ -327,7 +482,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &child_lifecycle,
         TokenStream::new(),
         TokenStream::new(),
-        quote! { self.context.child_transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.child_transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -341,7 +503,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &parent_lifecycle,
         exit_child_current.clone(),
         enter_child_current.clone(),
-        quote! { self.context.transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -357,7 +526,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         quote! { true },
         TokenStream::new(),
         TokenStream::new(),
-        quote! { self.context.child_transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.child_transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -378,7 +554,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         child_terminal.clone(),
         exit_child_current.clone(),
         enter_child_current.clone(),
-        quote! { self.context.transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -392,7 +575,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &child_lifecycle,
         TokenStream::new(),
         TokenStream::new(),
-        quote! { self.context.child_transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.child_transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -406,7 +596,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &parent_lifecycle,
         exit_child_current.clone(),
         enter_child_current.clone(),
-        quote! { self.context.transition_callback(&old_state, new_state); },
+        quote! {
+            self.context.transition_callback(&old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
+        },
         &temporary_context_argument,
         has_deferred_events,
         async_queue,
@@ -498,12 +695,17 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
     };
 
-    let process_event_body = if async_queue {
+    let unlocked_process_event_body = if async_queue {
         quote! {
+            use ::sml::Queue as _;
             self.pending.defer(event.into())
                 .map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(&self.state, &event);
+                Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+                if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                    return Err(#error_name::InvalidEvent);
+                }
                 #dispatch_attempt
                 if handled {
                     if exception_recovered {
@@ -519,8 +721,13 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
     } else {
         quote! {
+            use ::sml::Queue as _;
             let event = event.into();
             self.context.log_process_event(&self.state, &event);
+            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                return Err(#error_name::InvalidEvent);
+            }
             #dispatch_attempt
             if handled {
                 if exception_recovered {
@@ -534,8 +741,106 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         }
     };
+    let public_api = quote! {
+        /// Enters the initial parent and child states and runs anonymous
+        /// `completion<_>` transitions until the machine reaches a stable state.
+        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&#parent_states_name, #generated_error> {
+            let thread_safe = &self.thread_safe;
+            let core = &mut self.core;
+            let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize
+        }
 
+        #[inline(always)]
+        pub fn state(&self) -> &#parent_states_name { &self.core.state }
+
+        #[inline(always)]
+        pub fn child_state(&self) -> &#child_states_name { &self.core.child_state }
+
+        pub fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
+        where
+            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
+        {
+            core::mem::replace(&mut self.core.state, state)
+        }
+
+        pub fn set_child_state(&mut self, state: #child_states_name) -> #child_states_name
+        where
+            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
+        {
+            core::mem::replace(&mut self.core.child_state, state)
+        }
+
+        #[inline(always)]
+        pub fn visit_current_state<R>(
+            &self,
+            visitor: impl FnOnce(&#parent_states_name) -> R,
+        ) -> R {
+            visitor(&self.core.state)
+        }
+
+        #[inline(always)]
+        pub fn visit_child_state<R>(
+            &self,
+            visitor: impl FnOnce(&#child_states_name) -> R,
+        ) -> R {
+            visitor(&self.core.child_state)
+        }
+
+        /// Visits each static typed event payload with a transition from the
+        /// active child or its parent state. Guards and context are not observed.
+        #[inline(always)]
+        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            self.core.__sml_visit_current_events(visitor)
+        }
+
+        #[inline(always)]
+        pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger(&self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer(&self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn is(&self, expected: &#parent_states_name) -> bool { self.core.state == *expected }
+
+        #[inline(always)]
+        pub fn is_child(&self, expected: &#child_states_name) -> bool {
+            self.core.child_state == *expected
+        }
+
+        #[inline(always)]
+        pub fn child_is_active(&self) -> bool {
+            matches!(self.core.state, #parent_states_name::#child_state_variant)
+        }
+
+        #[inline(always)]
+        pub fn is_terminated(&self) -> bool { self.core.is_terminated() }
+
+        #[inline(always)]
+        pub fn context(&self) -> &T { &self.core.context }
+
+        #[inline(always)]
+        pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
+    };
     Ok(quote! {
+        use ::sml::Queue as _;
+
         /// Unified callbacks for the parent and its composite child.
         pub trait #context_name {
             #context_error
@@ -566,7 +871,10 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
 
         #[allow(missing_docs)]
         pub enum #events_name { #(#event_variants),* }
+        #state_name_impl
+        #event_name_impl
         #(#conversions)*
+        #event_names_table
 
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
@@ -577,26 +885,105 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             QueueFull,
         }
 
-        pub struct #machine_name<T: #context_name> {
+        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
             state: #parent_states_name,
             child_state: #child_states_name,
             context: T,
+            policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
             #pending_field
         }
 
-        impl<T: #context_name> #machine_name<T> {
-            pub #new_const fn new(context: T) -> Self {
-                Self {
-                    state: #parent_states_name::#parent_initial #parent_initial_value,
-                    child_state: #child_states_name::#child_initial #child_initial_value,
-                    context,
-                    #deferred_init
-                    #pending_init
-                }
+        pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
+            core: #core_name<T, #policy_name>,
+            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
+            #[inline(always)]
+            fn __sml_log_process_event(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_process_event(
+                    ::sml::PolicyParts::logger_mut(policy), event,
+                );
+                ::sml::Observer::observe_process_event(
+                    ::sml::PolicyParts::observer_mut(policy), event,
+                );
             }
 
-            pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&#parent_states_name, #generated_error> {
+            #[inline(always)]
+            fn __sml_log_state_change(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                from: &'static str,
+                to: &'static str,
+            ) {
+                ::sml::Logger::log_state_change(
+                    ::sml::PolicyParts::logger_mut(policy), from, to,
+                );
+                ::sml::Observer::observe_state_change(
+                    ::sml::PolicyParts::observer_mut(policy), from, to,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_action(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                action: &'static str,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_action(
+                    ::sml::PolicyParts::logger_mut(policy), action, event,
+                );
+                ::sml::Observer::observe_action(
+                    ::sml::PolicyParts::observer_mut(policy), action, event,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_guard(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                guard: &'static str,
+                event: &'static str,
+                result: bool,
+            ) {
+                ::sml::Logger::log_guard(
+                    ::sml::PolicyParts::logger_mut(policy), guard, event, result,
+                );
+                ::sml::Observer::observe_guard(
+                    ::sml::PolicyParts::observer_mut(policy), guard, event, result,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_allowed(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) -> bool {
+                ::sml::Dispatch::dispatch(::sml::PolicyParts::dispatch(policy), event)
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_candidate(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                state: &'static str,
+                event: &'static str,
+                candidate: usize,
+            ) -> bool {
+                ::sml::Dispatch::dispatch_candidate(
+                    ::sml::PolicyParts::dispatch(policy), state, event, candidate,
+                )
+            }
+
+            #async_keyword fn __sml_initialize_unlocked(&mut self, #temporary_context_parameter) -> Result<&#parent_states_name, #generated_error> {
                 #parent_initial_entry
                 self.stabilize(#temporary_context_call None)#await_stabilize?;
                 Ok(&self.state)
@@ -616,21 +1003,29 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
 
             #[inline(always)]
-            pub fn state(&self) -> &#parent_states_name { &self.state }
+            fn state(&self) -> &#parent_states_name { &self.state }
 
             #[inline(always)]
-            pub fn child_state(&self) -> &#child_states_name { &self.child_state }
+            fn child_state(&self) -> &#child_states_name { &self.child_state }
 
-            pub fn set_state(&mut self, state: #parent_states_name) -> #parent_states_name {
+            fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
                 core::mem::replace(&mut self.state, state)
             }
 
-            pub fn set_child_state(&mut self, state: #child_states_name) -> #child_states_name {
+            fn set_child_state(&mut self, state: #child_states_name) -> #child_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
                 core::mem::replace(&mut self.child_state, state)
             }
 
             #[inline(always)]
-            pub fn visit_current_state<R>(
+            fn visit_current_state<R>(
                 &self,
                 visitor: impl FnOnce(&#parent_states_name) -> R,
             ) -> R {
@@ -638,36 +1033,93 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
 
             #[inline(always)]
-            pub fn visit_child_state<R>(
+            fn visit_child_state<R>(
                 &self,
                 visitor: impl FnOnce(&#child_states_name) -> R,
             ) -> R {
                 visitor(&self.child_state)
             }
 
-            #[inline(always)]
-            pub fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
+            #visit_current_events
 
             #[inline(always)]
-            pub fn is_child(&self, expected: &#child_states_name) -> bool {
+            fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger(&self.policy)
+            }
+
+            #[inline(always)]
+            fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger_mut(&mut self.policy)
+            }
+
+            #[inline(always)]
+            fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer(&self.policy)
+            }
+
+            #[inline(always)]
+            fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer_mut(&mut self.policy)
+            }
+
+            #[inline]
+            #async_keyword fn __sml_process_event_unlocked<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<&#parent_states_name, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #unlocked_process_event_body
+            }
+
+            #[inline(always)]
+            fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
+
+            #[inline(always)]
+            fn is_child(&self, expected: &#child_states_name) -> bool {
                 self.child_state == *expected
             }
 
             #[inline(always)]
-            pub fn child_is_active(&self) -> bool {
+            fn child_is_active(&self) -> bool {
                 matches!(self.state, #parent_states_name::#child_state_variant)
             }
 
             #[inline(always)]
-            pub fn is_terminated(&self) -> bool {
+            fn is_terminated(&self) -> bool {
                 #parent_terminated
             }
 
             #[inline(always)]
-            pub fn context(&self) -> &T { &self.context }
+            fn context(&self) -> &T { &self.context }
 
             #[inline(always)]
-            pub fn context_mut(&mut self) -> &mut T { &mut self.context }
+            fn context_mut(&mut self) -> &mut T { &mut self.context }
+
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
+
+            pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        state: #parent_states_name::#parent_initial #parent_initial_value,
+                        child_state: #child_states_name::#child_initial #child_initial_value,
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
@@ -677,12 +1129,36 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             where
                 EventInput: Into<#events_name>,
             {
-                #process_event_body
+                let thread_safe = &self.thread_safe;
+                let core = &mut self.core;
+                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+                core.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize
             }
         }
 
-        impl<T: #context_name> ::sml::Terminated for #machine_name<T> {
-            fn is_terminated(&self) -> bool { self.is_terminated() }
+        impl<T: #context_name, #policy_name: ::sml::Policies>
+            ::sml::Terminated for #machine_name<T, #policy_name> {
+            fn is_terminated(&self) -> bool { self.core.is_terminated() }
+        }
+
+        impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
+            pub fn new(context: T) -> Self {
+                let policy: ::sml::NoPolicy = core::default::Default::default();
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        state: #parent_states_name::#parent_initial #parent_initial_value,
+                        child_state: #child_states_name::#child_initial #child_initial_value,
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
         }
     })
 }
@@ -715,7 +1191,11 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.name.as_ref())
         .collect::<Vec<_>>();
-    let parent_name_original = parent.name.as_ref().expect("named parent").clone();
+    let parent_name_original = parent
+        .name
+        .as_ref()
+        .ok_or_else(|| parse::Error::new(Span::call_site(), "composite parent must be named"))?
+        .clone();
     let mut queue = child_references
         .iter()
         .map(|reference| ((*reference).clone(), parent_name_original.clone(), 1usize))
@@ -778,7 +1258,7 @@ fn generate_multi_code(
             }
         }
         for direct_child in direct_children {
-            queue.push_back((direct_child, reference.clone(), depth + 1));
+            queue.push_back((direct_child, reference.clone(), depth.saturating_add(1)));
         }
         node_parents.insert(reference.to_string(), node_parent);
         node_depths.insert(reference.to_string(), depth);
@@ -790,7 +1270,10 @@ fn generate_multi_code(
     let mut all_machines = vec![parent];
     all_machines.extend(child_machines.iter().copied());
 
-    let parent_name = parent.name.as_ref().expect("named parent");
+    let parent_name = parent
+        .name
+        .as_ref()
+        .ok_or_else(|| parse::Error::new(Span::call_site(), "composite parent must be named"))?;
     let root_orthogonal = parent
         .transitions
         .iter()
@@ -805,6 +1288,8 @@ fn generate_multi_code(
     let context_name = format_ident!("{}StateMachineContext", parent_name);
     let machine_name = format_ident!("{}StateMachine", parent_name);
     let error_name = format_ident!("{}Error", parent_name);
+    let core_name = format_ident!("__Sml{}StateMachineCore", parent_name);
+    let policy_name = format_ident!("__SmlPolicy");
 
     let is_async_machine = all_machines.iter().any(|machine| {
         machine.entry_exit_async
@@ -838,12 +1323,13 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.fixed_error_type.as_ref())
         .collect::<Vec<_>>();
-    if fixed_error_types
+    if let Some(error_type) = fixed_error_types
         .windows(2)
-        .any(|errors| errors[0] != errors[1])
+        .find(|errors| errors.first() != errors.get(1))
+        .and_then(|errors| errors.get(1))
     {
         return Err(parse::Error::new(
-            fixed_error_types[1].span(),
+            error_type.span(),
             "all tables in a composite tree must use the same exception error type",
         ));
     }
@@ -870,9 +1356,13 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.temporary_context_type.as_ref())
         .collect::<Vec<_>>();
-    if temporary_types.windows(2).any(|types| types[0] != types[1]) {
+    if let Some(temporary_type) = temporary_types
+        .windows(2)
+        .find(|types| types.first() != types.get(1))
+        .and_then(|types| types.get(1))
+    {
         return Err(parse::Error::new(
-            temporary_types[1].span(),
+            temporary_type.span(),
             "all tables in a composite tree must use the same temporary context type",
         ));
     }
@@ -898,15 +1388,45 @@ fn generate_multi_code(
             .as_ref()
             .map_or_else(|| quote! { #ident }, |ty| quote! { #ident(#ty) })
     });
-    let conversions = events.values().filter(|event| event.external).map(|event| {
+    let event_name_arms = events.values().map(|event| {
         let ident = &event.ident;
-        let ty = event.ty.as_ref().expect("external event type");
-        quote! {
-            impl From<#ty> for #events_name {
-                fn from(event: #ty) -> Self { Self::#ident(event) }
-            }
+        if event.ty.is_some() {
+            quote! { #events_name::#ident(..) => stringify!(#ident), }
+        } else {
+            quote! { #events_name::#ident => stringify!(#ident), }
         }
     });
+    let event_name_match = if events.is_empty() {
+        quote! { match *self {} }
+    } else {
+        quote! { match self { #(#event_name_arms)* } }
+    };
+    let event_name_impl = quote! {
+        impl ::sml::EventName for #events_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                #event_name_match
+            }
+        }
+    };
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
+                impl From<#ty> for #events_name {
+                    fn from(event: #ty) -> Self { Self::#ident(event) }
+                }
+            })
+        })
+        .collect::<parse::Result<Vec<_>>>()?;
     let (guards, actions) = context_methods_many(
         &all_machines,
         &events,
@@ -925,6 +1445,21 @@ fn generate_multi_code(
             .get(&state.to_string())
             .map_or_else(|| quote! { #state }, |ty| quote! { #state(#ty) })
     });
+    let parent_state_name_arms = parent_states.values().map(|state| {
+        if parent_state_types.contains_key(&state.to_string()) {
+            quote! { #parent_states_name::#state(..) => stringify!(#state), }
+        } else {
+            quote! { #parent_states_name::#state => stringify!(#state), }
+        }
+    });
+    let parent_state_name_impl = quote! {
+        impl ::sml::StateName for #parent_states_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                match self { #(#parent_state_name_arms)* }
+            }
+        }
+    };
     let parent_initial = initial_state(parent)?.clone();
     let parent_initial_value = parent_state_types
         .contains_key(&parent_initial.to_string())
@@ -936,6 +1471,7 @@ fn generate_multi_code(
     let mut child_initializers = Vec::new();
     let mut child_callback_methods = Vec::new();
     let mut child_api = Vec::new();
+    let mut child_public_api = Vec::new();
     let mut child_dispatches = Vec::<(usize, Option<usize>, TokenStream)>::new();
     let mut child_completions = Vec::<(usize, TokenStream)>::new();
     let mut child_exceptions = Vec::<(usize, TokenStream)>::new();
@@ -982,7 +1518,14 @@ fn generate_multi_code(
                 &node_parents,
                 &events_name,
                 &error_name,
-                quote! { self.context.#callback(region_index, &old_state, new_state); },
+                quote! {
+                    self.context.#callback(region_index, &old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
+                },
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
@@ -1030,12 +1573,27 @@ fn generate_multi_code(
             let enter = embedded.enter_current;
             let exit = embedded.exit_current;
             let terminal = embedded.terminal;
+            let child_states = collect_states(child);
+            let child_state_types = collect_state_types_multi(child, &direct_children)?;
+            let child_state_name_arms = child_states.values().map(|state| {
+                if child_state_types.contains_key(&state.to_string()) {
+                    quote! { #child_states_name::#state(..) => stringify!(#state), }
+                } else {
+                    quote! { #child_states_name::#state => stringify!(#state), }
+                }
+            });
             child_enum_definitions.push(quote! {
                 #[allow(missing_docs)]
                 pub enum #child_states_name { #(#variants),* }
                 impl PartialEq for #child_states_name {
                     fn eq(&self, other: &Self) -> bool {
                         core::mem::discriminant(self) == core::mem::discriminant(other)
+                    }
+                }
+                impl ::sml::StateName for #child_states_name {
+                    #[inline(always)]
+                    fn name(&self) -> &'static str {
+                        match self { #(#child_state_name_arms)* }
                     }
                 }
             });
@@ -1062,15 +1620,32 @@ fn generate_multi_code(
                 string_morph::to_snake_case(&reference.to_string())
             );
             child_api.push(quote! {
-                pub fn #states_method(&self) -> &[#child_states_name; #region_count] {
+                fn #states_method(&self) -> &[#child_states_name; #region_count] {
                     &self.#field
                 }
-                pub fn #state_method(&self, region: usize) -> Option<&#child_states_name> {
+                fn #state_method(&self, region: usize) -> Option<&#child_states_name> {
                     self.#field.get(region)
                 }
-                pub fn #active_method(&self) -> bool { #active }
+                fn #active_method(&self) -> bool { #active }
             });
-            let depth = node_depths[&reference.to_string()];
+            child_public_api.push(quote! {
+                pub fn #states_method(&self) -> &[#child_states_name; #region_count] {
+                    self.core.#states_method()
+                }
+                pub fn #state_method(&self, region: usize) -> Option<&#child_states_name> {
+                    self.core.#state_method(region)
+                }
+                pub fn #active_method(&self) -> bool { self.core.#active_method() }
+            });
+            let depth = node_depths
+                .get(&reference.to_string())
+                .copied()
+                .ok_or_else(|| {
+                    parse::Error::new(
+                        reference.span(),
+                        "composite tree is missing a generated node depth",
+                    )
+                })?;
             let root_region = root_regions.as_ref().and_then(|regions| {
                 tree_root_region(reference, parent_name, &node_parents, regions)
             });
@@ -1149,7 +1724,14 @@ fn generate_multi_code(
             &lifecycle,
             exit_nested.clone(),
             enter_nested.clone(),
-            quote! { self.context.#callback(&old_state, new_state); },
+            quote! {
+                self.context.#callback(&old_state, new_state);
+                Self::__sml_log_state_change(
+                    &mut self.policy,
+                    ::sml::StateName::name(&old_state),
+                    ::sml::StateName::name(new_state),
+                );
+            },
             &temporary_context_argument,
             has_deferred_events,
             async_queue,
@@ -1173,7 +1755,14 @@ fn generate_multi_code(
             ),
             exit_nested.clone(),
             enter_nested.clone(),
-            quote! { self.context.#callback(&old_state, new_state); },
+            quote! {
+                self.context.#callback(&old_state, new_state);
+                Self::__sml_log_state_change(
+                    &mut self.policy,
+                    ::sml::StateName::name(&old_state),
+                    ::sml::StateName::name(new_state),
+                );
+            },
             &temporary_context_argument,
             has_deferred_events,
             async_queue,
@@ -1197,12 +1786,27 @@ fn generate_multi_code(
         } else {
             quote! { false }
         };
+        let child_state_name_arms = child_states.values().map(|state| {
+            if child_state_types.contains_key(&state.to_string()) {
+                quote! { #child_states_name::#state(..) => stringify!(#state), }
+            } else {
+                quote! { #child_states_name::#state => stringify!(#state), }
+            }
+        });
         child_enum_definitions.push(quote! {
             #[allow(missing_docs)]
             pub enum #child_states_name { #(#child_variants),* }
             impl PartialEq for #child_states_name {
                 fn eq(&self, other: &Self) -> bool {
                     core::mem::discriminant(self) == core::mem::discriminant(other)
+                }
+            }
+            impl ::sml::StateName for #child_states_name {
+                #[inline(always)]
+                fn name(&self) -> &'static str {
+                    match self {
+                        #(#child_state_name_arms)*
+                    }
                 }
             }
         });
@@ -1238,24 +1842,60 @@ fn generate_multi_code(
             &node_parents,
         );
         child_api.push(quote! {
-            pub fn #state_method(&self) -> &#child_states_name { &self.#field }
-            pub fn #is_method(&self, expected: &#child_states_name) -> bool {
+            fn #state_method(&self) -> &#child_states_name { &self.#field }
+            fn #is_method(&self, expected: &#child_states_name) -> bool {
                 self.#field == *expected
             }
-            pub fn #set_method(&mut self, state: #child_states_name) -> #child_states_name {
+            fn #set_method(&mut self, state: #child_states_name) -> #child_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
                 core::mem::replace(&mut self.#field, state)
             }
-            pub fn #visit_method<R>(
+            fn #visit_method<R>(
                 &self,
                 visitor: impl FnOnce(&#child_states_name) -> R,
             ) -> R {
                 visitor(&self.#field)
             }
-            pub fn #active_method(&self) -> bool {
+            fn #active_method(&self) -> bool {
                 #active
             }
         });
-        let depth = node_depths[&reference.to_string()];
+        child_public_api.push(quote! {
+            pub fn #state_method(&self) -> &#child_states_name {
+                self.core.#state_method()
+            }
+            pub fn #is_method(&self, expected: &#child_states_name) -> bool {
+                self.core.#is_method(expected)
+            }
+            pub fn #set_method(&mut self, state: #child_states_name) -> #child_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
+                self.core.#set_method(state)
+            }
+            pub fn #visit_method<R>(
+                &self,
+                visitor: impl FnOnce(&#child_states_name) -> R,
+            ) -> R {
+                self.core.#visit_method(visitor)
+            }
+            pub fn #active_method(&self) -> bool {
+                self.core.#active_method()
+            }
+        });
+        let depth = node_depths
+            .get(&reference.to_string())
+            .copied()
+            .ok_or_else(|| {
+                parse::Error::new(
+                    reference.span(),
+                    "composite tree is missing a generated node depth",
+                )
+            })?;
         let root_region = root_regions
             .as_ref()
             .and_then(|regions| tree_root_region(reference, parent_name, &node_parents, regions));
@@ -1308,6 +1948,127 @@ fn generate_multi_code(
         }
     }
 
+    let mut event_specs = EventSpecs::new();
+    let mut event_queries = BTreeMap::<String, (Type, Vec<TokenStream>)>::new();
+    for transition in &parent.transitions {
+        if !is_query_event(transition.event.kind, transition.event.wildcard)
+            || transition.in_state.wildcard
+        {
+            continue;
+        }
+        let Some(event_type) = transition.event.data_type.as_ref() else {
+            continue;
+        };
+        if !is_static_type(event_type) {
+            continue;
+        }
+        add_spec(
+            &mut event_specs,
+            &transition.event.ident,
+            transition.event.kind,
+            transition.event.wildcard,
+            Some(event_type),
+        );
+        let source = &transition.in_state.ident;
+        let state_pattern = if parent_state_types.contains_key(&source.to_string()) {
+            quote! { #parent_states_name::#source(..) }
+        } else {
+            quote! { #parent_states_name::#source }
+        };
+        let condition = if root_orthogonal {
+            quote! { self.states.iter().any(|state| matches!(state, #state_pattern)) }
+        } else {
+            quote! { matches!(&self.state, #state_pattern) }
+        };
+        event_queries
+            .entry(event_type.to_token_stream().to_string())
+            .or_insert_with(|| (event_type.clone(), Vec::new()))
+            .1
+            .push(condition);
+    }
+    for (node_index, (child, reference)) in
+        child_machines.iter().zip(&all_child_references).enumerate()
+    {
+        for transition in &child.transitions {
+            if !is_query_event(transition.event.kind, transition.event.wildcard)
+                || transition.in_state.wildcard
+            {
+                continue;
+            }
+            let Some(event_type) = transition.event.data_type.as_ref() else {
+                continue;
+            };
+            if !is_static_type(event_type) {
+                continue;
+            }
+            add_spec(
+                &mut event_specs,
+                &transition.event.ident,
+                transition.event.kind,
+                transition.event.wildcard,
+                Some(event_type),
+            );
+            let direct_children = tree_children(reference, &all_child_references, &node_parents)
+                .into_iter()
+                .map(|(_, child)| child.clone())
+                .collect::<Vec<_>>();
+            let state_types = collect_state_types_multi(child, &direct_children)?;
+            let states_name = tree_states_name(parent_name, reference);
+            let field = tree_field(reference);
+            let source = &transition.in_state.ident;
+            let state_pattern = if state_types.contains_key(&source.to_string()) {
+                quote! { #states_name::#source(..) }
+            } else {
+                quote! { #states_name::#source }
+            };
+            let active = tree_active_condition(
+                parent_name,
+                root_orthogonal,
+                node_index,
+                &child_machines,
+                &all_child_references,
+                &node_parents,
+            );
+            let condition = if child
+                .transitions
+                .iter()
+                .filter(|candidate| candidate.in_state.start)
+                .count()
+                > 1
+            {
+                quote! {
+                    #active && self.#field.iter().any(|state| matches!(state, #state_pattern))
+                }
+            } else {
+                quote! {
+                    #active && matches!(&self.#field, #state_pattern)
+                }
+            };
+            event_queries
+                .entry(event_type.to_token_stream().to_string())
+                .or_insert_with(|| (event_type.clone(), Vec::new()))
+                .1
+                .push(condition);
+        }
+    }
+    let event_query_calls = event_queries.values().map(|(event_type, conditions)| {
+        quote! {
+            if #(#conditions)||* {
+                visitor.visit::<#event_type>();
+            }
+        }
+    });
+    let event_names_table = names_table(&event_specs, &events_name, &syn::Generics::default());
+    let visit_current_events = quote! {
+        /// Visits each static typed event payload with a transition from an
+        /// active state, including active composite ancestors and regions.
+        /// Guards and context are not observed.
+        #[inline(always)]
+        fn __sml_visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            #(#event_query_calls)*
+        }
+    };
+
     child_dispatches.sort_by_key(|(depth, _, _)| core::cmp::Reverse(*depth));
     child_completions.sort_by_key(|(depth, _)| core::cmp::Reverse(*depth));
     child_exceptions.sort_by_key(|(depth, _)| core::cmp::Reverse(*depth));
@@ -1344,7 +2105,14 @@ fn generate_multi_code(
                 &parent_lifecycle,
                 scalar_exit_children.clone(),
                 scalar_enter_children.clone(),
-                quote! { self.context.transition_callback(&old_state, new_state); },
+                quote! {
+                    self.context.transition_callback(&old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
+                },
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
@@ -1365,7 +2133,14 @@ fn generate_multi_code(
                 scalar_child_terminal.clone(),
                 scalar_exit_children.clone(),
                 scalar_enter_children.clone(),
-                quote! { self.context.transition_callback(&old_state, new_state); },
+                quote! {
+                    self.context.transition_callback(&old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
+                },
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
@@ -1384,7 +2159,14 @@ fn generate_multi_code(
                 &parent_lifecycle,
                 scalar_exit_children.clone(),
                 scalar_enter_children.clone(),
-                quote! { self.context.transition_callback(&old_state, new_state); },
+                quote! {
+                    self.context.transition_callback(&old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
+                },
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
@@ -1430,7 +2212,14 @@ fn generate_multi_code(
             &events_name,
             &error_name,
             quote! { self.states },
-            quote! { self.context.transition_callback(region_index, &old_state, new_state); },
+            quote! {
+                self.context.transition_callback(region_index, &old_state, new_state);
+                Self::__sml_log_state_change(
+                    &mut self.policy,
+                    ::sml::StateName::name(&old_state),
+                    ::sml::StateName::name(new_state),
+                );
+            },
             &structural_children,
             root_exit_children,
             root_enter_children,
@@ -1552,11 +2341,16 @@ fn generate_multi_code(
         quote! { &self.state }
     };
     let return_state = log_state.clone();
-    let process_event_body = if async_queue {
+    let unlocked_process_event_body = if async_queue {
         quote! {
+            use ::sml::Queue as _;
             self.pending.defer(event.into()).map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(#log_state, &event);
+                Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+                if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                    return Err(#error_name::InvalidEvent);
+                }
                 #dispatch_attempt
                 if !handled { return Err(#error_name::InvalidEvent); }
                 if exception_recovered {
@@ -1569,8 +2363,13 @@ fn generate_multi_code(
         }
     } else {
         quote! {
+            use ::sml::Queue as _;
             let event = event.into();
             self.context.log_process_event(#log_state, &event);
+            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                return Err(#error_name::InvalidEvent);
+            }
             #dispatch_attempt
             if !handled { return Err(#error_name::InvalidEvent); }
             if exception_recovered {
@@ -1581,7 +2380,6 @@ fn generate_multi_code(
             Ok(#return_state)
         }
     };
-
     let parent_terminated = root_embedded.as_ref().map_or_else(
         || {
             if parent_states.contains_key("X") {
@@ -1595,15 +2393,22 @@ fn generate_multi_code(
     let parent_states_attr = &parent.states_attr;
     let parent_events_attr = &parent.events_attr;
     let deferred_field = has_deferred_events.then(|| {
-        quote! { deferred: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            deferred: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_name>,
+        }
     });
-    let deferred_init =
-        has_deferred_events.then(|| quote! { deferred: ::sml::utility::EventQueue::new(), });
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, });
     let pending_field = async_queue.then(|| {
-        quote! { pending: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            pending: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::ProcessQueue<#events_name>,
+        }
     });
-    let pending_init = async_queue.then(|| quote! { pending: ::sml::utility::EventQueue::new(), });
-    let new_const = (parent_state_types.is_empty()
+    let pending_init = async_queue.then(|| quote! { pending, });
+    let deferred_local = has_deferred_events
+        .then(|| quote! { let deferred = ::sml::PolicyParts::new_defer_queue(&policy); });
+    let pending_local = async_queue
+        .then(|| quote! { let pending = ::sml::PolicyParts::new_process_queue(&policy); });
+    let _new_const = (parent_state_types.is_empty()
         && child_machines
             .iter()
             .all(|child| collect_state_types(child, None).is_ok_and(|types| types.is_empty())))
@@ -1631,7 +2436,7 @@ fn generate_multi_code(
     };
     let initialize_method = if let Some(region_count) = root_region_count {
         quote! {
-            pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&[#parent_states_name; #region_count], #generated_error> {
+            #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&[#parent_states_name; #region_count], #generated_error> {
                 #parent_initial_entry
                 self.stabilize(#temporary_context_call None)#await_stabilize?;
                 Ok(&self.states)
@@ -1639,7 +2444,7 @@ fn generate_multi_code(
         }
     } else {
         quote! {
-            pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&#parent_states_name, #generated_error> {
+            #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&#parent_states_name, #generated_error> {
                 #parent_initial_entry
                 #scalar_enter_children
                 self.stabilize(#temporary_context_call None)#await_stabilize?;
@@ -1649,20 +2454,31 @@ fn generate_multi_code(
     };
     let root_state_api = if let Some(region_count) = root_region_count {
         quote! {
-            pub fn states(&self) -> &[#parent_states_name; #region_count] { &self.states }
-            pub fn state(&self, region: usize) -> Option<&#parent_states_name> { self.states.get(region) }
-            pub fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool { self.states == *expected }
-            pub fn is_region(&self, region: usize, expected: &#parent_states_name) -> bool {
+            fn states(&self) -> &[#parent_states_name; #region_count] { &self.states }
+            fn state(&self, region: usize) -> Option<&#parent_states_name> { self.states.get(region) }
+            fn set_current_states(&mut self, states: [#parent_states_name; #region_count]) -> [#parent_states_name; #region_count]
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
+                core::mem::replace(&mut self.states, states)
+            }
+            fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool { self.states == *expected }
+            fn is_region(&self, region: usize, expected: &#parent_states_name) -> bool {
                 self.states.get(region).is_some_and(|state| state == expected)
             }
         }
     } else {
         quote! {
-            pub fn state(&self) -> &#parent_states_name { &self.state }
-            pub fn set_state(&mut self, state: #parent_states_name) -> #parent_states_name {
+            fn state(&self) -> &#parent_states_name { &self.state }
+            fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
                 core::mem::replace(&mut self.state, state)
             }
-            pub fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
+            fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
         }
     };
     let process_return = if let Some(region_count) = root_region_count {
@@ -1670,8 +2486,175 @@ fn generate_multi_code(
     } else {
         quote! { &#parent_states_name }
     };
+    let public_initialize = if let Some(region_count) = root_region_count {
+        quote! {
+            /// Enters each initial parent and child state and runs anonymous
+            /// `completion<_>` transitions until all regions reach stable states.
+            pub #async_keyword fn initialize(
+                &mut self,
+                #temporary_context_parameter
+            ) -> Result<&[#parent_states_name; #region_count], #generated_error> {
+                let thread_safe = &self.thread_safe;
+                let core = &mut self.core;
+                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+                core.initialize(#temporary_context_call)#await_stabilize
+            }
+        }
+    } else {
+        quote! {
+            /// Enters the initial parent and child state and runs anonymous
+            /// `completion<_>` transitions until the machine reaches a stable state.
+            pub #async_keyword fn initialize(
+                &mut self,
+                #temporary_context_parameter
+            ) -> Result<&#parent_states_name, #generated_error> {
+                let thread_safe = &self.thread_safe;
+                let core = &mut self.core;
+                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+                core.initialize(#temporary_context_call)#await_stabilize
+            }
+        }
+    };
+    let public_root_state_api = if let Some(region_count) = root_region_count {
+        quote! {
+            /// Returns all active root-region states.
+            #[inline(always)]
+            pub fn states(&self) -> &[#parent_states_name; #region_count] {
+                self.core.states()
+            }
+
+            /// Returns the active root state for `region`, if it exists.
+            #[inline(always)]
+            pub fn state(&self, region: usize) -> Option<&#parent_states_name> {
+                self.core.state(region)
+            }
+
+            /// Replaces all active root-region states for a testing policy.
+            pub fn set_current_states(
+                &mut self,
+                states: [#parent_states_name; #region_count],
+            ) -> [#parent_states_name; #region_count]
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
+                self.core.set_current_states(states)
+            }
+
+            /// Returns whether all root-region states equal `expected`.
+            #[inline(always)]
+            pub fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool {
+                self.core.is(expected)
+            }
+
+            /// Returns whether a root region equals `expected`.
+            #[inline(always)]
+            pub fn is_region(&self, region: usize, expected: &#parent_states_name) -> bool {
+                self.core.is_region(region, expected)
+            }
+        }
+    } else {
+        quote! {
+            /// Returns the active root state.
+            #[inline(always)]
+            pub fn state(&self) -> &#parent_states_name {
+                self.core.state()
+            }
+
+            /// Replaces the active root state for a testing policy.
+            pub fn set_current_states(
+                &mut self,
+                state: #parent_states_name,
+            ) -> #parent_states_name
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
+                self.core.set_current_states(state)
+            }
+
+            /// Returns whether the active root state equals `expected`.
+            #[inline(always)]
+            pub fn is(&self, expected: &#parent_states_name) -> bool {
+                self.core.is(expected)
+            }
+        }
+    };
+    let public_api = quote! {
+        #public_initialize
+        #public_root_state_api
+
+        /// Visits each static typed event payload with a transition from an
+        /// active state, including active composite ancestors and regions.
+        /// Guards and context are not observed.
+        #[inline(always)]
+        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            self.core.__sml_visit_current_events(visitor)
+        }
+
+        #(#child_public_api)*
+
+        /// Borrows the configured logger.
+        #[inline(always)]
+        pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger(&self.core.policy)
+        }
+
+        /// Mutably borrows the configured logger.
+        #[inline(always)]
+        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
+        }
+
+        /// Borrows the configured observer.
+        #[inline(always)]
+        pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer(&self.core.policy)
+        }
+
+        /// Mutably borrows the configured observer.
+        #[inline(always)]
+        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
+        }
+
+        /// Returns whether the composite is in its terminal state.
+        #[inline(always)]
+        pub fn is_terminated(&self) -> bool {
+            self.core.is_terminated()
+        }
+
+        /// Returns the current context.
+        #[inline(always)]
+        pub fn context(&self) -> &T {
+            self.core.context()
+        }
+
+        /// Returns the current context as a mutable reference.
+        #[inline(always)]
+        pub fn context_mut(&mut self) -> &mut T {
+            self.core.context_mut()
+        }
+    };
+
+    let core_struct = quote! {
+        #[doc(hidden)]
+        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
+            #root_state_field
+            #(#child_fields)*
+            context: T,
+            policy: <#policy_name as ::sml::Policies>::Parts,
+            #deferred_field
+            #pending_field
+        }
+    };
 
     Ok(quote! {
+        use ::sml::Queue as _;
+
         pub trait #context_name {
             #context_error
             #guards
@@ -1690,12 +2673,15 @@ fn generate_multi_code(
                 core::mem::discriminant(self) == core::mem::discriminant(other)
             }
         }
+        #parent_state_name_impl
         #(#child_enum_definitions)*
 
         #[allow(missing_docs)]
         #(#parent_events_attr)*
         pub enum #events_name { #(#event_variants),* }
+        #event_name_impl
         #(#conversions)*
+        #event_names_table
 
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
@@ -1706,23 +2692,92 @@ fn generate_multi_code(
             QueueFull,
         }
 
-        pub struct #machine_name<T: #context_name> {
-            #root_state_field
-            #(#child_fields)*
-            context: T,
-            #deferred_field
-            #pending_field
+        #core_struct
+
+        pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
+            core: #core_name<T, #policy_name>,
+            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
-        impl<T: #context_name> #machine_name<T> {
-            pub #new_const fn new(context: T) -> Self {
-                Self {
-                    #root_state_init
-                    #(#child_initializers)*
-                    context,
-                    #deferred_init
-                    #pending_init
-                }
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
+            #[inline(always)]
+            fn __sml_log_process_event(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_process_event(
+                    ::sml::PolicyParts::logger_mut(policy), event,
+                );
+                ::sml::Observer::observe_process_event(
+                    ::sml::PolicyParts::observer_mut(policy), event,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_state_change(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                from: &'static str,
+                to: &'static str,
+            ) {
+                ::sml::Logger::log_state_change(
+                    ::sml::PolicyParts::logger_mut(policy), from, to,
+                );
+                ::sml::Observer::observe_state_change(
+                    ::sml::PolicyParts::observer_mut(policy), from, to,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_action(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                action: &'static str,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_action(
+                    ::sml::PolicyParts::logger_mut(policy), action, event,
+                );
+                ::sml::Observer::observe_action(
+                    ::sml::PolicyParts::observer_mut(policy), action, event,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_guard(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                guard: &'static str,
+                event: &'static str,
+                result: bool,
+            ) {
+                ::sml::Logger::log_guard(
+                    ::sml::PolicyParts::logger_mut(policy), guard, event, result,
+                );
+                ::sml::Observer::observe_guard(
+                    ::sml::PolicyParts::observer_mut(policy), guard, event, result,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_allowed(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) -> bool {
+                ::sml::Dispatch::dispatch(::sml::PolicyParts::dispatch(policy), event)
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_candidate(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                state: &'static str,
+                event: &'static str,
+                candidate: usize,
+            ) -> bool {
+                ::sml::Dispatch::dispatch_candidate(
+                    ::sml::PolicyParts::dispatch(policy), state, event, candidate,
+                )
             }
 
             #initialize_method
@@ -1737,10 +2792,66 @@ fn generate_multi_code(
             }
 
             #root_state_api
+            #visit_current_events
             #(#child_api)*
-            pub fn is_terminated(&self) -> bool { #parent_terminated }
-            pub fn context(&self) -> &T { &self.context }
-            pub fn context_mut(&mut self) -> &mut T { &mut self.context }
+            #[inline(always)]
+            pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger(&self.policy)
+            }
+
+            #[inline(always)]
+            pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger_mut(&mut self.policy)
+            }
+
+            #[inline(always)]
+            pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer(&self.policy)
+            }
+
+            #[inline(always)]
+            pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer_mut(&mut self.policy)
+            }
+
+            #[inline]
+            #async_keyword fn __sml_process_event_unlocked<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<#process_return, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #unlocked_process_event_body
+            }
+
+            fn is_terminated(&self) -> bool { #parent_terminated }
+            fn context(&self) -> &T { &self.context }
+            fn context_mut(&mut self) -> &mut T { &mut self.context }
+
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
+
+            pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        #root_state_init
+                        #(#child_initializers)*
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
@@ -1749,12 +2860,35 @@ fn generate_multi_code(
             ) -> Result<#process_return, #generated_error>
             where EventInput: Into<#events_name>
             {
-                #process_event_body
+                let thread_safe = &self.thread_safe;
+                let core = &mut self.core;
+                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+                core.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize
             }
         }
 
-        impl<T: #context_name> ::sml::Terminated for #machine_name<T> {
-            fn is_terminated(&self) -> bool { self.is_terminated() }
+        impl<T: #context_name, #policy_name: ::sml::Policies>
+            ::sml::Terminated for #machine_name<T, #policy_name> {
+            fn is_terminated(&self) -> bool { self.core.is_terminated() }
+        }
+        impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
+            pub fn new(context: T) -> Self {
+                let policy: ::sml::NoPolicy = core::default::Default::default();
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        #root_state_init
+                        #(#child_initializers)*
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
         }
     })
 }
@@ -1799,8 +2933,18 @@ fn tree_embedded_orthogonal(
     has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     let direct = tree_children(reference, references, parents);
@@ -1948,8 +3092,18 @@ fn tree_enter_node(
     error_name: &Ident,
     temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     if node
@@ -2063,8 +3217,18 @@ fn tree_exit_node(
     error_name: &Ident,
     temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     if node
@@ -2128,7 +3292,9 @@ fn tree_active_condition(
     parents: &HashMap<String, Ident>,
 ) -> TokenStream {
     let mut conditions = Vec::new();
-    let mut current = &references[index];
+    let Some(mut current) = references.get(index) else {
+        return quote! { false };
+    };
     while let Some(parent) = parents.get(&current.to_string()) {
         let parent_states = if parent == root {
             format_ident!("{}States", root)
@@ -2142,12 +3308,13 @@ fn tree_active_condition(
                 .iter()
                 .position(|reference| reference == parent)
                 .is_some_and(|index| {
-                    nodes[index]
-                        .transitions
-                        .iter()
-                        .filter(|transition| transition.in_state.start)
-                        .count()
-                        > 1
+                    nodes.get(index).is_some_and(|node| {
+                        node.transitions
+                            .iter()
+                            .filter(|transition| transition.in_state.start)
+                            .count()
+                            > 1
+                    })
                 })
         };
         let parent_place = if parent == root {
@@ -2190,14 +3357,17 @@ fn tree_child_terminal(
             let variant = crate::parser::state_ident(&reference.to_string(), reference.span());
             let states_name = tree_states_name(root, reference);
             let place = tree_place(reference);
-            let terminal = if collect_states(nodes[index]).contains_key("X") {
-                if nodes[index]
-                    .transitions
-                    .iter()
-                    .filter(|transition| transition.in_state.start)
-                    .count()
-                    > 1
-                {
+            let terminal = if nodes
+                .get(index)
+                .is_some_and(|node| collect_states(node).contains_key("X"))
+            {
+                if nodes.get(index).is_some_and(|node| {
+                    node.transitions
+                        .iter()
+                        .filter(|transition| transition.in_state.start)
+                        .count()
+                        > 1
+                }) {
                     quote! { #place.iter().all(|state| matches!(state, #states_name::X)) }
                 } else {
                     quote! { matches!(#place, #states_name::X) }
@@ -2461,10 +3631,15 @@ fn context_methods_many(
             let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
                 && transition.out_state.composite.is_none()
-                && index + 1 == transition_actions.len()
+                && index.saturating_add(1) == transition_actions.len()
                 && transition.out_state.data_type.is_some();
             let output = if produces_state {
-                let ty = transition.out_state.data_type.as_ref().unwrap();
+                let ty = transition.out_state.data_type.as_ref().ok_or_else(|| {
+                    parse::Error::new(
+                        transition.out_state.ident.span(),
+                        "a state-producing action is missing its output state type",
+                    )
+                })?;
                 quote! { #ty }
             } else {
                 quote! { () }
@@ -2624,7 +3799,12 @@ fn dispatch_code(
     }
     let mut arms = Vec::new();
     for transitions in grouped.into_values() {
-        let first = transitions[0];
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated transition group is empty",
+            ));
+        };
         let source = &first.in_state.ident;
         let event = &first.event.ident;
         let event_pattern = if first.event.data_type.is_some() {
@@ -2634,7 +3814,8 @@ fn dispatch_code(
         };
         let branches = transitions
             .iter()
-            .map(|transition| {
+            .enumerate()
+            .map(|(candidate_index, transition)| {
                 let (exit_composite, enter_composite) =
                     composite_lifecycle(transition, &composite_exit, &composite_entry);
                 transition_code(
@@ -2650,6 +3831,7 @@ fn dispatch_code(
                     temporary_context,
                     has_deferred_events,
                     async_queue,
+                    candidate_index,
                 )
             })
             .collect::<parse::Result<Vec<_>>>()?;
@@ -2688,6 +3870,7 @@ fn dispatch_code(
             temporary_context,
             has_deferred_events,
             async_queue,
+            0,
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
@@ -2718,6 +3901,7 @@ fn dispatch_code(
             temporary_context,
             has_deferred_events,
             async_queue,
+            0,
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
@@ -2751,6 +3935,7 @@ fn transition_code(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
+    candidate_index: usize,
 ) -> parse::Result<TokenStream> {
     let state_arg = (transition.in_state.data_type.is_some()
         && transition.in_state.composite.is_none())
@@ -2760,11 +3945,31 @@ fn transition_code(
         .data_type
         .is_some()
         .then(|| quote! { event_data });
+    let event_name = {
+        let event = &transition.event.ident;
+        quote! { stringify!(#event) }
+    };
+    let state_name = transition.in_state.ident.to_string();
+    let candidate_dispatch = if matches!(
+        transition.event.kind,
+        EventKind::Normal | EventKind::Unexpected
+    ) {
+        quote! {
+            Self::__sml_dispatch_candidate(
+                &self.policy,
+                #state_name,
+                #event_name,
+                #candidate_index,
+            )
+        }
+    } else {
+        quote! { true }
+    };
     let callback_args = callback_arguments(temporary_context, &[state_arg.clone(), event_arg]);
     let guard = transition
         .guard
         .as_ref()
-        .map(|guard| guard_code(guard, &callback_args, error_name))
+        .map(|guard| guard_code(guard, &callback_args, error_name, &event_name))
         .transpose()?;
     let actions = transition
         .action
@@ -2782,6 +3987,7 @@ fn transition_code(
         &callback_args,
         error_name,
         produces_state,
+        &event_name,
     )?;
     let output_data = if transition.out_state.data_type.is_some()
         && transition.out_state.composite.is_none()
@@ -2805,7 +4011,7 @@ fn transition_code(
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             } else {
-                quote! { let _ = self.process_event(#temporary_context_call #event)?; }
+                quote! { let _ = self.__sml_process_event_unlocked(#temporary_context_call #event)?; }
             }
         })
         .collect::<Vec<_>>();
@@ -2840,7 +4046,11 @@ fn transition_code(
         } else {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    let _ = self.process_event(#temporary_context_call deferred_event);
+                    match self.__sml_process_event_unlocked(#temporary_context_call deferred_event) {
+                        Ok(_) | Err(#error_name::InvalidEvent)
+                        | Err(#error_name::TransitionsFailed) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -2914,9 +4124,9 @@ fn transition_code(
         }
     };
     Ok(if let Some(guard) = guard {
-        quote! { if !handled && #guard { #body } }
+        quote! { if !handled && #candidate_dispatch && #guard { #body } }
     } else {
-        quote! { if !handled { #body } }
+        quote! { if !handled && #candidate_dispatch { #body } }
     })
 }
 
@@ -2975,14 +4185,19 @@ fn exception_code(
     let mut arms = Vec::new();
     for mut transitions in grouped.into_values() {
         transitions.sort_by_key(|transition| transition.event.wildcard);
-        let source = &transitions[0].in_state.ident;
-        let state_pattern = if transitions[0].in_state.data_type.is_some()
-            && transitions[0].in_state.composite.is_none()
-        {
-            quote! { #states_name::#source(state_data) }
-        } else {
-            quote! { #states_name::#source }
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated exception group is empty",
+            ));
         };
+        let source = &first.in_state.ident;
+        let state_pattern =
+            if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
+                quote! { #states_name::#source(state_data) }
+            } else {
+                quote! { #states_name::#source }
+            };
         let branches = transitions
             .iter()
             .map(|transition| {
@@ -3001,6 +4216,7 @@ fn exception_code(
                     temporary_context,
                     has_deferred_events,
                     async_queue,
+                    0,
                 )?;
                 Ok(if transition.event.wildcard {
                     branch
@@ -3051,8 +4267,14 @@ fn completion_code(
     }
     let mut anonymous_arms = Vec::new();
     for transitions in grouped.into_values() {
-        let source = &transitions[0].in_state.ident;
-        let eligible = if transitions[0].in_state.composite.is_some() {
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated completion group is empty",
+            ));
+        };
+        let source = &first.in_state.ident;
+        let eligible = if first.in_state.composite.is_some() {
             composite_terminal.clone()
         } else {
             quote! { true }
@@ -3085,16 +4307,16 @@ fn completion_code(
                     temporary_context,
                     has_deferred_events,
                     async_queue,
+                    0,
                 )
             })
             .collect::<parse::Result<Vec<_>>>()?;
-        let state_pattern = if transitions[0].in_state.data_type.is_some()
-            && transitions[0].in_state.composite.is_none()
-        {
-            quote! { #states_name::#source(state_data) }
-        } else {
-            quote! { #states_name::#source }
-        };
+        let state_pattern =
+            if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
+                quote! { #states_name::#source(state_data) }
+            } else {
+                quote! { #states_name::#source }
+            };
         anonymous_arms.push(quote! {
             #state_pattern if #eligible => { #(#branches)* }
         });
@@ -3113,7 +4335,12 @@ fn completion_code(
     }
     let mut origin_arms = Vec::new();
     for transitions in origin_grouped.into_values() {
-        let first = transitions[0];
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated completion-origin group is empty",
+            ));
+        };
         let source = &first.in_state.ident;
         let event = &first.event.ident;
         let event_type = events
@@ -3159,6 +4386,7 @@ fn completion_code(
                     temporary_context,
                     has_deferred_events,
                     async_queue,
+                    0,
                 )
             })
             .collect::<parse::Result<Vec<_>>>()?;
@@ -3206,13 +4434,14 @@ fn action_sequence(
     callback_args: &Option<TokenStream>,
     error_name: &Ident,
     produces_state: bool,
+    event_name: &TokenStream,
 ) -> parse::Result<TokenStream> {
     let mut output = TokenStream::new();
     let mut action_index = 0;
-    let total = actions.len() + eval_actions.len();
+    let total = actions.len().saturating_add(eval_actions.len());
     for position in 0..total {
         if let Some(eval) = eval_actions.iter().find(|eval| eval.position == position) {
-            let guard = guard_code(&eval.guard, callback_args, error_name)?;
+            let guard = guard_code(&eval.guard, callback_args, error_name, event_name)?;
             let action = &eval.action.ident;
             let action_await = eval.action.is_async.then(|| quote! { .await });
             output.extend(quote! {
@@ -3220,14 +4449,20 @@ fn action_sequence(
                 if eval_guard_passed {
                     self.context.#action(#callback_args)#action_await
                         .map_err(#error_name::ActionFailed)?;
+                    Self::__sml_log_action(&mut self.policy, stringify!(#action), #event_name);
                     self.context.log_action(stringify!(#action));
                 }
             });
         } else {
-            let action = &actions[action_index];
+            let action = actions.get(action_index).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    "generated action sequence references a missing action",
+                )
+            })?;
             let ident = &action.ident;
             let action_await = action.is_async.then(|| quote! { .await });
-            let binding = if produces_state && action_index + 1 == actions.len() {
+            let binding = if produces_state && action_index.saturating_add(1) == actions.len() {
                 quote! { let output_data = }
             } else {
                 quote! { let _ = }
@@ -3235,9 +4470,10 @@ fn action_sequence(
             output.extend(quote! {
                 #binding self.context.#ident(#callback_args)#action_await
                     .map_err(#error_name::ActionFailed)?;
+                Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));
             });
-            action_index += 1;
+            action_index = action_index.saturating_add(1);
         }
     }
     Ok(output)
@@ -3251,8 +4487,9 @@ fn action_code(
     let ident = &action.ident;
     let action_await = action.is_async.then(|| quote! { .await });
     quote! {
-        self.context.#ident(#event_arg)#action_await.map_err(#error_name::ActionFailed)?;
-        self.context.log_action(stringify!(#ident));
+                self.context.#ident(#event_arg)#action_await.map_err(#error_name::ActionFailed)?;
+                Self::__sml_log_action(&mut self.policy, stringify!(#ident), "");
+                self.context.log_action(stringify!(#ident));
     }
 }
 
@@ -3271,6 +4508,7 @@ fn guard_code(
     guard: &GuardExpression,
     event_arg: &Option<TokenStream>,
     error_name: &Ident,
+    event_name: &TokenStream,
 ) -> parse::Result<TokenStream> {
     Ok(guard.to_token_stream(&mut |guard| {
         let ident = &guard.ident;
@@ -3279,6 +4517,7 @@ fn guard_code(
             {
                 let guard_result = self.context.#ident(#event_arg)#guard_await
                     .map_err(#error_name::GuardFailed)?;
+                Self::__sml_log_guard(&mut self.policy, stringify!(#ident), #event_name, guard_result);
                 self.context.log_guard(stringify!(#ident), guard_result);
                 guard_result
             }

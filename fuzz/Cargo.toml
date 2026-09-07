@@ -20,3 +20,8 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+warnings = "deny"

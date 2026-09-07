@@ -1,11 +1,38 @@
-#![recursion_limit = "512"]
+//! Procedural macro implementation for the `stateforward-sml` state-machine DSL.
 
-extern crate proc_macro;
+#![recursion_limit = "512"]
+#![forbid(unsafe_code)]
+#![deny(
+    elided_lifetimes_in_paths,
+    missing_docs,
+    rust_2018_idioms,
+    unsafe_op_in_unsafe_fn,
+    unused_must_use
+)]
+#![deny(
+    clippy::all,
+    clippy::dbg_macro,
+    clippy::mem_forget,
+    clippy::todo,
+    clippy::unimplemented
+)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::unreachable
+    )
+)]
 
 mod codegen;
 mod composite_codegen;
 #[cfg(feature = "graphviz")]
 mod diagramgen;
+mod event_codegen;
 mod orthogonal_codegen;
 mod parser;
 mod validation;
@@ -68,11 +95,11 @@ pub fn sml(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
         return output.into();
     }
-    let machine = input
-        .machines
-        .into_iter()
-        .next()
-        .expect("parser requires a machine");
+    let Some(machine) = input.machines.into_iter().next() else {
+        return syn::Error::new(proc_macro2::Span::call_site(), "parser requires a machine")
+            .to_compile_error()
+            .into();
+    };
     if machine
         .transitions
         .iter()
@@ -157,7 +184,10 @@ fn expand(input: parser::state_machine::StateMachine) -> proc_macro::TokenStream
                 return e.to_compile_error().into();
             }
 
-            codegen::generate_code(&sm).into()
+            match codegen::generate_code(&sm) {
+                Ok(code) => code.into(),
+                Err(error) => error.to_compile_error().into(),
+            }
         }
         Err(error) => error.to_compile_error().into(),
     }

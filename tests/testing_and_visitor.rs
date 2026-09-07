@@ -1,4 +1,8 @@
-use sml::sml;
+use sml::{sml, sml_policies};
+
+sml_policies!(TestingPolicies {
+    testing: sml::TestingPolicy,
+});
 
 sml! {
     Inspectable[states_attr: #[derive(Debug)]] {
@@ -20,9 +24,10 @@ impl InspectableStateMachineContext for Context {
 
 #[test]
 fn state_can_be_injected_for_focused_transition_testing() {
-    let mut sm = InspectableStateMachine::new(Context::default());
+    let mut sm: InspectableStateMachine<Context, TestingPolicies> =
+        InspectableStateMachine::new_with_policy(Context::default(), TestingPolicies::default());
 
-    let previous = sm.set_state(InspectableStates::Running);
+    let previous = sm.set_current_states(InspectableStates::Running);
     assert!(matches!(previous, InspectableStates::Idle));
 
     sm.process_event(InspectableEvents::Stop).unwrap();
@@ -72,9 +77,13 @@ impl InitializeInjectedStateMachineContext for InitializeInjectedContext {
 
 #[test]
 fn initialize_runs_configured_entry_action_for_injected_state() {
-    let mut sm = InitializeInjectedStateMachine::new(InitializeInjectedContext::default());
+    let mut sm: InitializeInjectedStateMachine<InitializeInjectedContext, TestingPolicies> =
+        InitializeInjectedStateMachine::new_with_policy(
+            InitializeInjectedContext::default(),
+            TestingPolicies::default(),
+        );
 
-    sm.set_state(InitializeInjectedStates::Ready);
+    sm.set_current_states(InitializeInjectedStates::Ready);
     sm.initialize().unwrap();
 
     assert_eq!(sm.context().ready_entries, 1);

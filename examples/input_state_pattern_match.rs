@@ -4,7 +4,11 @@
 //! transition to the same output state can be described more succinctly
 #![deny(missing_docs)]
 
-use sml::sml;
+use sml::{sml, sml_policies};
+
+sml_policies!(TestingPolicies {
+    testing: sml::TestingPolicy,
+});
 
 // sml! {
 //     transitions: {
@@ -43,7 +47,8 @@ pub struct Context;
 impl StateMachineContext for Context {}
 
 fn main() {
-    let mut sm = StateMachine::new(Context);
+    let mut sm: StateMachine<Context, TestingPolicies> =
+        StateMachine::new_with_policy(Context, TestingPolicies::default());
 
     assert!(matches!(sm.state(), &States::Idle));
 
@@ -73,23 +78,23 @@ fn main() {
     assert!(matches!(r, Err(Error::InvalidEvent)));
     assert!(matches!(sm.state(), &States::Discharged));
 
-    sm = StateMachine::new_with_state(Context, States::Idle);
+    sm.set_current_states(States::Idle);
     let r = sm.process_event(Events::FaultDetected);
     assert!(matches!(r, Ok(&States::Fault)));
 
-    sm = StateMachine::new_with_state(Context, States::Charging);
+    sm.set_current_states(States::Charging);
     let r = sm.process_event(Events::FaultDetected);
     assert!(matches!(r, Ok(&States::Fault)));
 
-    sm = StateMachine::new_with_state(Context, States::Charged);
+    sm.set_current_states(States::Charged);
     let r = sm.process_event(Events::FaultDetected);
     assert!(matches!(r, Ok(&States::Fault)));
 
-    sm = StateMachine::new_with_state(Context, States::Discharging);
+    sm.set_current_states(States::Discharging);
     let r = sm.process_event(Events::FaultDetected);
     assert!(matches!(r, Ok(&States::Fault)));
 
-    sm = StateMachine::new_with_state(Context, States::Discharged);
+    sm.set_current_states(States::Discharged);
     let r = sm.process_event(Events::FaultDetected);
     assert!(matches!(r, Ok(&States::Fault)));
 

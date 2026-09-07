@@ -6,7 +6,7 @@ description = "Procedural macros for the sml.rs transition-table DSL"
 keywords = ["dsl", "state-machine", "sml"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stateforward/sml.rs"
-version = "1.2.0"
+version = "1.4.0"
 edition = "2018"
 rust-version = "1.90"
 readme = "../README.md"
@@ -25,3 +25,10 @@ proc-macro = true
 
 [features]
 graphviz = []
+
+[lints.rust]
+# Keep the procedural-macro implementation and its checked targets warning
+# free, with no unsafe implementation path.
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+warnings = "deny"

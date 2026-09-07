@@ -8,17 +8,22 @@ mod internal_macros {
     #[macro_export]
     macro_rules! assert_transition {
         ($sm:expr, $event:expr, $expected_state:expr, $expected_count:expr) => {{
-            let prev_state = $sm.state;
+            let prev_state = $sm.state().clone();
             $sm.process_event($event).unwrap();
-            println!("{:?} -> {:?} : {:?}", prev_state, $sm.state, $sm.context());
-            assert_eq!($expected_state, $sm.state);
+            println!(
+                "{:?} -> {:?} : {:?}",
+                prev_state,
+                $sm.state(),
+                $sm.context()
+            );
+            assert_eq!(&$expected_state, $sm.state());
             assert_eq!($expected_count, $sm.context().count);
         }};
     }
     #[macro_export]
     macro_rules! assert_transition_ok {
         ($sm:expr, $event:expr, $expected_action:expr, $expected_result:pat) => {{
-            let prev_state = $sm.state;
+            let prev_state = $sm.state().clone();
             if let Ok(result) = $sm.process_event($event) {
                 let result = result.clone();
                 println!("{:?} -> {:?} : {:?}", prev_state, result, $sm.context());
@@ -518,7 +523,7 @@ fn test_wildcard_states_and_internal_transitions() {
     assert_transition!(sm, Events::Event3, States::State3, 3);
 
     assert!(sm.process_event(Events::Event2).is_err()); // InvalidEvent
-    assert_eq!(States::State3, sm.state);
+    assert_eq!(&States::State3, sm.state());
 }
 #[test]
 fn test_specify_attrs() {

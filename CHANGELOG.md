@@ -6,6 +6,26 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Keep thread-safety guards in a separate generated storage slot so policy
+  logging and event processing use ordinary safe Rust borrowing with no raw
+  pointer or unsafe-code path.
+- Preserve context process-event callbacks and report policy actions only after
+  the action succeeds.
+- Seal the testing-only state override capability so production policies cannot
+  opt themselves into `set_current_states`.
+
+## 1.4.0 - 2026-09-04
+
+### Added
+
+- Add composable logger, observer, dispatch, thread-safety, testing, and queue
+  policies for generated machines.
+- Add static generated event/state names and owner-only policy accessors.
+- Add allocation-free `visit_current_events` queries for static event payload
+  types from the active flat, composite, and orthogonal states.
+
 ## 1.2.0 - 2026-07-16
 
 ### Added
@@ -51,7 +71,6 @@ All notable changes to this project are documented here. This project follows
 ## 1.0.0 - 2026-07-11
 
 ### Added
-
 - Add a C++-shaped transition-table DSL with native flat, composite,
   orthogonal, completion, exception, history, deferred, and processed-event
   semantics.

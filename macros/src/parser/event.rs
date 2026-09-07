@@ -2,7 +2,7 @@ use crate::parser::transition::GuardExpression;
 use crate::parser::AsyncIdent;
 use syn::{parenthesized, parse, spanned::Spanned, token, Ident, LitStr, Token, Type};
 
-fn external_event_type(input: parse::ParseStream) -> syn::Result<(Ident, Type)> {
+fn external_event_type(input: parse::ParseStream<'_>) -> syn::Result<(Ident, Type)> {
     let event_type = input.parse::<Type>()?;
     fn type_ident(event_type: &Type) -> Option<Ident> {
         match event_type {
@@ -70,7 +70,7 @@ pub struct Transition {
 }
 
 impl parse::Parse for Event {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         // Event
         input.parse::<Token![+]>()?;
         let mut first: Ident = if input.peek(LitStr) {

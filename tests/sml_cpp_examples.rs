@@ -442,8 +442,14 @@ mod testing {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = TestingExampleStateMachine::new(Context::default());
-        sm.set_state(TestingExampleStates::S2);
+        let mut sm: TestingExampleStateMachine<
+            Context,
+            sml::PolicyBundle<(), (), sml::JumpTable, (), sml::TestingPolicy>,
+        > = TestingExampleStateMachine::new_with_policy(
+            Context::default(),
+            sml::PolicyBundle::<(), (), sml::JumpTable, (), sml::TestingPolicy>::default(),
+        );
+        sm.set_current_states(TestingExampleStates::S2);
         sm.process_event(E3).unwrap();
         assert!(sm.is_terminated());
         assert_eq!(sm.context().value, 42);

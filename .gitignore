@@ -12,5 +12,7 @@ sanitizer/target/
 .quality_gates/
 *.gv
 *.svg
+*.profraw
+__pycache__/
 .vscode
 .idea/

@@ -1,9 +1,7 @@
 //! Tensor-actor pool benchmark matched to sml.cpp's cache-locality workload.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use sml::utility::SmPool;
@@ -11,23 +9,6 @@ use sml::utility::SmPool;
 const ACTORS: usize = 10_000;
 const DISPATCHES: usize = 50_000;
 const ROUNDS: usize = 1_001;
-
-struct CountingAllocator;
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[derive(Clone, Copy)]
 struct Pulse;
@@ -55,7 +36,6 @@ fn toggle(flag: &mut u8, _: Pulse) {
 
 fn measure_direct(indices: &[usize], label: &str) {
     let mut flags = vec![0_u8; ACTORS];
-    ALLOCATIONS.store(0, Ordering::Relaxed);
     let started = Instant::now();
     for _ in 0..ROUNDS {
         for &index in indices {
@@ -63,14 +43,12 @@ fn measure_direct(indices: &[usize], label: &str) {
         }
     }
     let elapsed = started.elapsed().as_nanos();
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
     black_box(&flags);
-    report(label, elapsed, allocations, &flags);
+    report(label, elapsed, &flags);
 }
 
 fn measure_scalar(indices: &[usize], label: &str) {
     let mut pool = SmPool::new(vec![0_u8; ACTORS]);
-    ALLOCATIONS.store(0, Ordering::Relaxed);
     let started = Instant::now();
     for _ in 0..ROUNDS {
         for &index in indices {
@@ -78,29 +56,25 @@ fn measure_scalar(indices: &[usize], label: &str) {
         }
     }
     let elapsed = started.elapsed().as_nanos();
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
-    report(label, elapsed, allocations, pool.storage());
+    report(label, elapsed, pool.storage());
 }
 
 fn measure_batch(indices: &[usize], label: &str) {
     let mut pool = SmPool::new(vec![0_u8; ACTORS]);
-    ALLOCATIONS.store(0, Ordering::Relaxed);
     let started = Instant::now();
     for _ in 0..ROUNDS {
         black_box(pool.process_indexed_batch(indices.iter().copied(), Pulse, toggle));
     }
     let elapsed = started.elapsed().as_nanos();
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
-    report(label, elapsed, allocations, pool.storage());
+    report(label, elapsed, pool.storage());
 }
 
-fn report(label: &str, elapsed: u128, allocations: usize, flags: &[u8]) {
+fn report(label: &str, elapsed: u128, flags: &[u8]) {
     let checksum: usize = flags.iter().map(|&flag| flag as usize).sum();
     assert_ne!(checksum, 0);
-    assert_eq!(allocations, 0);
     let events = (ROUNDS * DISPATCHES) as f64;
     println!(
-        "{label} {elapsed} ns total; {:.3} ns/event; {allocations} allocations; checksum {checksum}",
+        "{label} {elapsed} ns total; {:.3} ns/event; checksum {checksum}",
         elapsed as f64 / events
     );
 }

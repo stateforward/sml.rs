@@ -3,12 +3,13 @@
 //! Each initial state starts an orthogonal region. Events are borrowed and
 //! broadcast to every region, so one event may advance several regions.
 
+use crate::event_codegen::{add_spec, is_query_event, is_static_type, names_table, EventSpecs};
 use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use syn::{parse, Type};
 
@@ -25,6 +26,8 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let error_name = format_ident!("{}Error", name);
     let context_name = format_ident!("{}StateMachineContext", name);
     let machine_name = format_ident!("{}StateMachine", name);
+    let core_name = format_ident!("__Sml{}StateMachineCore", name);
+    let policy_name = format_ident!("__SmlPolicy");
     let is_async_machine = machine.entry_exit_async
         || machine.transitions.iter().any(|transition| {
             transition
@@ -58,23 +61,33 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             .get(&state.to_string())
             .map_or_else(|| quote! { #state }, |ty| quote! { #state(#ty) })
     });
-    let initial_states = regions.iter().map(|region| {
-        let initial = &region.initial;
-        state_types.get(&initial.to_string()).map_or_else(
-            || quote! { #states_name::#initial },
-            |_| quote! { #states_name::#initial(core::default::Default::default()) },
-        )
-    });
-    let new_const = state_types.is_empty().then(|| quote! { const });
+    let initial_states: Vec<_> = regions
+        .iter()
+        .map(|region| {
+            let initial = &region.initial;
+            state_types.get(&initial.to_string()).map_or_else(
+                || quote! { #states_name::#initial },
+                |_| quote! { #states_name::#initial(core::default::Default::default()) },
+            )
+        })
+        .collect();
+    let _new_const = state_types.is_empty().then(|| quote! { const });
     let deferred_field = has_deferred_events.then(|| {
-        quote! { deferred: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            deferred: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_name>,
+        }
     });
-    let deferred_init =
-        has_deferred_events.then(|| quote! { deferred: ::sml::utility::EventQueue::new(), });
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, });
     let pending_field = async_queue.then(|| {
-        quote! { pending: ::sml::utility::EventQueue<#events_name, 16>, }
+        quote! {
+            pending: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::ProcessQueue<#events_name>,
+        }
     });
-    let pending_init = async_queue.then(|| quote! { pending: ::sml::utility::EventQueue::new(), });
+    let pending_init = async_queue.then(|| quote! { pending, });
+    let deferred_local = has_deferred_events
+        .then(|| quote! { let deferred = ::sml::PolicyParts::new_defer_queue(&policy); });
+    let pending_local = async_queue
+        .then(|| quote! { let pending = ::sml::PolicyParts::new_process_queue(&policy); });
 
     let events = collect_events(machine);
     let event_variants = events.values().map(|event| {
@@ -85,18 +98,119 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             quote! { #ident }
         }
     });
-    let conversions = events.values().filter_map(|event| {
+    let event_name_arms = events.values().map(|event| {
         let ident = &event.ident;
-        event.external.then(|| {
-            let ty = event.ty.as_ref().expect("external events have a type");
-            quote! {
+        if event.ty.is_some() {
+            quote! { #events_name::#ident(..) => stringify!(#ident), }
+        } else {
+            quote! { #events_name::#ident => stringify!(#ident), }
+        }
+    });
+    let event_name_match = if events.is_empty() {
+        quote! { match *self {} }
+    } else {
+        quote! { match self { #(#event_name_arms)* } }
+    };
+    let event_name_impl = quote! {
+        impl ::sml::EventName for #events_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                #event_name_match
+            }
+        }
+    };
+    let state_name_arms = states.iter().map(|state| {
+        if state_types.contains_key(&state.to_string()) {
+            quote! { #states_name::#state(..) => stringify!(#state), }
+        } else {
+            quote! { #states_name::#state => stringify!(#state), }
+        }
+    });
+    let state_name_impl = quote! {
+        impl ::sml::StateName for #states_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str {
+                match self { #(#state_name_arms)* }
+            }
+        }
+    };
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
                 impl From<#ty> for #events_name {
                     #[inline(always)]
                     fn from(event: #ty) -> Self { Self::#ident(event) }
                 }
-            }
+            })
         })
+        .collect::<parse::Result<Vec<_>>>()?;
+
+    let mut event_specs = EventSpecs::new();
+    let mut event_queries = BTreeMap::<String, (Type, Vec<TokenStream>)>::new();
+    for transition in &machine.transitions {
+        if !is_query_event(transition.event.kind, transition.event.wildcard) {
+            continue;
+        }
+        let Some(event_type) = transition.event.data_type.as_ref() else {
+            continue;
+        };
+        if !is_static_type(event_type) {
+            continue;
+        }
+        let Some(region_index) = regions.iter().position(|region| {
+            region
+                .states
+                .contains(&transition.in_state.ident.to_string())
+        }) else {
+            continue;
+        };
+        add_spec(
+            &mut event_specs,
+            &transition.event.ident,
+            transition.event.kind,
+            transition.event.wildcard,
+            Some(event_type),
+        );
+        let state = &transition.in_state.ident;
+        let state_pattern = if transition.in_state.data_type.is_some() {
+            quote! { #states_name::#state(..) }
+        } else {
+            quote! { #states_name::#state }
+        };
+        let condition = quote! {
+            matches!(&self.states[#region_index], #state_pattern)
+        };
+        event_queries
+            .entry(event_type.to_token_stream().to_string())
+            .or_insert_with(|| (event_type.clone(), Vec::new()))
+            .1
+            .push(condition);
+    }
+    let event_query_calls = event_queries.values().map(|(event_type, conditions)| {
+        quote! {
+            if #(#conditions)||* {
+                visitor.visit::<#event_type>();
+            }
+        }
     });
+    let event_names_table = names_table(&event_specs, &events_name, &syn::Generics::default());
+    let visit_current_events = quote! {
+        /// Visits each static typed event payload with a transition from any
+        /// active region. Guards and context are not observed.
+        #[inline(always)]
+        fn __sml_visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            #(#event_query_calls)*
+        }
+    };
 
     let callback_error = if let Some(error) = &machine.fixed_error_type {
         quote! { #error }
@@ -152,6 +266,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &quote! { self.states },
                 &quote! {
                     self.context.transition_callback(#index, &old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
                 },
                 &TokenStream::new(),
                 &TokenStream::new(),
@@ -176,6 +295,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &quote! { self.states },
                 &quote! {
                     self.context.transition_callback(#index, &old_state, new_state);
+                    Self::__sml_log_state_change(
+                        &mut self.policy,
+                        ::sml::StateName::name(&old_state),
+                        ::sml::StateName::name(new_state),
+                    );
                 },
                 &TokenStream::new(),
                 &TokenStream::new(),
@@ -195,6 +319,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         &quote! { self.states },
         &quote! {
             self.context.transition_callback(region_index, &old_state, new_state);
+            Self::__sml_log_state_change(
+                &mut self.policy,
+                ::sml::StateName::name(&old_state),
+                ::sml::StateName::name(new_state),
+            );
         },
         &TokenStream::new(),
         &TokenStream::new(),
@@ -279,12 +408,17 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         }
     };
 
-    let process_event_body = if async_queue {
+    let unlocked_process_event_body = if async_queue {
         quote! {
+            use ::sml::Queue as _;
             self.pending.defer(event.into())
                 .map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(&self.states, &event);
+                Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+                if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                    return Err(#error_name::InvalidEvent);
+                }
                 #dispatch_attempt
                 if handled {
                     if exception_recovered {
@@ -300,8 +434,13 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         }
     } else {
         quote! {
+            use ::sml::Queue as _;
             let event = event.into();
             self.context.log_process_event(&self.states, &event);
+            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                return Err(#error_name::InvalidEvent);
+            }
             #dispatch_attempt
             if handled {
                 if exception_recovered {
@@ -315,10 +454,110 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
         }
     };
+    let process_event_body = quote! {
+        let thread_safe = &self.thread_safe;
+        let core = &mut self.core;
+        let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+        core.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize
+    };
+
+    let core_struct = quote! {
+        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
+            states: [#states_name; #region_count],
+            context: T,
+            policy: <#policy_name as ::sml::Policies>::Parts,
+            #deferred_field
+            #pending_field
+        }
+    };
+
+    let public_api = quote! {
+        /// Enters each initial state and runs anonymous `completion<_>`
+        /// transitions until all regions reach stable states.
+        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&[#states_name; #region_count], #generated_error> {
+            let thread_safe = &self.thread_safe;
+            let core = &mut self.core;
+            let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
+            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize
+        }
+
+        #[inline(always)]
+        pub fn states(&self) -> &[#states_name; #region_count] { &self.core.states }
+
+        #[inline(always)]
+        pub fn state(&self, region: usize) -> Option<&#states_name> {
+            self.core.states.get(region)
+        }
+
+        /// Visits each static typed event payload with a transition from any
+        /// active region. Guards and context are not observed.
+        #[inline(always)]
+        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            self.core.__sml_visit_current_events(visitor)
+        }
+
+        #[inline(always)]
+        pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger(&self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer(&self.core.policy)
+        }
+
+        #[inline(always)]
+        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
+        }
+
+        /// Replaces all active orthogonal region states for a testing policy.
+        pub fn set_current_states(
+            &mut self,
+            states: [#states_name; #region_count],
+        ) -> [#states_name; #region_count]
+        where
+            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
+        {
+            core::mem::replace(&mut self.core.states, states)
+        }
+
+        #[inline(always)]
+        pub fn is(&self, expected: &[#states_name; #region_count]) -> bool {
+            self.core.states == *expected
+        }
+
+        #[inline(always)]
+        pub fn is_region(&self, region: usize, expected: &#states_name) -> bool {
+            self.core.states.get(region).is_some_and(|state| state == expected)
+        }
+
+        #[inline(always)]
+        pub fn is_terminated(&self) -> bool {
+            self.core.states.iter().all(|state| matches!(state, #states_name::X))
+        }
+
+        #[inline(always)]
+        pub fn context(&self) -> &T { &self.core.context }
+
+        #[inline(always)]
+        pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
+    };
 
     let states_attr = &machine.states_attr;
     let events_attr = &machine.events_attr;
     Ok(quote! {
+        use ::sml::Queue as _;
+
         /// Guards, actions, lifecycle hooks, and logging for this orthogonal machine.
         pub trait #context_name {
             #context_error
@@ -350,7 +589,10 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         #(#events_attr)*
         pub enum #events_name { #(#event_variants),* }
 
+        #state_name_impl
+        #event_name_impl
         #(#conversions)*
+        #event_names_table
 
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
@@ -361,25 +603,95 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             QueueFull,
         }
 
-        pub struct #machine_name<T: #context_name> {
-            states: [#states_name; #region_count],
-            context: T,
-            #deferred_field
-            #pending_field
+        #core_struct
+
+        pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        where
+            #policy_name: ::sml::Policies,
+        {
+            core: #core_name<T, #policy_name>,
+            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
-        impl<T: #context_name> #machine_name<T> {
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
             #[inline(always)]
-            pub #new_const fn new(context: T) -> Self {
-                Self {
-                    states: [#(#initial_states),*],
-                    context,
-                    #deferred_init
-                    #pending_init
-                }
+            fn __sml_log_process_event(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_process_event(
+                    ::sml::PolicyParts::logger_mut(policy), event,
+                );
+                ::sml::Observer::observe_process_event(
+                    ::sml::PolicyParts::observer_mut(policy), event,
+                );
             }
 
-            pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&[#states_name; #region_count], #generated_error> {
+            #[inline(always)]
+            fn __sml_log_state_change(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                from: &'static str,
+                to: &'static str,
+            ) {
+                ::sml::Logger::log_state_change(
+                    ::sml::PolicyParts::logger_mut(policy), from, to,
+                );
+                ::sml::Observer::observe_state_change(
+                    ::sml::PolicyParts::observer_mut(policy), from, to,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_action(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                action: &'static str,
+                event: &'static str,
+            ) {
+                ::sml::Logger::log_action(
+                    ::sml::PolicyParts::logger_mut(policy), action, event,
+                );
+                ::sml::Observer::observe_action(
+                    ::sml::PolicyParts::observer_mut(policy), action, event,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_log_guard(
+                policy: &mut <#policy_name as ::sml::Policies>::Parts,
+                guard: &'static str,
+                event: &'static str,
+                result: bool,
+            ) {
+                ::sml::Logger::log_guard(
+                    ::sml::PolicyParts::logger_mut(policy), guard, event, result,
+                );
+                ::sml::Observer::observe_guard(
+                    ::sml::PolicyParts::observer_mut(policy), guard, event, result,
+                );
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_allowed(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                event: &'static str,
+            ) -> bool {
+                ::sml::Dispatch::dispatch(::sml::PolicyParts::dispatch(policy), event)
+            }
+
+            #[inline(always)]
+            fn __sml_dispatch_candidate(
+                policy: &<#policy_name as ::sml::Policies>::Parts,
+                state: &'static str,
+                event: &'static str,
+                candidate: usize,
+            ) -> bool {
+                ::sml::Dispatch::dispatch_candidate(
+                    ::sml::PolicyParts::dispatch(policy), state, event, candidate,
+                )
+            }
+
+            #async_keyword fn __sml_initialize_unlocked(&mut self, #temporary_context_parameter) -> Result<&[#states_name; #region_count], #generated_error> {
                 #(#initial_entries)*
                 self.stabilize(#temporary_context_call None)#await_stabilize?;
                 Ok(&self.states)
@@ -394,33 +706,103 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
 
             #[inline(always)]
-            pub fn states(&self) -> &[#states_name; #region_count] { &self.states }
+            fn states(&self) -> &[#states_name; #region_count] { &self.states }
 
             #[inline(always)]
-            pub fn state(&self, region: usize) -> Option<&#states_name> {
+            fn state(&self, region: usize) -> Option<&#states_name> {
                 self.states.get(region)
             }
 
+            #visit_current_events
+
             #[inline(always)]
-            pub fn is(&self, expected: &[#states_name; #region_count]) -> bool {
+            fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger(&self.policy)
+            }
+
+            #[inline(always)]
+            fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+                ::sml::PolicyParts::logger_mut(&mut self.policy)
+            }
+
+            #[inline(always)]
+            fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer(&self.policy)
+            }
+
+            #[inline(always)]
+            fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+                ::sml::PolicyParts::observer_mut(&mut self.policy)
+            }
+
+            /// Creates a machine in selected orthogonal states with a policy.
+            /// Replaces all active orthogonal region states for a testing policy.
+            fn __sml_set_current_states(
+                &mut self,
+                states: [#states_name; #region_count],
+            ) -> [#states_name; #region_count]
+            where
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                    ::sml::TestingAccess,
+            {
+                core::mem::replace(&mut self.states, states)
+            }
+
+            #[inline]
+            #async_keyword fn __sml_process_event_unlocked<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<&[#states_name; #region_count], #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #unlocked_process_event_body
+            }
+
+            #[inline(always)]
+            fn is(&self, expected: &[#states_name; #region_count]) -> bool {
                 self.states == *expected
             }
 
             #[inline(always)]
-            pub fn is_region(&self, region: usize, expected: &#states_name) -> bool {
+            fn is_region(&self, region: usize, expected: &#states_name) -> bool {
                 self.states.get(region).map_or(false, |state| state == expected)
             }
 
             #[inline(always)]
-            pub fn is_terminated(&self) -> bool {
+            fn is_terminated(&self) -> bool {
                 self.states.iter().all(|state| matches!(state, #states_name::X))
             }
 
             #[inline(always)]
-            pub fn context(&self) -> &T { &self.context }
+            fn context(&self) -> &T { &self.context }
 
             #[inline(always)]
-            pub fn context_mut(&mut self) -> &mut T { &mut self.context }
+            fn context_mut(&mut self) -> &mut T { &mut self.context }
+
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
+
+            #[inline(always)]
+            pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        states: [#(#initial_states),*],
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
@@ -434,9 +816,29 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
         }
 
-        impl<T: #context_name> ::sml::Terminated for #machine_name<T> {
+        impl<T: #context_name, #policy_name: ::sml::Policies>
+            ::sml::Terminated for #machine_name<T, #policy_name> {
             #[inline(always)]
-            fn is_terminated(&self) -> bool { self.is_terminated() }
+            fn is_terminated(&self) -> bool { self.core.is_terminated() }
+        }
+        impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
+            #[inline(always)]
+            pub fn new(context: T) -> Self {
+                let policy: ::sml::NoPolicy = core::default::Default::default();
+                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                #deferred_local
+                #pending_local
+                Self {
+                    core: #core_name {
+                        states: [#(#initial_states),*],
+                        context,
+                        policy,
+                        #deferred_init
+                        #pending_init
+                    },
+                    thread_safe,
+                }
+            }
         }
     })
 }
@@ -871,10 +1273,15 @@ fn generate_context_methods(
             let async_keyword = action.is_async.then(|| quote! { async });
             let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
-                && index + 1 == transition_actions.len()
+                && index.saturating_add(1) == transition_actions.len()
                 && transition.out_state.data_type.is_some();
             let output = if produces_state {
-                let ty = transition.out_state.data_type.as_ref().unwrap();
+                let ty = transition.out_state.data_type.as_ref().ok_or_else(|| {
+                    parse::Error::new(
+                        transition.out_state.ident.span(),
+                        "a state-producing action is missing its output state type",
+                    )
+                })?;
                 quote! { #ty }
             } else {
                 quote! { () }
@@ -983,7 +1390,12 @@ fn generate_region_dispatch(
                 .push(transition);
         }
         for event_transitions in by_event.into_values() {
-            let first = event_transitions[0];
+            let Some(first) = event_transitions.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal transition group is empty",
+                ));
+            };
             let state_ident = &first.in_state.ident;
             let event_ident = &first.event.ident;
             let event_pattern = if first.event.data_type.is_some() {
@@ -993,7 +1405,8 @@ fn generate_region_dispatch(
             };
             let branches = event_transitions
                 .iter()
-                .map(|transition| {
+                .enumerate()
+                .map(|(candidate_index, transition)| {
                     generate_transition_branch(
                         index,
                         transition,
@@ -1008,6 +1421,7 @@ fn generate_region_dispatch(
                         callback,
                         composite_exit,
                         composite_entry,
+                        candidate_index,
                     )
                 })
                 .collect::<parse::Result<Vec<_>>>()?;
@@ -1048,6 +1462,7 @@ fn generate_region_dispatch(
                 callback,
                 composite_exit,
                 composite_entry,
+                0,
             )?;
             let state_pattern = if transition.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
@@ -1079,6 +1494,7 @@ fn generate_region_dispatch(
                 callback,
                 composite_exit,
                 composite_entry,
+                0,
             )?;
             let state_pattern = if transition.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
@@ -1118,7 +1534,28 @@ fn generate_transition_branch(
     callback: &TokenStream,
     composite_exit: &TokenStream,
     composite_entry: &TokenStream,
+    candidate_index: usize,
 ) -> parse::Result<TokenStream> {
+    let event_name = {
+        let event = &transition.event.ident;
+        quote! { stringify!(#event) }
+    };
+    let state_name = transition.in_state.ident.to_string();
+    let candidate_dispatch = if matches!(
+        transition.event.kind,
+        EventKind::Normal | EventKind::Unexpected
+    ) {
+        quote! {
+            Self::__sml_dispatch_candidate(
+                &self.policy,
+                #state_name,
+                #event_name,
+                #candidate_index,
+            )
+        }
+    } else {
+        quote! { true }
+    };
     let state_arg = transition
         .in_state
         .data_type
@@ -1130,7 +1567,7 @@ fn generate_transition_branch(
     let guard = transition
         .guard
         .as_ref()
-        .map(|guard| guard_tokens(guard, &callback_args, error_name))
+        .map(|guard| guard_tokens(guard, &callback_args, error_name, &event_name))
         .transpose()?;
     let actions = transition
         .action
@@ -1147,6 +1584,7 @@ fn generate_transition_branch(
         &callback_args,
         error_name,
         produces_state,
+        &event_name,
     )?;
     let output_data = if transition.out_state.data_type.is_some()
         && !transition.internal_transition
@@ -1169,7 +1607,7 @@ fn generate_transition_branch(
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             } else {
-                quote! { let _ = self.process_event(#temporary_context_call #event)?; }
+                quote! { let _ = self.__sml_process_event_unlocked(#temporary_context_call #event)?; }
             }
         })
         .collect::<Vec<_>>();
@@ -1210,7 +1648,11 @@ fn generate_transition_branch(
         } else {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    let _ = self.process_event(#temporary_context_call deferred_event);
+                    match self.__sml_process_event_unlocked(#temporary_context_call deferred_event) {
+                        Ok(_) | Err(#error_name::InvalidEvent)
+                        | Err(#error_name::TransitionsFailed) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -1298,9 +1740,9 @@ fn generate_transition_branch(
         }
     };
     Ok(if let Some(guard) = guard {
-        quote! { if !region_handled && #guard { #body } }
+        quote! { if !region_handled && #candidate_dispatch && #guard { #body } }
     } else {
-        quote! { if !region_handled { #body } }
+        quote! { if !region_handled && #candidate_dispatch { #body } }
     })
 }
 
@@ -1343,8 +1785,14 @@ fn generate_exception_dispatch(
                     ));
                 }
             }
-            let state_ident = &transitions[0].in_state.ident;
-            let state_pattern = if transitions[0].in_state.data_type.is_some() {
+            let Some(first) = transitions.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal exception group is empty",
+                ));
+            };
+            let state_ident = &first.in_state.ident;
+            let state_pattern = if first.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
             } else {
                 quote! { #states_name::#state_ident }
@@ -1367,6 +1815,7 @@ fn generate_exception_dispatch(
                         callback,
                         composite_exit,
                         composite_entry,
+                        0,
                     )?;
                     Ok(if typed {
                         quote! { let event_data = error_data; #branch }
@@ -1423,7 +1872,13 @@ fn generate_completion_dispatch(
             })
             .collect::<Vec<_>>();
         if !anonymous.is_empty() {
-            let state_ident = &anonymous[0].in_state.ident;
+            let Some(first) = anonymous.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal completion group is empty",
+                ));
+            };
+            let state_ident = &first.in_state.ident;
             let branches = anonymous
                 .iter()
                 .map(|transition| {
@@ -1441,6 +1896,7 @@ fn generate_completion_dispatch(
                         callback,
                         composite_exit,
                         composite_entry,
+                        0,
                     )?;
                     Ok(if transition.in_state.composite.is_some() {
                         quote! { if #composite_terminal { #branch } }
@@ -1449,7 +1905,7 @@ fn generate_completion_dispatch(
                     })
                 })
                 .collect::<parse::Result<Vec<_>>>()?;
-            let state_pattern = if anonymous[0].in_state.data_type.is_some() {
+            let state_pattern = if first.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
             } else {
                 quote! { #states_name::#state_ident }
@@ -1486,6 +1942,7 @@ fn generate_completion_dispatch(
                 callback,
                 composite_exit,
                 composite_entry,
+                0,
             )?;
             let branch = if transition.in_state.composite.is_some() {
                 quote! { if #composite_terminal { #branch } }
@@ -1541,13 +1998,14 @@ fn action_sequence(
     callback_args: &TokenStream,
     error_name: &Ident,
     produces_state: bool,
+    event_name: &TokenStream,
 ) -> parse::Result<TokenStream> {
     let mut output = TokenStream::new();
     let mut action_index = 0;
-    let total = actions.len() + eval_actions.len();
+    let total = actions.len().saturating_add(eval_actions.len());
     for position in 0..total {
         if let Some(eval) = eval_actions.iter().find(|eval| eval.position == position) {
-            let guard = guard_tokens(&eval.guard, callback_args, error_name)?;
+            let guard = guard_tokens(&eval.guard, callback_args, error_name, event_name)?;
             let action = &eval.action.ident;
             let action_await = eval.action.is_async.then(|| quote! { .await });
             output.extend(quote! {
@@ -1555,14 +2013,20 @@ fn action_sequence(
                 if eval_guard_passed {
                     self.context.#action(#callback_args)#action_await
                         .map_err(#error_name::ActionFailed)?;
+                    Self::__sml_log_action(&mut self.policy, stringify!(#action), #event_name);
                     self.context.log_action(stringify!(#action));
                 }
             });
         } else {
-            let action = &actions[action_index];
+            let action = actions.get(action_index).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    "generated action sequence references a missing action",
+                )
+            })?;
             let ident = &action.ident;
             let action_await = action.is_async.then(|| quote! { .await });
-            let binding = if produces_state && action_index + 1 == actions.len() {
+            let binding = if produces_state && action_index.saturating_add(1) == actions.len() {
                 quote! { let output_data = }
             } else {
                 quote! { let _ = }
@@ -1570,9 +2034,10 @@ fn action_sequence(
             output.extend(quote! {
                 #binding self.context.#ident(#callback_args)#action_await
                     .map_err(#error_name::ActionFailed)?;
+                Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));
             });
-            action_index += 1;
+            action_index = action_index.saturating_add(1);
         }
     }
     Ok(output)
@@ -1586,6 +2051,7 @@ fn action_calls(actions: &[AsyncIdent], event_arg: TokenStream, error_name: &Ide
             let action_await = action.is_async.then(|| quote! { .await });
             quote! {
                 self.context.#ident(#event_arg)#action_await.map_err(#error_name::ActionFailed)?;
+                Self::__sml_log_action(&mut self.policy, stringify!(#ident), "");
                 self.context.log_action(stringify!(#ident));
             }
         })
@@ -1596,6 +2062,7 @@ fn guard_tokens(
     guard: &GuardExpression,
     event_arg: &TokenStream,
     error_name: &Ident,
+    event_name: &TokenStream,
 ) -> parse::Result<TokenStream> {
     Ok(guard.to_token_stream(&mut |guard| {
         let ident = &guard.ident;
@@ -1604,6 +2071,7 @@ fn guard_tokens(
             {
                 let guard_result = self.context.#ident(#event_arg)#guard_await
                     .map_err(#error_name::GuardFailed)?;
+                Self::__sml_log_guard(&mut self.policy, stringify!(#ident), #event_name, guard_result);
                 self.context.log_guard(stringify!(#ident), guard_result);
                 guard_result
             }
