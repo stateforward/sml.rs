@@ -42,6 +42,15 @@ impl Lifetimes {
         }
     }
 
+    /// Returns the lifetimes in `self` that are not present in `other`.
+    pub fn without(&self, other: &Lifetimes) -> Lifetimes {
+        let mut result = self.clone();
+        result
+            .lifetimes
+            .retain(|lifetime| !other.lifetimes.contains(lifetime));
+        result
+    }
+
     pub fn is_empty(&self) -> bool {
         self.lifetimes.is_empty()
     }
@@ -99,7 +108,7 @@ impl Lifetimes {
             }
 
             fn visit_type_bare_fn(&mut self, bare_fn: &'ast TypeBareFn) {
-                self.bare_fn_depth += 1;
+                self.bare_fn_depth = self.bare_fn_depth.saturating_add(1);
                 if let Some(lifetimes) = &bare_fn.lifetimes {
                     self.push_bound_lifetimes(lifetimes);
                     visit::visit_type_bare_fn(self, bare_fn);
@@ -107,7 +116,7 @@ impl Lifetimes {
                 } else {
                     visit::visit_type_bare_fn(self, bare_fn);
                 }
-                self.bare_fn_depth -= 1;
+                self.bare_fn_depth = self.bare_fn_depth.saturating_sub(1);
             }
 
             fn visit_trait_bound(&mut self, trait_bound: &'ast TraitBound) {

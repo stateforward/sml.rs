@@ -25,3 +25,10 @@ proc-macro = true
 
 [features]
 graphviz = []
+
+[lints.rust]
+# Keep the procedural-macro implementation and its checked targets warning
+# free, with no unsafe implementation path.
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+warnings = "deny"

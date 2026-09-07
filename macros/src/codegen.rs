@@ -8,7 +8,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::HashSet;
 use syn::visit::Visit;
-use syn::{parse_quote, Type};
+use syn::{parse, parse_quote, Type};
 
 #[derive(Default)]
 struct SourceIdents(HashSet<String>);
@@ -39,7 +39,7 @@ fn source_idents(sm: &ParsedStateMachine, event_generics: &syn::Generics) -> Sou
     idents
 }
 
-fn fresh_type_ident(reserved: &mut SourceIdents, base: &str) -> Ident {
+fn fresh_type_ident(reserved: &mut SourceIdents, base: &str) -> parse::Result<Ident> {
     for suffix in 0_u32.. {
         let name = if suffix == 0 {
             base.to_owned()
@@ -47,13 +47,16 @@ fn fresh_type_ident(reserved: &mut SourceIdents, base: &str) -> Ident {
             format!("{base}{suffix}")
         };
         if reserved.0.insert(name.clone()) {
-            return Ident::new(&name, Span::call_site());
+            return Ok(Ident::new(&name, Span::call_site()));
         }
     }
-    unreachable!("finite generic parameter list always leaves a fresh identifier")
+    Err(parse::Error::new(
+        Span::call_site(),
+        format!("unable to generate a fresh identifier based on `{base}`"),
+    ))
 }
 
-pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
+pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::TokenStream> {
     let (sm_name, sm_name_span) = sm
         .name
         .as_ref()
@@ -70,9 +73,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         format_ident!("{sm_name}StateMachineContext", span = sm_name_span);
     let event_generics = sm.event_generics_with_lifetimes(&sm.event_data.all_lifetimes);
     let mut reserved_idents = source_idents(sm, &event_generics);
-    let context_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlContext");
-    let policy_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlPolicy");
-    let event_input_ident = fresh_type_ident(&mut reserved_idents, "__SmlEventInput");
+    let context_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlContext")?;
+    let policy_type_ident = fresh_type_ident(&mut reserved_idents, "__SmlPolicy")?;
+    let event_input_ident = fresh_type_ident(&mut reserved_idents, "__SmlEventInput")?;
     let (event_impl_generics, event_type_generics, event_where_clause) =
         event_generics.split_for_impl();
 
@@ -148,7 +151,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let mut event_specs = EventSpecs::new();
     let mut current_event_query_arms = Vec::new();
     for (state_name, event_mappings) in &sm.states_events_mapping {
-        let state = sm.states.get(state_name).unwrap();
+        let state = sm.states.get(state_name).ok_or_else(|| {
+            parse::Error::new(
+                Span::call_site(),
+                format!("state `{state_name}` is missing from the parsed state table"),
+            )
+        })?;
         let mut state_specs = EventSpecs::new();
         for mapping in event_mappings.values() {
             let event_type = sm.event_data.data_types.get(&mapping.event.to_string());
@@ -235,9 +243,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let in_states: Vec<_> = transitions
         .keys()
         .map(|name| {
-            let state_name = sm.states.get(name).unwrap();
+            let state_name = sm.states.get(name).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    format!("state `{name}` is missing from the parsed state table"),
+                )
+            })?;
 
-            match sm.state_data.data_types.get(name) {
+            Ok(match sm.state_data.data_types.get(name) {
                 None => {
                     quote! {
                         #state_name
@@ -248,9 +261,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         #state_name(ref state_data)
                     }
                 }
-            }
+            })
         })
-        .collect();
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let events: Vec<Vec<_>> = transitions
         .values()
@@ -408,12 +421,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let action_parameters: Vec<Vec<_>> = transitions
         .iter()
         .map(|(name, value)| {
-            let state_name = &sm.states.get(name).unwrap().to_string();
+            let state_name = sm.states.get(name).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    format!("state `{name}` is missing from the parsed state table"),
+                )
+            })?;
+            let state_name = state_name.to_string();
 
-            value
+            Ok(value
                 .values()
                 .map(|mapping| {
-                    let state_data = match sm.state_data.data_types.get(state_name) {
+                    let state_data = match sm.state_data.data_types.get(&state_name) {
                         Some(Type::Reference(_)) => quote! { state_data },
                         Some(_) => quote! { &state_data },
                         None => quote! {},
@@ -448,19 +467,25 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         quote! { #state_data, #event_data }
                     }
                 })
-                .collect()
+                .collect())
         })
-        .collect();
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let guard_parameters: Vec<Vec<_>> = transitions
         .iter()
         .map(|(name, value)| {
-            let state_name = &sm.states.get(name).unwrap().to_string();
+            let state_name = sm.states.get(name).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    format!("state `{name}` is missing from the parsed state table"),
+                )
+            })?;
+            let state_name = state_name.to_string();
 
-            value
+            Ok(value
                 .values()
                 .map(|mapping| {
-                    let state_data = match sm.state_data.data_types.get(state_name) {
+                    let state_data = match sm.state_data.data_types.get(&state_name) {
                         Some(Type::Reference(_)) => quote! { state_data },
                         Some(_) => quote! { &state_data },
                         None => quote! {},
@@ -485,9 +510,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         quote! { #state_data, #event_data }
                     }
                 })
-                .collect()
+                .collect())
         })
-        .collect();
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let custom_error = if let Some(error_type) = &sm.fixed_error_type {
         quote! { #error_type }
@@ -643,7 +668,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
 
                 // Create the guard traits for user implementation
                 if let Some(guard_expression) = &transition.guard {
-                    visit_guards(guard_expression,|guard| {
+                    visit_guards(guard_expression, |guard| {
                         let is_async = guard.is_async;
                         let guard = &guard.ident;
                         let event_data = match sm.event_data.data_types.get(&event) {
@@ -655,7 +680,11 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         // Only add the guard if it hasn't been added before
                         if !guard_set.iter().any(|g| g == guard) {
                             guard_set.push(guard.clone());
-                            let is_async = if is_async { quote!{ async } } else { quote!{ } };
+                            let is_async = if is_async {
+                                quote! { async }
+                            } else {
+                                quote! {}
+                            };
                             guard_list.extend(quote! {
                             #[allow(missing_docs)]
                             #[allow(clippy::result_unit_err)]
@@ -663,7 +692,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         });
                         };
                         Ok(())
-                    }).unwrap();
+                    })?;
                 }
                 for eval in &transition.eval_actions {
                     visit_guards(&eval.guard, |guard| {
@@ -691,8 +720,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                             });
                         }
                         Ok(())
-                    })
-                    .unwrap();
+                    })?;
                 }
 
                 // Create the action traits for user implementation
@@ -735,8 +763,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                     let event_data = if event_mapping.event_kind == EventKind::Exception
                         && !event_mapping.event_wildcard
                     {
-                        let error_type =
-                            sm.fixed_error_type.as_ref().expect("typed exception error");
+                        let error_type = sm.fixed_error_type.as_ref().ok_or_else(|| {
+                            parse::Error::new(
+                                event_mapping.event.span(),
+                                "typed exception is missing its callback error type",
+                            )
+                        })?;
                         quote! { error_data: &#error_type }
                     } else {
                         match sm.event_data.data_types.get(&event) {
@@ -858,16 +890,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         visit_guards(expression, |guard| {
             is_async_state_machine |= guard.is_async;
             Ok(())
-        })
-        .unwrap();
+        })?;
     }
     for eval in eval_actions.iter().flatten().flatten().flatten() {
         is_async_state_machine |= eval.action.is_async;
         visit_guards(&eval.guard, |guard| {
             is_async_state_machine |= guard.is_async;
             Ok(())
-        })
-        .unwrap();
+        })?;
     }
     let has_queue_actions = has_deferred_events
         || process_events
@@ -904,7 +934,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         )
         .zip(event_names.iter())
         .map(
-            |((((((((guards, event_kinds), internal_transitions), process_events), deferred_events), eval_actions), default_outputs), (actions, (in_state, (out_states, (action_parameters, guard_parameters))))), event_names)| {
+            |((((((((guards, event_kinds), internal_transitions), process_events), deferred_events), eval_actions), default_outputs), (actions, (in_state, (out_states, (action_parameters, guard_parameters))))), event_names)| -> parse::Result<Vec<_>> {
                 guards
                     .iter()
                     .zip(event_kinds.iter())
@@ -919,15 +949,15 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                             .zip(out_states.iter().zip(action_parameters.iter().zip(guard_parameters.iter()))),
                     )
                     .zip(event_names.iter())
-                    .map(|((((((((guard, event_kind), internal_transitions), process_events), deferred_events), eval_actions), default_outputs), (action, (out_state, (action_params, guard_params)))), event_name)| {
-                        let streams: Vec<TokenStream> =
+                    .map(|((((((((guard, event_kind), internal_transitions), process_events), deferred_events), eval_actions), default_outputs), (action, (out_state, (action_params, guard_params)))), event_name)| -> parse::Result<TokenStream> {
+                        let streams: parse::Result<Vec<TokenStream>> =
                             guard.iter().zip(
                                 action.iter().zip(out_state).zip(internal_transitions.iter()).zip(process_events.iter()).zip(deferred_events.iter()).zip(eval_actions.iter()).zip(default_outputs.iter())
-                            ).enumerate().map(|(candidate_index, (guard, ((((((action,out_state), internal_transition), process_events), deferred_event), eval_actions), default_output)))| {
+                            ).enumerate().map(|(candidate_index, (guard, ((((((action,out_state), internal_transition), process_events), deferred_event), eval_actions), default_output)))| -> parse::Result<TokenStream> {
                                 let binding = out_state.to_string();
-                                let out_state_string = binding.split('(').next().unwrap().trim();
+                                let out_state_string = binding.split('(').next().map_or("", str::trim);
                                 let binding = in_state.to_string();
-                                let in_state_string = binding.split('(').next().unwrap().trim();
+                                let in_state_string = binding.split('(').next().map_or("", str::trim);
 
                                 let entry_ident = format_ident!("on_entry_{}", string_morph::to_snake_case(out_state_string));
                                 let exit_ident = format_ident!("on_exit_{}", string_morph::to_snake_case(in_state_string));
@@ -950,7 +980,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                                     eval_actions,
                                     guard_params,
                                     event_name,
-                                );
+                                )?;
                                 is_async_state_machine |= is_async_action;
                                 let process_await = if is_async_state_machine { quote! { .await } } else { quote! {} };
                                 let process_code = process_events.iter().map(|event| {
@@ -990,7 +1020,11 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                                     } else {
                                         quote! {
                                             while let Some(deferred_event) = self.deferred.pop() {
-                                                let _ = self.__sml_process_event_unlocked(deferred_event)#process_await;
+                                                match self.__sml_process_event_unlocked(deferred_event)#process_await {
+                                                    Ok(_) | Err(#error_type_name::InvalidEvent)
+                                                    | Err(#error_type_name::TransitionsFailed) => {}
+                                                    Err(error) => return Err(error),
+                                                }
                                             }
                                         }
                                     }
@@ -1051,7 +1085,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                                 } else {
                                     quote! { true }
                                 };
-                                if let Some(expr) = guard { // Guarded transition
+                                let candidate = if let Some(expr) = guard { // Guarded transition
                                     let guard_expression= expr.to_token_stream(&mut |async_ident: &AsyncIdent| {
                                         let guard_ident = &async_ident.ident;
                                         let guard_await = if async_ident.is_async {
@@ -1092,17 +1126,19 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                                             #transition
                                         }
                                    }
-                                }
+                                };
+                                Ok(candidate)
                             }
                             ).collect();
-                        quote!{
+                        let streams = streams?;
+                        Ok(quote!{
                             #(#streams)*
-                        }
+                        })
                     })
                     .collect()
             },
         )
-        .collect();
+        .collect::<parse::Result<Vec<Vec<_>>>>()?;
 
     let state_dispatch_arms: Vec<TokenStream> = transitions
         .values()
@@ -1431,7 +1467,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let event_lifetimes = &sm.event_data.all_lifetimes;
     let state_name_arms = state_list.iter().map(|value| {
         let state_text = value.to_string();
-        let state = state_text.split('(').next().unwrap().trim();
+        let state = state_text.split('(').next().map_or("", str::trim);
         let ident = format_ident!("{}", state);
         if sm.state_data.data_types.contains_key(state) {
             quote! { #states_type_name::#ident(..) => stringify!(#ident), }
@@ -1459,7 +1495,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
     let event_names_table = names_table(&event_specs, &events_type_name, &event_generics);
 
     // lifetimes that exists in #events_type_name but not in #states_type_name
-    let event_unique_lifetimes = event_lifetimes - state_lifetimes;
+    let event_unique_lifetimes = event_lifetimes.without(state_lifetimes);
     let mut dispatch_generics = sm.event_generics_with_lifetimes(&event_unique_lifetimes);
     dispatch_generics.params = dispatch_generics
         .params
@@ -1503,8 +1539,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                 .event_data
                 .data_types
                 .get(&event.to_string())
-                .expect("external events carry their concrete type");
-            quote! {
+                .ok_or_else(|| {
+                    parse::Error::new(
+                        event.span(),
+                        "external events must have a concrete payload type",
+                    )
+                })?;
+            Ok(quote! {
                 impl #event_impl_generics From<#event_type>
                     for #events_type_name #event_type_generics
                     #event_where_clause
@@ -1514,9 +1555,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
                         Self::#event(event)
                     }
                 }
-            }
+            })
         })
-        .collect();
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let mut completion_lifetimes = Lifetimes::new();
     let completion_origin_variants: Vec<_> = completion_events
@@ -2054,7 +2095,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         }
     };
     // Build the states and events output
-    quote! {
+    Ok(quote! {
         use ::sml::Queue as _;
 
         /// This trait outlines the guards and actions that need to be implemented for the state
@@ -2339,7 +2380,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> proc_macro2::TokenStream {
         #default_constructor_impl
         #testing_state_api
         #terminated_trait_impl
-    }
+    })
 }
 
 fn type_matches_state(data_type: &Type, state: &str) -> bool {
@@ -2360,11 +2401,11 @@ fn generate_actions(
     eval_actions: &[EvalAction],
     guard_params: &TokenStream,
     event_name: &TokenStream,
-) -> (bool, TokenStream) {
+) -> parse::Result<(bool, TokenStream)> {
     let mut is_async = false;
     let mut code = TokenStream::new();
     let mut normal_index = 0;
-    let total_steps = actions.len() + eval_actions.len();
+    let total_steps = actions.len().saturating_add(eval_actions.len());
     for position in 0..total_steps {
         if let Some(eval) = eval_actions.iter().find(|eval| eval.position == position) {
             let action_ident = &eval.action.ident;
@@ -2405,17 +2446,23 @@ fn generate_actions(
             continue;
         }
 
-        let AsyncIdent {
+        let Some(AsyncIdent {
             ident: action_ident,
             is_async: is_a_async,
-        } = &actions[normal_index];
+        }) = actions.get(normal_index)
+        else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated action sequence references a missing action",
+            ));
+        };
         let action_await = if *is_a_async {
             is_async = true;
             quote! { .await }
         } else {
             quote! {}
         };
-        let result = if produces_state_data && normal_index + 1 == actions.len() {
+        let result = if produces_state_data && normal_index.saturating_add(1) == actions.len() {
             quote! { let _data = }
         } else {
             quote! { let _ = }
@@ -2426,7 +2473,7 @@ fn generate_actions(
             Self::__sml_log_action(&mut self.policy, stringify!(#action_ident), #event_name);
             self.context.log_action(stringify!(#action_ident));
         });
-        normal_index += 1;
+        normal_index = normal_index.saturating_add(1);
     }
-    (is_async, code)
+    Ok((is_async, code))
 }

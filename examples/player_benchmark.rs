@@ -73,16 +73,10 @@ type BranchPolicies = PolicyBundle<(), (), BranchStm>;
 type SwitchPolicies = PolicyBundle<(), (), SwitchStm>;
 type CustomPolicies = PolicyBundle<(), (), AllowAll>;
 
-// Equivalent to sml.cpp's barrier: expose the machine address and clobber
-// memory without adding std::hint::black_box's pointer-to-pointer temporary.
+// Keep benchmark state observable to the optimizer without crossing an unsafe
+// compiler boundary.
 #[inline(always)]
 fn barrier<T>(value: &mut T) {
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    unsafe {
-        core::arch::asm!("/* {0} */", in(reg) value, options(nostack, preserves_flags));
-    }
-
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     std::hint::black_box(value);
 }
 

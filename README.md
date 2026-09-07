@@ -29,9 +29,11 @@ The crate has no default features and works on `no_std` targets. Enable
 sml = { package = "stateforward-sml", version = "1.4", features = ["graphviz"] }
 ```
 
-The runtime and procedural-macro crates both forbid unsafe Rust. The generated
-machines use ordinary ownership and borrowing, and the default queues use
-bounded storage with checked indexing and overflow-safe counters. A custom
+The runtime and procedural-macro crates both forbid unsafe Rust at the source
+and Cargo target boundaries; the quality gate also builds all package targets
+with warnings denied. The generated machines use ordinary ownership and
+borrowing, and the default queues use bounded storage with checked indexing
+and overflow-safe counters. A custom
 `ThreadSafety` policy does not make a machine shareable by itself: generated
 event processing still requires `&mut self`, so shared access must use an
 owner-provided synchronization boundary.

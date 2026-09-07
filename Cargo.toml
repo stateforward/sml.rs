@@ -44,6 +44,14 @@ spin = ["dep:spin"]
 
 graphviz = ["sml-macros/graphviz"]
 
+[lints.rust]
+# Keep the no-unsafe guarantee at Cargo's target boundary as well as in the
+# crate source. This also covers examples and integration-test targets built
+# from this package.
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+warnings = "deny"
+
 [dependencies.spin]
 version = "0.9"
 optional = true

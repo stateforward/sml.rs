@@ -129,7 +129,12 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let parent = &normalized_parent;
     let child = &normalized_child;
 
-    let parent_name = parent.name.as_ref().expect("named sml definition");
+    let parent_name = parent.name.as_ref().ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tables must have a named parent",
+        )
+    })?;
     let child_state_variant =
         crate::parser::state_ident(&child_reference.to_string(), child_reference.span());
     let parent_states_name = format_ident!("{}States", parent_name);
@@ -271,16 +276,25 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         }
     };
-    let conversions = events.values().filter(|event| event.external).map(|event| {
-        let ident = &event.ident;
-        let ty = event.ty.as_ref().expect("external event type");
-        quote! {
-            impl From<#ty> for #events_name {
-                #[inline(always)]
-                fn from(event: #ty) -> Self { Self::#ident(event) }
-            }
-        }
-    });
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
+                impl From<#ty> for #events_name {
+                    #[inline(always)]
+                    fn from(event: #ty) -> Self { Self::#ident(event) }
+                }
+            })
+        })
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let mut event_specs = EventSpecs::new();
     let mut event_queries = BTreeMap::<String, (Type, Vec<TokenStream>)>::new();
@@ -1177,7 +1191,11 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.name.as_ref())
         .collect::<Vec<_>>();
-    let parent_name_original = parent.name.as_ref().expect("named parent").clone();
+    let parent_name_original = parent
+        .name
+        .as_ref()
+        .ok_or_else(|| parse::Error::new(Span::call_site(), "composite parent must be named"))?
+        .clone();
     let mut queue = child_references
         .iter()
         .map(|reference| ((*reference).clone(), parent_name_original.clone(), 1usize))
@@ -1240,7 +1258,7 @@ fn generate_multi_code(
             }
         }
         for direct_child in direct_children {
-            queue.push_back((direct_child, reference.clone(), depth + 1));
+            queue.push_back((direct_child, reference.clone(), depth.saturating_add(1)));
         }
         node_parents.insert(reference.to_string(), node_parent);
         node_depths.insert(reference.to_string(), depth);
@@ -1252,7 +1270,10 @@ fn generate_multi_code(
     let mut all_machines = vec![parent];
     all_machines.extend(child_machines.iter().copied());
 
-    let parent_name = parent.name.as_ref().expect("named parent");
+    let parent_name = parent
+        .name
+        .as_ref()
+        .ok_or_else(|| parse::Error::new(Span::call_site(), "composite parent must be named"))?;
     let root_orthogonal = parent
         .transitions
         .iter()
@@ -1302,12 +1323,13 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.fixed_error_type.as_ref())
         .collect::<Vec<_>>();
-    if fixed_error_types
+    if let Some(error_type) = fixed_error_types
         .windows(2)
-        .any(|errors| errors[0] != errors[1])
+        .find(|errors| errors.first() != errors.get(1))
+        .and_then(|errors| errors.get(1))
     {
         return Err(parse::Error::new(
-            fixed_error_types[1].span(),
+            error_type.span(),
             "all tables in a composite tree must use the same exception error type",
         ));
     }
@@ -1334,9 +1356,13 @@ fn generate_multi_code(
         .iter()
         .filter_map(|machine| machine.temporary_context_type.as_ref())
         .collect::<Vec<_>>();
-    if temporary_types.windows(2).any(|types| types[0] != types[1]) {
+    if let Some(temporary_type) = temporary_types
+        .windows(2)
+        .find(|types| types.first() != types.get(1))
+        .and_then(|types| types.get(1))
+    {
         return Err(parse::Error::new(
-            temporary_types[1].span(),
+            temporary_type.span(),
             "all tables in a composite tree must use the same temporary context type",
         ));
     }
@@ -1383,15 +1409,24 @@ fn generate_multi_code(
             }
         }
     };
-    let conversions = events.values().filter(|event| event.external).map(|event| {
-        let ident = &event.ident;
-        let ty = event.ty.as_ref().expect("external event type");
-        quote! {
-            impl From<#ty> for #events_name {
-                fn from(event: #ty) -> Self { Self::#ident(event) }
-            }
-        }
-    });
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
+                impl From<#ty> for #events_name {
+                    fn from(event: #ty) -> Self { Self::#ident(event) }
+                }
+            })
+        })
+        .collect::<parse::Result<Vec<_>>>()?;
     let (guards, actions) = context_methods_many(
         &all_machines,
         &events,
@@ -1602,7 +1637,15 @@ fn generate_multi_code(
                 }
                 pub fn #active_method(&self) -> bool { self.core.#active_method() }
             });
-            let depth = node_depths[&reference.to_string()];
+            let depth = node_depths
+                .get(&reference.to_string())
+                .copied()
+                .ok_or_else(|| {
+                    parse::Error::new(
+                        reference.span(),
+                        "composite tree is missing a generated node depth",
+                    )
+                })?;
             let root_region = root_regions.as_ref().and_then(|regions| {
                 tree_root_region(reference, parent_name, &node_parents, regions)
             });
@@ -1844,7 +1887,15 @@ fn generate_multi_code(
                 self.core.#active_method()
             }
         });
-        let depth = node_depths[&reference.to_string()];
+        let depth = node_depths
+            .get(&reference.to_string())
+            .copied()
+            .ok_or_else(|| {
+                parse::Error::new(
+                    reference.span(),
+                    "composite tree is missing a generated node depth",
+                )
+            })?;
         let root_region = root_regions
             .as_ref()
             .and_then(|regions| tree_root_region(reference, parent_name, &node_parents, regions));
@@ -2882,8 +2933,18 @@ fn tree_embedded_orthogonal(
     has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     let direct = tree_children(reference, references, parents);
@@ -3031,8 +3092,18 @@ fn tree_enter_node(
     error_name: &Ident,
     temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     if node
@@ -3146,8 +3217,18 @@ fn tree_exit_node(
     error_name: &Ident,
     temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
-    let node = nodes[index];
-    let reference = &references[index];
+    let node = nodes.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine node",
+        )
+    })?;
+    let reference = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     let states_name = tree_states_name(root, reference);
     let field = tree_field(reference);
     if node
@@ -3211,7 +3292,9 @@ fn tree_active_condition(
     parents: &HashMap<String, Ident>,
 ) -> TokenStream {
     let mut conditions = Vec::new();
-    let mut current = &references[index];
+    let Some(mut current) = references.get(index) else {
+        return quote! { false };
+    };
     while let Some(parent) = parents.get(&current.to_string()) {
         let parent_states = if parent == root {
             format_ident!("{}States", root)
@@ -3225,12 +3308,13 @@ fn tree_active_condition(
                 .iter()
                 .position(|reference| reference == parent)
                 .is_some_and(|index| {
-                    nodes[index]
-                        .transitions
-                        .iter()
-                        .filter(|transition| transition.in_state.start)
-                        .count()
-                        > 1
+                    nodes.get(index).is_some_and(|node| {
+                        node.transitions
+                            .iter()
+                            .filter(|transition| transition.in_state.start)
+                            .count()
+                            > 1
+                    })
                 })
         };
         let parent_place = if parent == root {
@@ -3273,14 +3357,17 @@ fn tree_child_terminal(
             let variant = crate::parser::state_ident(&reference.to_string(), reference.span());
             let states_name = tree_states_name(root, reference);
             let place = tree_place(reference);
-            let terminal = if collect_states(nodes[index]).contains_key("X") {
-                if nodes[index]
-                    .transitions
-                    .iter()
-                    .filter(|transition| transition.in_state.start)
-                    .count()
-                    > 1
-                {
+            let terminal = if nodes
+                .get(index)
+                .is_some_and(|node| collect_states(node).contains_key("X"))
+            {
+                if nodes.get(index).is_some_and(|node| {
+                    node.transitions
+                        .iter()
+                        .filter(|transition| transition.in_state.start)
+                        .count()
+                        > 1
+                }) {
                     quote! { #place.iter().all(|state| matches!(state, #states_name::X)) }
                 } else {
                     quote! { matches!(#place, #states_name::X) }
@@ -3544,10 +3631,15 @@ fn context_methods_many(
             let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
                 && transition.out_state.composite.is_none()
-                && index + 1 == transition_actions.len()
+                && index.saturating_add(1) == transition_actions.len()
                 && transition.out_state.data_type.is_some();
             let output = if produces_state {
-                let ty = transition.out_state.data_type.as_ref().unwrap();
+                let ty = transition.out_state.data_type.as_ref().ok_or_else(|| {
+                    parse::Error::new(
+                        transition.out_state.ident.span(),
+                        "a state-producing action is missing its output state type",
+                    )
+                })?;
                 quote! { #ty }
             } else {
                 quote! { () }
@@ -3707,7 +3799,12 @@ fn dispatch_code(
     }
     let mut arms = Vec::new();
     for transitions in grouped.into_values() {
-        let first = transitions[0];
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated transition group is empty",
+            ));
+        };
         let source = &first.in_state.ident;
         let event = &first.event.ident;
         let event_pattern = if first.event.data_type.is_some() {
@@ -3949,7 +4046,11 @@ fn transition_code(
         } else {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    let _ = self.__sml_process_event_unlocked(#temporary_context_call deferred_event);
+                    match self.__sml_process_event_unlocked(#temporary_context_call deferred_event) {
+                        Ok(_) | Err(#error_name::InvalidEvent)
+                        | Err(#error_name::TransitionsFailed) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -4084,14 +4185,19 @@ fn exception_code(
     let mut arms = Vec::new();
     for mut transitions in grouped.into_values() {
         transitions.sort_by_key(|transition| transition.event.wildcard);
-        let source = &transitions[0].in_state.ident;
-        let state_pattern = if transitions[0].in_state.data_type.is_some()
-            && transitions[0].in_state.composite.is_none()
-        {
-            quote! { #states_name::#source(state_data) }
-        } else {
-            quote! { #states_name::#source }
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated exception group is empty",
+            ));
         };
+        let source = &first.in_state.ident;
+        let state_pattern =
+            if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
+                quote! { #states_name::#source(state_data) }
+            } else {
+                quote! { #states_name::#source }
+            };
         let branches = transitions
             .iter()
             .map(|transition| {
@@ -4161,8 +4267,14 @@ fn completion_code(
     }
     let mut anonymous_arms = Vec::new();
     for transitions in grouped.into_values() {
-        let source = &transitions[0].in_state.ident;
-        let eligible = if transitions[0].in_state.composite.is_some() {
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated completion group is empty",
+            ));
+        };
+        let source = &first.in_state.ident;
+        let eligible = if first.in_state.composite.is_some() {
             composite_terminal.clone()
         } else {
             quote! { true }
@@ -4199,13 +4311,12 @@ fn completion_code(
                 )
             })
             .collect::<parse::Result<Vec<_>>>()?;
-        let state_pattern = if transitions[0].in_state.data_type.is_some()
-            && transitions[0].in_state.composite.is_none()
-        {
-            quote! { #states_name::#source(state_data) }
-        } else {
-            quote! { #states_name::#source }
-        };
+        let state_pattern =
+            if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
+                quote! { #states_name::#source(state_data) }
+            } else {
+                quote! { #states_name::#source }
+            };
         anonymous_arms.push(quote! {
             #state_pattern if #eligible => { #(#branches)* }
         });
@@ -4224,7 +4335,12 @@ fn completion_code(
     }
     let mut origin_arms = Vec::new();
     for transitions in origin_grouped.into_values() {
-        let first = transitions[0];
+        let Some(first) = transitions.first() else {
+            return Err(parse::Error::new(
+                Span::call_site(),
+                "generated completion-origin group is empty",
+            ));
+        };
         let source = &first.in_state.ident;
         let event = &first.event.ident;
         let event_type = events
@@ -4322,7 +4438,7 @@ fn action_sequence(
 ) -> parse::Result<TokenStream> {
     let mut output = TokenStream::new();
     let mut action_index = 0;
-    let total = actions.len() + eval_actions.len();
+    let total = actions.len().saturating_add(eval_actions.len());
     for position in 0..total {
         if let Some(eval) = eval_actions.iter().find(|eval| eval.position == position) {
             let guard = guard_code(&eval.guard, callback_args, error_name, event_name)?;
@@ -4338,10 +4454,15 @@ fn action_sequence(
                 }
             });
         } else {
-            let action = &actions[action_index];
+            let action = actions.get(action_index).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    "generated action sequence references a missing action",
+                )
+            })?;
             let ident = &action.ident;
             let action_await = action.is_async.then(|| quote! { .await });
-            let binding = if produces_state && action_index + 1 == actions.len() {
+            let binding = if produces_state && action_index.saturating_add(1) == actions.len() {
                 quote! { let output_data = }
             } else {
                 quote! { let _ = }
@@ -4352,7 +4473,7 @@ fn action_sequence(
                 Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));
             });
-            action_index += 1;
+            action_index = action_index.saturating_add(1);
         }
     }
     Ok(output)

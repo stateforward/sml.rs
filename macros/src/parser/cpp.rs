@@ -102,7 +102,7 @@ impl parse::Parse for SmlDefinition {
         let body = content.parse::<TokenStream>()?;
 
         for transition in split_transitions(body) {
-            let transitions: StateTransitions = syn::parse2(normalize_transition(transition))?;
+            let transitions: StateTransitions = syn::parse2(normalize_transition(transition)?)?;
             machine.add_transitions(transitions);
         }
 
@@ -111,11 +111,12 @@ impl parse::Parse for SmlDefinition {
             transition.event.kind == crate::parser::event::EventKind::Exception
                 && !transition.event.wildcard
         }) {
-            let error_type = transition
-                .event
-                .data_type
-                .clone()
-                .expect("typed exceptions carry their type");
+            let Some(error_type) = transition.event.data_type.clone() else {
+                return Err(syn::Error::new(
+                    transition.event.ident.span(),
+                    "typed exception transitions must declare an error payload type",
+                ));
+            };
             if fixed_error_type
                 .as_ref()
                 .is_some_and(|known| known != &error_type)
@@ -149,15 +150,15 @@ fn split_transitions(body: TokenStream) -> Vec<TokenStream> {
         match punct {
             Some('<')
                 if !matches!(
-                    tokens.get(index + 1),
+                    tokens.get(index.saturating_add(1)),
                     Some(TokenTree::Punct(next)) if next.as_char() == '='
                 ) =>
             {
-                angle_depth += 1;
+                angle_depth = angle_depth.saturating_add(1);
                 current.extend([token.clone()]);
             }
             Some('>') if angle_depth > 0 => {
-                angle_depth -= 1;
+                angle_depth = angle_depth.saturating_sub(1);
                 current.extend([token.clone()]);
             }
             Some(',') if angle_depth == 0 => {
@@ -175,31 +176,44 @@ fn split_transitions(body: TokenStream) -> Vec<TokenStream> {
     transitions
 }
 
-fn normalize_direction(transition: TokenStream) -> TokenStream {
+fn normalize_direction(transition: TokenStream) -> syn::Result<TokenStream> {
     let tokens: Vec<_> = transition.into_iter().collect();
     let reverse = tokens.windows(2).position(|window| {
-        matches!(&window[0], TokenTree::Punct(punct) if punct.as_char() == '<')
-            && matches!(&window[1], TokenTree::Punct(punct) if punct.as_char() == '=')
+        matches!(window.first(), Some(TokenTree::Punct(punct)) if punct.as_char() == '<')
+            && matches!(window.get(1), Some(TokenTree::Punct(punct)) if punct.as_char() == '=')
     });
 
     let Some(index) = reverse else {
-        return tokens.into_iter().collect();
+        return Ok(tokens.into_iter().collect());
     };
 
-    let mut normalized: TokenStream = tokens[index + 2..].iter().cloned().collect();
+    let suffix_start = index.saturating_add(2);
+    let suffix = tokens.get(suffix_start..).ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "reverse transition has an invalid target token range",
+        )
+    })?;
+    let prefix = tokens.get(..index).ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "reverse transition has an invalid source token range",
+        )
+    })?;
+    let mut normalized: TokenStream = suffix.iter().cloned().collect();
     normalized.extend([TokenTree::Punct(Punct::new('=', Spacing::Alone))]);
-    normalized.extend(tokens[..index].iter().cloned());
-    normalized
+    normalized.extend(prefix.iter().cloned());
+    Ok(normalized)
 }
 
-fn normalize_transition(transition: TokenStream) -> TokenStream {
-    let directed = normalize_direction(transition);
+fn normalize_transition(transition: TokenStream) -> syn::Result<TokenStream> {
+    let directed = normalize_direction(transition)?;
     let tokens: Vec<_> = directed.into_iter().collect();
     if tokens
         .iter()
         .any(|token| matches!(token, TokenTree::Punct(punct) if punct.as_char() == '+'))
     {
-        return tokens.into_iter().collect();
+        return Ok(tokens.into_iter().collect());
     }
 
     let insertion = tokens.iter().position(|token| {
@@ -207,13 +221,25 @@ fn normalize_transition(transition: TokenStream) -> TokenStream {
             || matches!(token, TokenTree::Group(group) if group.delimiter() == Delimiter::Bracket)
     });
     let Some(insertion) = insertion else {
-        return tokens.into_iter().collect();
+        return Ok(tokens.into_iter().collect());
     };
 
-    let mut normalized: TokenStream = tokens[..insertion].iter().cloned().collect();
+    let prefix = tokens.get(..insertion).ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "transition has an invalid normalization range",
+        )
+    })?;
+    let suffix = tokens.get(insertion..).ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "transition has an invalid normalization suffix range",
+        )
+    })?;
+    let mut normalized: TokenStream = prefix.iter().cloned().collect();
     normalized.extend(quote! { + completion<_> });
-    normalized.extend(tokens[insertion..].iter().cloned());
-    normalized
+    normalized.extend(suffix.iter().cloned());
+    Ok(normalized)
 }
 
 #[cfg(test)]
@@ -228,7 +254,8 @@ mod tests {
     fn reverse_transition_is_normalized_to_forward_form() {
         let normalized = normalize_direction(quote! {
             "open"_s <= *"empty"_s + event<OpenClose> / open_drawer
-        });
+        })
+        .unwrap();
         assert_eq!(
             normalized.to_string(),
             quote! {
@@ -242,7 +269,8 @@ mod tests {
     fn anonymous_transition_gets_completion_trigger() {
         let normalized = normalize_transition(quote! {
             *"idle"_s / start = "ready"_s
-        });
+        })
+        .unwrap();
         assert_eq!(
             normalized.to_string(),
             quote! {
@@ -348,11 +376,13 @@ mod tests {
         assert!(definition.machine.fixed_error_type.is_some());
 
         assert_eq!(
-            normalize_transition(quote!(Idle + Start = Ready)).to_string(),
+            normalize_transition(quote!(Idle + Start = Ready))
+                .unwrap()
+                .to_string(),
             quote!(Idle + Start = Ready).to_string()
         );
         assert_eq!(
-            normalize_transition(quote!(Idle)).to_string(),
+            normalize_transition(quote!(Idle)).unwrap().to_string(),
             quote!(Idle).to_string()
         );
     }

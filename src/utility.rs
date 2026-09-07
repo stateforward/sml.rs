@@ -362,6 +362,18 @@ impl<E, const DEFERRED: usize, const PROCESSED: usize> Default
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::EventQueues;
+
+    #[test]
+    fn event_queues_default_creates_empty_queues() {
+        let queues = EventQueues::<u8, 1, 1>::default();
+        assert_eq!(queues.deferred_len(), 0);
+        assert_eq!(queues.processed_len(), 0);
+    }
+}
+
 /// Routes a runtime event ID to one of a contiguous set of typed handlers.
 ///
 /// Each handler is responsible for translating the raw event into the

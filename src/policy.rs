@@ -186,11 +186,13 @@ impl<T> RawMutex for std::sync::Mutex<T> {
     where
         Self: 'a;
 
-    #[allow(clippy::expect_used)]
     fn lock(&self) -> Self::Guard<'_> {
-        // The trait cannot report poisoning. Fail closed rather than resuming
+        // The trait cannot report poisoning. Abort rather than resuming
         // processing after a panic may have left owner state inconsistent.
-        std::sync::Mutex::lock(self).expect("sml policy mutex poisoned")
+        match std::sync::Mutex::lock(self) {
+            Ok(guard) => guard,
+            Err(_) => std::process::abort(),
+        }
     }
 }
 
@@ -297,6 +299,9 @@ impl QueuePolicy for DefaultQueuePolicy {
 }
 
 /// The non-locking slots stored by a [`PolicyBundle`].
+///
+/// The fields are private so policy invariants are established only through
+/// [`PolicyBundle`] constructors and the [`PolicyParts`] contract.
 pub struct PolicyBundleParts<
     L = (),
     O = (),
@@ -306,17 +311,17 @@ pub struct PolicyBundleParts<
     PQ = DefaultQueuePolicy,
 > {
     /// Logger instance.
-    pub logger: L,
+    logger: L,
     /// Observer instance.
-    pub observer: O,
+    observer: O,
     /// Testing marker instance.
-    pub testing: T,
+    testing: T,
     /// Defer queue factory.
-    pub defer_queue: DQ,
+    defer_queue: DQ,
     /// Process queue factory.
-    pub process_queue: PQ,
+    process_queue: PQ,
     /// Dispatch strategy instance.
-    pub dispatch: D,
+    dispatch: D,
 }
 
 /// A composable policy bundle.
@@ -330,19 +335,19 @@ pub struct PolicyBundle<
     PQ = DefaultQueuePolicy,
 > {
     /// Logger instance.
-    pub logger: L,
+    logger: L,
     /// Observer instance.
-    pub observer: O,
+    observer: O,
     /// Thread-safety instance.
-    pub thread_safe: S,
+    thread_safe: S,
     /// Testing marker instance.
-    pub testing: T,
+    testing: T,
     /// Defer queue factory.
-    pub defer_queue: DQ,
+    defer_queue: DQ,
     /// Process queue factory.
-    pub process_queue: PQ,
+    process_queue: PQ,
     /// Dispatch strategy instance.
-    pub dispatch: D,
+    dispatch: D,
 }
 
 impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
@@ -989,6 +994,15 @@ mod tests {
         let _ = PolicyParts::logger(&no_policy_parts);
         let _ = PolicyParts::observer(&no_policy_parts);
         let _ = PolicyParts::testing(&no_policy_parts);
+    }
+
+    #[test]
+    fn default_observer_hooks_are_callable() {
+        let mut observer = ();
+        Observer::observe_process_event(&mut observer, "event");
+        Observer::observe_state_change(&mut observer, "Idle", "Ready");
+        Observer::observe_action(&mut observer, "act", "event");
+        Observer::observe_guard(&mut observer, "allow", "event", true);
     }
 
     #[cfg(feature = "std")]

@@ -134,18 +134,25 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
         }
     };
-    let conversions = events.values().filter_map(|event| {
-        let ident = &event.ident;
-        event.external.then(|| {
-            let ty = event.ty.as_ref().expect("external events have a type");
-            quote! {
+    let conversions = events
+        .values()
+        .filter(|event| event.external)
+        .map(|event| {
+            let ident = &event.ident;
+            let ty = event.ty.as_ref().ok_or_else(|| {
+                parse::Error::new(
+                    event.ident.span(),
+                    "external events must have a concrete payload type",
+                )
+            })?;
+            Ok(quote! {
                 impl From<#ty> for #events_name {
                     #[inline(always)]
                     fn from(event: #ty) -> Self { Self::#ident(event) }
                 }
-            }
+            })
         })
-    });
+        .collect::<parse::Result<Vec<_>>>()?;
 
     let mut event_specs = EventSpecs::new();
     let mut event_queries = BTreeMap::<String, (Type, Vec<TokenStream>)>::new();
@@ -1266,10 +1273,15 @@ fn generate_context_methods(
             let async_keyword = action.is_async.then(|| quote! { async });
             let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
-                && index + 1 == transition_actions.len()
+                && index.saturating_add(1) == transition_actions.len()
                 && transition.out_state.data_type.is_some();
             let output = if produces_state {
-                let ty = transition.out_state.data_type.as_ref().unwrap();
+                let ty = transition.out_state.data_type.as_ref().ok_or_else(|| {
+                    parse::Error::new(
+                        transition.out_state.ident.span(),
+                        "a state-producing action is missing its output state type",
+                    )
+                })?;
                 quote! { #ty }
             } else {
                 quote! { () }
@@ -1378,7 +1390,12 @@ fn generate_region_dispatch(
                 .push(transition);
         }
         for event_transitions in by_event.into_values() {
-            let first = event_transitions[0];
+            let Some(first) = event_transitions.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal transition group is empty",
+                ));
+            };
             let state_ident = &first.in_state.ident;
             let event_ident = &first.event.ident;
             let event_pattern = if first.event.data_type.is_some() {
@@ -1631,7 +1648,11 @@ fn generate_transition_branch(
         } else {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    let _ = self.__sml_process_event_unlocked(#temporary_context_call deferred_event);
+                    match self.__sml_process_event_unlocked(#temporary_context_call deferred_event) {
+                        Ok(_) | Err(#error_name::InvalidEvent)
+                        | Err(#error_name::TransitionsFailed) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -1764,8 +1785,14 @@ fn generate_exception_dispatch(
                     ));
                 }
             }
-            let state_ident = &transitions[0].in_state.ident;
-            let state_pattern = if transitions[0].in_state.data_type.is_some() {
+            let Some(first) = transitions.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal exception group is empty",
+                ));
+            };
+            let state_ident = &first.in_state.ident;
+            let state_pattern = if first.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
             } else {
                 quote! { #states_name::#state_ident }
@@ -1845,7 +1872,13 @@ fn generate_completion_dispatch(
             })
             .collect::<Vec<_>>();
         if !anonymous.is_empty() {
-            let state_ident = &anonymous[0].in_state.ident;
+            let Some(first) = anonymous.first() else {
+                return Err(parse::Error::new(
+                    Span::call_site(),
+                    "generated orthogonal completion group is empty",
+                ));
+            };
+            let state_ident = &first.in_state.ident;
             let branches = anonymous
                 .iter()
                 .map(|transition| {
@@ -1872,7 +1905,7 @@ fn generate_completion_dispatch(
                     })
                 })
                 .collect::<parse::Result<Vec<_>>>()?;
-            let state_pattern = if anonymous[0].in_state.data_type.is_some() {
+            let state_pattern = if first.in_state.data_type.is_some() {
                 quote! { #states_name::#state_ident(state_data) }
             } else {
                 quote! { #states_name::#state_ident }
@@ -1969,7 +2002,7 @@ fn action_sequence(
 ) -> parse::Result<TokenStream> {
     let mut output = TokenStream::new();
     let mut action_index = 0;
-    let total = actions.len() + eval_actions.len();
+    let total = actions.len().saturating_add(eval_actions.len());
     for position in 0..total {
         if let Some(eval) = eval_actions.iter().find(|eval| eval.position == position) {
             let guard = guard_tokens(&eval.guard, callback_args, error_name, event_name)?;
@@ -1985,10 +2018,15 @@ fn action_sequence(
                 }
             });
         } else {
-            let action = &actions[action_index];
+            let action = actions.get(action_index).ok_or_else(|| {
+                parse::Error::new(
+                    Span::call_site(),
+                    "generated action sequence references a missing action",
+                )
+            })?;
             let ident = &action.ident;
             let action_await = action.is_async.then(|| quote! { .await });
-            let binding = if produces_state && action_index + 1 == actions.len() {
+            let binding = if produces_state && action_index.saturating_add(1) == actions.len() {
                 quote! { let output_data = }
             } else {
                 quote! { let _ = }
@@ -1999,7 +2037,7 @@ fn action_sequence(
                 Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));
             });
-            action_index += 1;
+            action_index = action_index.saturating_add(1);
         }
     }
     Ok(output)

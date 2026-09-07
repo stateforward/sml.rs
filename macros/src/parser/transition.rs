@@ -131,7 +131,7 @@ impl parse::Parse for StateTransitions {
                         } else {
                             actions.push(AsyncIdent { ident, is_async });
                         }
-                        position += 1;
+                        position = position.saturating_add(1);
                         if content.is_empty() {
                             break;
                         }

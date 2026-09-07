@@ -91,3 +91,15 @@ pub trait Terminated {
     /// Returns true after entering the generated `X` state.
     fn is_terminated(&self) -> bool;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Event;
+
+    struct TestEvent;
+
+    #[test]
+    fn event_name_uses_the_final_type_path_component() {
+        assert_eq!(TestEvent::name(), "TestEvent");
+    }
+}
