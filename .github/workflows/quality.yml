@@ -20,10 +20,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.98.0
-          components: clippy,rustfmt
+          components: clippy,rustfmt,llvm-tools-preview
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
-      - uses: taiki-e/install-action@0e157e9195cec1bb5209ef13b56c90507021242a # cargo-deny
+      - name: Install quality tools
+        run: |
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
       - name: Run enforced quality gate
         run: ./scripts/quality_gates.sh
 
@@ -56,10 +58,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          rust-version: "1.90.0"
-          arguments: --all-features
+          toolchain: 1.98.0
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Check dependency policy
+        run: cargo deny --all-features check
 
   semver:
     name: Public API compatibility
@@ -127,11 +132,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.0
+      - name: Install lychee
+        run: cargo install lychee --version 0.24.2 --locked
+      - name: Check documentation links
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >-
+        run: >-
+          lychee
             --no-progress
             --exclude-path target
             --exclude-path fuzz/corpus
