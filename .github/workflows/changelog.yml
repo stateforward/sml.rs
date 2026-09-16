@@ -8,6 +8,10 @@ on:
     # labeled, unlabeled ensure this check is also run if a label is added or removed.
     types: [opened, reopened, labeled, unlabeled, synchronize]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 name: Changelog
 
 jobs:
