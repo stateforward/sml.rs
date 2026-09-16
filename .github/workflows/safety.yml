@@ -52,4 +52,4 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: Fuzz runtime utilities
-        run: cargo fuzz run runtime_utilities -- -max_total_time=60 -timeout=10
+        run: CARGOFLAGS=--locked cargo fuzz run runtime_utilities -- -max_total_time=60 -timeout=10

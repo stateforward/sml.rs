@@ -3,8 +3,6 @@
 /semver-checks/
 macros/target
 **/*.rs.bk
-fuzz/Cargo.lock
-sanitizer/Cargo.lock
 fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/
