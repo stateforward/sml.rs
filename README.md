@@ -594,10 +594,13 @@ its unit tests remain part of the workspace test gates. Separate required jobs
 run the suite on Linux, macOS, and Windows, enforce public API compatibility,
 execute AddressSanitizer and Miri, and fuzz the runtime utilities.
 
-Run the fuzz target locally with a nightly toolchain and `cargo-fuzz`:
+Run the fuzz target locally with the pinned nightly toolchain and `cargo-fuzz` version:
 
 ```bash
-cargo fuzz run runtime_utilities
+cargo install cargo-fuzz --version 0.13.2 --locked
+cargo +nightly-2026-08-24 check --manifest-path fuzz/Cargo.toml --locked
+cargo +nightly-2026-08-24 fuzz run -v runtime_utilities -- -max_total_time=60 -timeout=10
+git diff --exit-code -- fuzz/Cargo.lock
 ```
 
 The crate is licensed under either Apache-2.0 or MIT.

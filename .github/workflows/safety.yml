@@ -50,6 +50,10 @@ jobs:
         with:
           toolchain: nightly-2026-08-24
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Check fuzz manifest with locked dependencies
+        run: cargo +nightly-2026-08-24 check --manifest-path fuzz/Cargo.toml --locked
       - name: Fuzz runtime utilities
-        run: CARGOFLAGS=--locked cargo fuzz run runtime_utilities -- -max_total_time=60 -timeout=10
+        run: cargo +nightly-2026-08-24 fuzz run -v runtime_utilities -- -max_total_time=60 -timeout=10
+      - name: Verify fuzz lockfile unchanged
+        run: git diff --exit-code -- fuzz/Cargo.lock
