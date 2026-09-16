@@ -73,8 +73,8 @@ type BranchPolicies = PolicyBundle<(), (), BranchStm>;
 type SwitchPolicies = PolicyBundle<(), (), SwitchStm>;
 type CustomPolicies = PolicyBundle<(), (), AllowAll>;
 
-// Keep benchmark state observable to the optimizer without crossing an unsafe
-// compiler boundary.
+// Keep benchmark state observable to the optimizer without a compiler
+// boundary that would weaken the crate's safety contract.
 #[inline(always)]
 fn barrier<T>(value: &mut T) {
     std::hint::black_box(value);

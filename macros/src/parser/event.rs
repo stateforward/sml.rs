@@ -40,6 +40,7 @@ pub enum EventKind {
 #[derive(Debug, Clone)]
 pub struct Event {
     pub ident: Ident,
+    pub source: String,
     pub data_type: Option<Type>,
     pub kind: EventKind,
     pub wildcard: bool,
@@ -73,7 +74,7 @@ impl parse::Parse for Event {
     fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         // Event
         input.parse::<Token![+]>()?;
-        let mut first: Ident = if input.peek(LitStr) {
+        let (mut first, mut source): (Ident, String) = if input.peek(LitStr) {
             let event: LitStr = input.parse()?;
             if event.suffix() != "_e" {
                 return Err(parse::Error::new(
@@ -81,13 +82,18 @@ impl parse::Parse for Event {
                     "named events use the sml.cpp suffix `_e`",
                 ));
             }
-            crate::parser::state_ident(&event.value(), event.span())
+            (
+                crate::parser::state_ident(&event.value(), event.span()),
+                format!("literal:{}", event.value()),
+            )
         } else {
-            input.parse()?
+            let ident: Ident = input.parse()?;
+            (ident.clone(), format!("identifier:{ident}"))
         };
         if first == "sml" && input.peek(Token![::]) {
             input.parse::<Token![::]>()?;
             first = input.parse()?;
+            source = format!("identifier:{first}");
         }
         let (ident, explicit_type, kind, wildcard, external) = if first == "event"
             && input.peek(Token![<])
@@ -95,6 +101,7 @@ impl parse::Parse for Event {
             input.parse::<Token![<]>()?;
             let (ident, event_type) = external_event_type(input)?;
             input.parse::<Token![>]>()?;
+            source = format!("external:{ident}");
             (ident, Some(event_type), EventKind::Normal, false, true)
         } else if (first == "unexpected" || first == "unexpected_event") && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
@@ -108,6 +115,11 @@ impl parse::Parse for Event {
             };
             input.parse::<Token![>]>()?;
             let external = first == "unexpected_event" && !wildcard;
+            if external {
+                source = format!("external-unexpected:{ident}");
+            } else if !wildcard {
+                source = format!("unexpected:{ident}");
+            }
             (
                 ident,
                 explicit_type,
@@ -124,6 +136,7 @@ impl parse::Parse for Event {
             } else {
                 EventKind::Exit
             };
+            source = format!("lifecycle:{first}");
             (first, None, kind, false, false)
         } else if first == "completion" && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
@@ -134,6 +147,9 @@ impl parse::Parse for Event {
                 (input.parse::<Ident>()?, false)
             };
             input.parse::<Token![>]>()?;
+            if !wildcard {
+                source = format!("completion:{ident}");
+            }
             (ident, None, EventKind::Completion, wildcard, false)
         } else if first == "exception" && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
@@ -144,10 +160,23 @@ impl parse::Parse for Event {
                 (input.parse::<Ident>()?, false)
             };
             input.parse::<Token![>]>()?;
+            if !wildcard {
+                source = format!("exception:{ident}");
+            }
             (ident, None, EventKind::Exception, wildcard, false)
         } else {
             (first, None, EventKind::Normal, false, false)
         };
+
+        if !source.starts_with("literal:")
+            && !wildcard
+            && !matches!(
+                kind,
+                EventKind::Entry | EventKind::Exit | EventKind::Exception
+            )
+        {
+            source = format!("identifier:{ident}");
+        }
 
         // Possible type on the event
         let data_type = if input.peek(token::Paren) {
@@ -190,6 +219,7 @@ impl parse::Parse for Event {
 
         Ok(Self {
             ident,
+            source,
             data_type,
             kind,
             wildcard,

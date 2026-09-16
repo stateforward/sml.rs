@@ -2,6 +2,7 @@
 
 #![recursion_limit = "512"]
 #![forbid(unsafe_code)]
+#![deny(warnings)]
 #![deny(
     elided_lifetimes_in_paths,
     missing_docs,

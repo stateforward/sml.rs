@@ -9,7 +9,13 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RESULT = re.compile(r"^(\S+) (\d+) ns total; ([0-9.]+) ns/event;")
+RESULT = re.compile(
+    r"^(?P<label>\S+) (?P<elapsed>\d+) ns total; "
+    r"(?P<per_event>[0-9.]+) ns/event"
+    r"(?:; (?P<allocation_status>allocation-status not-instrumented))?; "
+    r"checksum (?P<checksum>\d+)$"
+)
+RUST_ALLOCATION_STATUS = "allocation-status not-instrumented"
 
 
 def run(command: list[str]) -> str:
@@ -25,7 +31,7 @@ def main() -> None:
     rust_env = os.environ.copy()
     rust_env["RUSTFLAGS"] = (rust_env.get("RUSTFLAGS", "") + " -C target-cpu=native").strip()
     subprocess.run(
-        ["cargo", "build", "--release", "--example", "sm_pool_benchmark"],
+        ["cargo", "build", "--locked", "--release", "--example", "sm_pool_benchmark"],
         cwd=ROOT,
         check=True,
         env=rust_env,
@@ -58,11 +64,11 @@ def main() -> None:
             match = RESULT.match(output)
             if not match:
                 raise RuntimeError(f"unexpected output: {output}")
-            if match.group(1) != expected:
-                raise RuntimeError(f"expected {expected}, got {match.group(1)}")
-            if expected.startswith("rust-") and "0 allocations" not in output:
-                raise RuntimeError(f"timed allocation detected: {output}")
-            samples[expected].append(float(match.group(3)))
+            if match.group("label") != expected:
+                raise RuntimeError(f"expected {expected}, got {match.group('label')}")
+            if expected.startswith("rust-") and match.group("allocation_status") != RUST_ALLOCATION_STATUS:
+                raise RuntimeError(f"missing Rust allocation status: {output}")
+            samples[expected].append(float(match.group("per_event")))
 
     print(f"median of {args.runs} rotated runs")
     for name, _ in workloads:

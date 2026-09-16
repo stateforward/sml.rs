@@ -261,6 +261,13 @@ one state per region.
 bounded ring or another user-owned allocation-free container to implement
 `Queue<E>`.
 
+`Policies` and `PolicyParts` are sealed implementation traits. This is
+intentional: custom slot implementations remain supported, while the generated
+machine retains ownership of policy storage and keeps the thread-safety guard
+separate from the mutable transition engine. Use `PolicyBundle` or
+`sml_policies!` to compose policies; do not implement those integration traits
+directly.
+
 These policies are for the machine's owner to configure and query its own
 machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
@@ -501,7 +508,9 @@ developer-visible build times, separate from the runtime throughput results.
 The pool runner compares `SmPool<Vec<u8>>` with C++ `sm_pool` using the same
 10,000-slot, 50,000-event workload, identical local and seeded-random indices,
 and 1,001 rounds per sample. Each language is also measured against its own
-flat byte-array loop. Rust's allocation counter covers the timed path.
+flat byte-array loop. Setup storage is created before timing; the safe Rust
+harness does not install a global allocator, so the comparison measures the
+timed throughput path without weakening the crate's safety contract.
 
 ```bash
 python3 benchmarks/compare_sm_pool.py --runs 21
@@ -509,14 +518,14 @@ python3 benchmarks/compare_sm_pool.py --runs 21
 
 The 2026-07-11 rotated native-release run produced:
 
-| Path | Local | Random | Timed allocations |
+| Path | Local | Random |
 |---|---:|---:|---:|
-| Rust flat array | 0.312 ns/event | 0.335 ns/event | 0 |
-| C++ flat array | 0.275 ns/event | 0.282 ns/event | setup only |
-| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event | 0 |
-| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event | setup only |
-| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event | 0 |
-| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event | setup only |
+| Rust flat array | 0.312 ns/event | 0.335 ns/event |
+| C++ flat array | 0.275 ns/event | 0.282 ns/event |
+| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event |
+| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event |
+| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
+| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
 
 Rust batch dispatch was 23.6% faster locally and 22.6% faster under random
 access than C++ `sm_pool`. It stayed within 16.0% of Rust's flat-array local
@@ -527,9 +536,11 @@ dispatch and access locality from application-specific work.
 
 The extended runner compares the same 11-million-event player sequence through
 Rust futures and C++ `co_sm` allocator policies. It also compares bounded,
-persistent eight-worker fork/join schedulers over 5,000 rounds. Rust's global
-allocation counter verifies that every timed Rust loop performs zero heap
-allocations after setup.
+persistent eight-worker fork/join schedulers over 5,000 rounds. The safe Rust
+harnesses do not install a global allocator: allocator instrumentation would
+require a forbidden implementation path. Their timed loops use the prebuilt
+machine and fixed caller-owned storage; the runner accepts optional allocation
+counts from harnesses that provide them.
 
 ```bash
 # The thread-pool policy currently lives on this sibling branch.
@@ -544,11 +555,11 @@ python3 benchmarks/compare_extended.py \
 
 The 2026-07-11 alternating run produced:
 
-| Workload | Median | Timed allocations | Completed runs |
+| Workload | Median | Allocation instrumentation | Completed runs |
 |---|---:|---:|---:|
-| Rust async façade over synchronous actions | 0.361 ns/event | 0 | 21/21 |
+| Rust async façade over synchronous actions | 0.361 ns/event | safe harness; not instrumented | 21/21 |
 | C++ inline `co_sm` | 1.982 ns/event | inline fast path | 21/21 |
-| Rust machine with native async callbacks | 3.372 ns/event | 0 | 21/21 |
+| Rust machine with native async callbacks | 3.372 ns/event | safe harness; not instrumented | 21/21 |
 | C++ `co_sm` with pooled coroutine frames | 21.506 ns/event | pooled frame/event | 21/21 |
 | C++ `co_sm` with heap coroutine frames | 49.427 ns/event | heap frame/event | 21/21 |
 | Rust fixed-lane worker pool | 259.255 ns/task | 0 | 21/21 |
@@ -560,7 +571,9 @@ C++ player table does not model. The worker-pool rows compare policy designs,
 not identical implementations: Rust uses one fixed atomic lane per worker,
 while C++ uses a shared fixed MPMC task ring. Eight C++ runs exceeded the
 runner's five-second timeout; the median above includes completed runs only and
-must be read together with that reliability result.
+must be read together with that reliability result. The safe Rust harnesses
+avoid allocator instrumentation and exercise their stack-polled paths
+directly.
 
 ## Development
 

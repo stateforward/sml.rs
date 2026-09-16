@@ -5,6 +5,7 @@ pub struct InputState {
     pub start: bool,
     pub wildcard: bool,
     pub ident: Ident,
+    pub source: String,
     pub data_type: Option<Type>,
     pub composite: Option<Ident>,
     pub history: bool,
@@ -42,19 +43,24 @@ impl parse::Parse for InputState {
         }
 
         // Input State
-        let mut ident: Ident = if let Ok(underscore) = underscore {
-            underscore.into()
+        let (mut ident, mut source): (Ident, String) = if let Ok(underscore) = underscore {
+            (underscore.into(), "wildcard:_".to_owned())
         } else if input.peek(LitStr) {
             let state: LitStr = input.parse()?;
-            crate::parser::state_ident(&state.value(), state.span())
+            (
+                crate::parser::state_ident(&state.value(), state.span()),
+                format!("literal:{}", state.value()),
+            )
         } else {
-            input.parse()?
+            let ident: Ident = input.parse()?;
+            (ident.clone(), format!("identifier:{ident}"))
         };
         let composite = if ident == "state" && input.peek(Token![<]) {
             input.parse::<Token![<]>()?;
             let child: Ident = input.parse()?;
             input.parse::<Token![>]>()?;
             ident = crate::parser::state_ident(&child.to_string(), child.span());
+            source = format!("composite:{child}");
             Some(child)
         } else {
             None
@@ -65,6 +71,7 @@ impl parse::Parse for InputState {
         if ident == "sml" && input.peek(Token![::]) {
             input.parse::<Token![::]>()?;
             ident = input.parse()?;
+            source = format!("identifier:{ident}");
             if ident != "X" {
                 return Err(parse::Error::new(
                     ident.span(),
@@ -124,6 +131,7 @@ impl parse::Parse for InputState {
             start,
             wildcard,
             ident,
+            source,
             data_type,
             composite,
             history,

@@ -15,6 +15,8 @@ All notable changes to this project are documented here. This project follows
   the action succeeds.
 - Seal the testing-only state override capability so production policies cannot
   opt themselves into `set_current_states`.
+- Seal the generated policy-composition traits so custom slots cannot replace
+  the library-owned policy storage and lock-separation boundary.
 
 ## 1.4.0 - 2026-09-04
 

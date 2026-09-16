@@ -108,6 +108,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             )
         })?;
     validate(parent, child, child_reference)?;
+    crate::parser::validate_name_collisions_many(&[parent, child])?;
 
     // Within a composite expansion, only references to the supplied child
     // table are structural. Other `state<T>` spellings are ordinary typed
@@ -698,7 +699,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let unlocked_process_event_body = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.defer(event.into())
+            self.pending.process(event.into())
                 .map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(&self.state, &event);
@@ -1269,6 +1270,7 @@ fn generate_multi_code(
     let child_machines = normalized_children.iter().collect::<Vec<_>>();
     let mut all_machines = vec![parent];
     all_machines.extend(child_machines.iter().copied());
+    crate::parser::validate_name_collisions_many(&all_machines)?;
 
     let parent_name = parent
         .name
@@ -1509,7 +1511,7 @@ fn generate_multi_code(
                 &child_machines,
                 &all_child_references,
                 &node_parents,
-            );
+            )?;
             let embedded = tree_embedded_orthogonal(
                 parent_name,
                 node_index,
@@ -1752,7 +1754,7 @@ fn generate_multi_code(
                 &child_machines,
                 &all_child_references,
                 &node_parents,
-            ),
+            )?,
             exit_nested.clone(),
             enter_nested.clone(),
             quote! {
@@ -1840,7 +1842,7 @@ fn generate_multi_code(
             &child_machines,
             &all_child_references,
             &node_parents,
-        );
+        )?;
         child_api.push(quote! {
             fn #state_method(&self) -> &#child_states_name { &self.#field }
             fn #is_method(&self, expected: &#child_states_name) -> bool {
@@ -2028,7 +2030,7 @@ fn generate_multi_code(
                 &child_machines,
                 &all_child_references,
                 &node_parents,
-            );
+            )?;
             let condition = if child
                 .transitions
                 .iter()
@@ -2344,7 +2346,7 @@ fn generate_multi_code(
     let unlocked_process_event_body = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.defer(event.into()).map_err(|_| #error_name::QueueFull)?;
+            self.pending.process(event.into()).map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(#log_state, &event);
                 Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
@@ -2991,7 +2993,7 @@ fn tree_embedded_orthogonal(
         nodes,
         references,
         parents,
-    );
+    )?;
     crate::orthogonal_codegen::generate_embedded(
         node,
         &states_name,
@@ -3290,11 +3292,14 @@ fn tree_active_condition(
     nodes: &[&StateMachine],
     references: &[Ident],
     parents: &HashMap<String, Ident>,
-) -> TokenStream {
+) -> parse::Result<TokenStream> {
     let mut conditions = Vec::new();
-    let Some(mut current) = references.get(index) else {
-        return quote! { false };
-    };
+    let mut current = references.get(index).ok_or_else(|| {
+        parse::Error::new(
+            Span::call_site(),
+            "composite tree references a missing machine name",
+        )
+    })?;
     while let Some(parent) = parents.get(&current.to_string()) {
         let parent_states = if parent == root {
             format_ident!("{}States", root)
@@ -3304,18 +3309,26 @@ fn tree_active_condition(
         let parent_orthogonal = if parent == root {
             root_orthogonal
         } else {
-            references
+            let parent_index = references
                 .iter()
                 .position(|reference| reference == parent)
-                .is_some_and(|index| {
-                    nodes.get(index).is_some_and(|node| {
-                        node.transitions
-                            .iter()
-                            .filter(|transition| transition.in_state.start)
-                            .count()
-                            > 1
-                    })
-                })
+                .ok_or_else(|| {
+                    parse::Error::new(
+                        parent.span(),
+                        "composite tree parent is missing a generated machine node",
+                    )
+                })?;
+            let node = nodes.get(parent_index).ok_or_else(|| {
+                parse::Error::new(
+                    parent.span(),
+                    "composite tree parent is missing a generated machine node",
+                )
+            })?;
+            node.transitions
+                .iter()
+                .filter(|transition| transition.in_state.start)
+                .count()
+                > 1
         };
         let parent_place = if parent == root {
             if parent_orthogonal {
@@ -3339,7 +3352,7 @@ fn tree_active_condition(
         }
         current = parent;
     }
-    quote! { true #(&& #conditions)* }
+    Ok(quote! { true #(&& #conditions)* })
 }
 
 fn tree_child_terminal(
@@ -3350,24 +3363,27 @@ fn tree_child_terminal(
     nodes: &[&StateMachine],
     references: &[Ident],
     parents: &HashMap<String, Ident>,
-) -> TokenStream {
+) -> parse::Result<TokenStream> {
     let arms = tree_children(owner, references, parents)
         .into_iter()
-        .map(|(index, reference)| {
+        .map(|(index, reference)| -> parse::Result<TokenStream> {
+            let node = nodes.get(index).ok_or_else(|| {
+                parse::Error::new(
+                    reference.span(),
+                    "composite tree references a missing machine node",
+                )
+            })?;
             let variant = crate::parser::state_ident(&reference.to_string(), reference.span());
             let states_name = tree_states_name(root, reference);
             let place = tree_place(reference);
-            let terminal = if nodes
-                .get(index)
-                .is_some_and(|node| collect_states(node).contains_key("X"))
-            {
-                if nodes.get(index).is_some_and(|node| {
-                    node.transitions
-                        .iter()
-                        .filter(|transition| transition.in_state.start)
-                        .count()
-                        > 1
-                }) {
+            let terminal = if collect_states(node).contains_key("X") {
+                if node
+                    .transitions
+                    .iter()
+                    .filter(|transition| transition.in_state.start)
+                    .count()
+                    > 1
+                {
                     quote! { #place.iter().all(|state| matches!(state, #states_name::X)) }
                 } else {
                     quote! { matches!(#place, #states_name::X) }
@@ -3375,10 +3391,10 @@ fn tree_child_terminal(
             } else {
                 quote! { false }
             };
-            quote! { #owner_states_name::#variant => #terminal }
+            Ok(quote! { #owner_states_name::#variant => #terminal })
         })
-        .collect::<Vec<_>>();
-    quote! { match &#owner_place { #(#arms,)* _ => false } }
+        .collect::<parse::Result<Vec<_>>>()?;
+    Ok(quote! { match &#owner_place { #(#arms,)* _ => false } })
 }
 
 fn has_composite(machine: &StateMachine, machine_names: &[&Ident]) -> bool {
@@ -4007,7 +4023,7 @@ fn transition_code(
         .map(|event| {
             if async_queue {
                 quote! {
-                    self.pending.defer((#event).into())
+                    self.pending.process((#event).into())
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             } else {
@@ -4039,7 +4055,7 @@ fn transition_code(
         if async_queue {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    self.pending.defer(deferred_event)
+                    self.pending.process(deferred_event)
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             }

@@ -9,6 +9,7 @@ use sml::utility::SmPool;
 const ACTORS: usize = 10_000;
 const DISPATCHES: usize = 50_000;
 const ROUNDS: usize = 1_001;
+const ALLOCATION_STATUS: &str = "allocation-status not-instrumented";
 
 #[derive(Clone, Copy)]
 struct Pulse;
@@ -74,7 +75,7 @@ fn report(label: &str, elapsed: u128, flags: &[u8]) {
     assert_ne!(checksum, 0);
     let events = (ROUNDS * DISPATCHES) as f64;
     println!(
-        "{label} {elapsed} ns total; {:.3} ns/event; checksum {checksum}",
+        "{label} {elapsed} ns total; {:.3} ns/event; {ALLOCATION_STATUS}; checksum {checksum}",
         elapsed as f64 / events
     );
 }

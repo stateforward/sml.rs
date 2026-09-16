@@ -463,6 +463,42 @@ fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
     assert!(machine.is(&PolicyFlatStates::Ready));
 }
 
+#[cfg(feature = "std")]
+#[test]
+fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
+    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+
+    let composite_policy = StandardMutexPolicies::with_dispatch(
+        JumpTable,
+        (),
+        (),
+        ThreadSafe::new(std::sync::Mutex::new(())),
+        (),
+        DefaultQueuePolicy,
+        DefaultQueuePolicy,
+    );
+    let mut composite =
+        PolicyParentStateMachine::new_with_policy(CompositeContext::default(), composite_policy);
+    composite.process_event(Enter).unwrap();
+    composite.process_event(ChildWork).unwrap();
+
+    let orthogonal_policy = StandardMutexPolicies::with_dispatch(
+        JumpTable,
+        (),
+        (),
+        ThreadSafe::new(std::sync::Mutex::new(())),
+        (),
+        DefaultQueuePolicy,
+        DefaultQueuePolicy,
+    );
+    let mut orthogonal = PolicyOrthogonalStateMachine::new_with_policy(
+        OrthogonalContext::default(),
+        orthogonal_policy,
+    );
+    orthogonal.process_event(Left).unwrap();
+    assert!(orthogonal.is_region(0, &PolicyOrthogonalStates::X));
+}
+
 #[test]
 fn no_policy_is_zero_sized() {
     assert_eq!(core::mem::size_of::<NoPolicy>(), 0);

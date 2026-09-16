@@ -256,6 +256,26 @@ fn bounded_queue_orders_processed_events_before_deferred_events() {
 }
 
 #[test]
+fn event_queues_process_requests_precede_deferred_events_in_process_order() {
+    let mut queues = EventQueues::<u8, 4, 4>::new();
+    let mut seen = Vec::new();
+    queues.dispatch(&mut (), 0, |_, queues, event| {
+        seen.push(event);
+        if event == 0 {
+            queues.defer(1).unwrap();
+            queues.process(2).unwrap();
+            queues.process(3).unwrap();
+        }
+        DispatchStatus {
+            handled: true,
+            transitioned: event == 0,
+        }
+    });
+
+    assert_eq!(seen, vec![0, 3, 2, 1]);
+}
+
+#[test]
 fn queue_defaults_clear_and_zero_capacity_are_total() {
     let mut queue = EventQueue::<i32, 2>::default();
     assert!(queue.is_empty());

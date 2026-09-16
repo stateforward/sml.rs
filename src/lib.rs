@@ -5,6 +5,7 @@
 #![doc = include_str!("../docs/dsl.md")]
 #![no_std]
 #![forbid(unsafe_code)]
+#![deny(warnings)]
 #![deny(
     elided_lifetimes_in_paths,
     missing_docs,

@@ -55,6 +55,102 @@ pub fn state_ident(value: &str, span: Span) -> Ident {
 }
 
 #[derive(Debug, Clone)]
+struct SeenName {
+    source: String,
+}
+
+fn source_display(source: &str) -> &str {
+    source.split_once(':').map_or(source, |(_, value)| value)
+}
+
+fn record_name(
+    names: &mut HashMap<String, SeenName>,
+    ident: &Ident,
+    source: &str,
+    kind: &str,
+) -> parse::Result<()> {
+    match names.get(&ident.to_string()) {
+        Some(previous) if previous.source != source => Err(parse::Error::new(
+            ident.span(),
+            format!(
+                "{kind} `{}` collides with `{}`: both normalize to `{ident}`",
+                source_display(source),
+                source_display(&previous.source),
+            ),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            names.insert(
+                ident.to_string(),
+                SeenName {
+                    source: source.to_owned(),
+                },
+            );
+            Ok(())
+        }
+    }
+}
+
+fn validate_machine_names(machine: &StateMachine) -> parse::Result<()> {
+    let mut states = HashMap::new();
+    let mut events = HashMap::new();
+    for transition in &machine.transitions {
+        if !transition.in_state.wildcard {
+            record_name(
+                &mut states,
+                &transition.in_state.ident,
+                &transition.in_state.source,
+                "state name",
+            )?;
+        }
+        if !transition.out_state.internal_transition {
+            record_name(
+                &mut states,
+                &transition.out_state.ident,
+                &transition.out_state.source,
+                "state name",
+            )?;
+        }
+        // Completion triggers name an existing event variant; they do not
+        // declare a second generated event name. Validate only declarations
+        // that can introduce a new variant spelling here.
+        if !transition.event.wildcard && transition.event.kind == EventKind::Normal {
+            record_name(
+                &mut events,
+                &transition.event.ident,
+                &transition.event.source,
+                "event name",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_name_collisions(machine: &StateMachine) -> parse::Result<()> {
+    validate_machine_names(machine)
+}
+
+pub(crate) fn validate_name_collisions_many(machines: &[&StateMachine]) -> parse::Result<()> {
+    let mut events = HashMap::new();
+    for machine in machines {
+        validate_machine_names(machine)?;
+        for transition in &machine.transitions {
+            // A completion trigger refers to an existing event variant and
+            // must not conflict with its declaration spelling.
+            if !transition.event.wildcard && transition.event.kind == EventKind::Normal {
+                record_name(
+                    &mut events,
+                    &transition.event.ident,
+                    &transition.event.source,
+                    "event name",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
 pub struct AsyncIdent {
     pub ident: Ident,
     pub is_async: bool,
@@ -758,6 +854,7 @@ impl ParsedStateMachine {
         for transition in sm.transitions.iter_mut() {
             if transition.out_state.internal_transition && !transition.in_state.wildcard {
                 transition.out_state.ident = transition.in_state.ident.clone();
+                transition.out_state.source = transition.in_state.source.clone();
                 transition
                     .out_state
                     .data_type
@@ -765,6 +862,8 @@ impl ParsedStateMachine {
                 transition.out_state.internal_transition = false;
             }
         }
+
+        validate_name_collisions(&sm)?;
 
         // Check the initial state definition
         let mut starting_transitions_iter = sm.transitions.iter().filter(|sm| sm.in_state.start);
@@ -855,6 +954,7 @@ impl ParsedStateMachine {
                         start: false,
                         wildcard: false,
                         ident: in_state.clone(),
+                        source: format!("identifier:{in_state}"),
                         data_type: state_data.data_types.get(name).cloned(),
                         composite: None,
                         history: false,

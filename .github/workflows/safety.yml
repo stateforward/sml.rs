@@ -15,9 +15,10 @@ jobs:
     name: Address sanitizer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
         with:
+          toolchain: nightly-2026-08-24
           components: rust-src
       - name: Run tests under ASan
         env:
@@ -25,24 +26,29 @@ jobs:
           RUSTDOCFLAGS: -Zsanitizer=address
           ASAN_OPTIONS: detect_leaks=1
         run: >-
-          cargo run --manifest-path sanitizer/Cargo.toml -Zbuild-std
+          cargo run --manifest-path sanitizer/Cargo.toml --locked -Zbuild-std
           --target x86_64-unknown-linux-gnu
 
   miri:
     name: Miri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@miri
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@c8b12ee5fa2c35ca981259ccf29fc26b9a1c279d # miri
+        with:
+          toolchain: nightly-2026-08-24
+          components: miri,rust-src
       - name: Run runtime utility tests under Miri
-        run: cargo miri test --test utility_test
+        run: cargo miri test --test utility_test --locked
 
   fuzz:
     name: Fuzz smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          toolchain: nightly-2026-08-24
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: Fuzz runtime utilities

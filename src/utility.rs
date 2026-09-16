@@ -302,7 +302,7 @@ impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, 
 
     /// Schedules an event for immediate processing after the current action.
     pub fn process(&mut self, event: E) -> Result<(), QueueFull> {
-        self.processed.defer(event)
+        self.processed.process(event)
     }
 
     /// Returns the number of deferred events.

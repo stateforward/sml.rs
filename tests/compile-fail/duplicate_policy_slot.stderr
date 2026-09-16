@@ -1,0 +1,10 @@
+error: policy slot `logger` may only be specified once
+ --> tests/compile-fail/duplicate_policy_slot.rs:3:1
+  |
+3 | / sml::sml_policies!(DuplicatePolicy {
+4 | |     logger: (),
+5 | |     logger: (),
+6 | | });
+  | |__^
+  |
+  = note: this error originates in the macro `$crate::__sml_policy_check_duplicates` which comes from the expansion of the macro `sml::sml_policies` (in Nightly builds, run with -Z macro-backtrace for more info)

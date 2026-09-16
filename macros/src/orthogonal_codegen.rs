@@ -17,6 +17,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let name = machine.name.as_ref().ok_or_else(|| {
         parse::Error::new(Span::call_site(), "the `sml!` machine must have a name")
     })?;
+    crate::parser::validate_name_collisions(machine)?;
     validate_supported(machine)?;
 
     let regions = discover_regions(machine)?;
@@ -411,7 +412,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let unlocked_process_event_body = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.defer(event.into())
+            self.pending.process(event.into())
                 .map_err(|_| #error_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 self.context.log_process_event(&self.states, &event);
@@ -1603,7 +1604,7 @@ fn generate_transition_branch(
         .map(|event| {
             if async_queue {
                 quote! {
-                    self.pending.defer((#event).into())
+                    self.pending.process((#event).into())
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             } else {
@@ -1641,7 +1642,7 @@ fn generate_transition_branch(
         if async_queue {
             quote! {
                 while let Some(deferred_event) = self.deferred.pop() {
-                    self.pending.defer(deferred_event)
+                    self.pending.process(deferred_event)
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             }

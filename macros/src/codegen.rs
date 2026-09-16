@@ -986,7 +986,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                 let process_code = process_events.iter().map(|event| {
                                     if async_queue {
                                         quote! {
-                                            self.pending.defer((#event).into())
+                                            self.pending.process((#event).into())
                                                 .map_err(|_| #error_type_name::QueueFull)?;
                                         }
                                     } else {
@@ -1013,7 +1013,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                     if async_queue {
                                         quote! {
                                             while let Some(deferred_event) = self.deferred.pop() {
-                                                self.pending.defer(deferred_event)
+                                                self.pending.process(deferred_event)
                                                     .map_err(|_| #error_type_name::QueueFull)?;
                                             }
                                         }
@@ -1804,7 +1804,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let unlocked_dispatch = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.defer(event.into())
+            self.pending.process(event.into())
                 .map_err(|_| #error_type_name::QueueFull)?;
             while let Some(event) = self.pending.pop() {
                 let _ = self.dispatch_queued(#completion_context_call event).await?;

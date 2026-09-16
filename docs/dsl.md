@@ -210,7 +210,9 @@ typed states and actionless typed targets use `T::default()`. When a transition
 action constructs the target, its final action returns `T`; this is the
 ownership-safe Rust counterpart to sml.cpp injecting a mutable destination
 state object. Use `new_with_state_data(context, value)` to override an inferred
-initial value.
+initial value. This constructor is available only when the machine's policy
+testing slot is `TestingPolicy`; the default `NoPolicy` machine does not
+expose it. Use the testing policy only for focused state setup in tests.
 
 ## Context callbacks
 

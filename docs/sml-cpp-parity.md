@@ -96,10 +96,10 @@ parses the header-only SML implementation inside one translation unit.
 | Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
 | C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
 
-The Rust batch path performed zero timed allocations, beat C++ `sm_pool` by
+The Rust batch path uses prebuilt caller-owned storage, beat C++ `sm_pool` by
 23.6% locally and 22.6% under random access, and remained within 16.0% and
 10.4% of its corresponding flat-array baselines. Pool throughput at or above
-C++ and zero steady-state allocations are cutover invariants for pooled
+C++ and prebuilt caller-owned storage are cutover invariants for pooled
 state-machine workloads.
 
 ### Async and scheduler policies
@@ -121,8 +121,9 @@ On 2026-07-11, 21 requested runs produced:
 | Rust fixed-lane worker pool | 259.255 ns/task | 21/21 |
 | C++ fixed-ring thread pool | 1,139.283 ns/task | 13/21 |
 
-Both Rust timed paths reported zero allocations. The C++ allocator variants
-force the coroutine-frame path; the inline policy intentionally bypasses frame
+The safe Rust harnesses do not install a global allocator, so their timed paths
+are not allocator-instrumented. The C++ allocator variants force the
+coroutine-frame path; the inline policy intentionally bypasses frame
 allocation. The pool topologies differ and therefore measure policy tradeoffs,
 not a like-for-like language primitive. The C++ completed-run median excludes
 eight five-second timeouts, which are retained as part of the result.
@@ -161,10 +162,10 @@ parses the header-only SML implementation inside one translation unit.
 | Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
 | C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
 
-The Rust batch path performed zero timed allocations, beat C++ `sm_pool` by
+The Rust batch path uses prebuilt caller-owned storage, beat C++ `sm_pool` by
 23.6% locally and 22.6% under random access, and remained within 16.0% and
 10.4% of its corresponding flat-array baselines. Pool throughput at or above
-C++ and zero steady-state allocations are cutover invariants for pooled
+C++ and prebuilt caller-owned storage are cutover invariants for pooled
 state-machine workloads.
 
 ### Async and scheduler policies
@@ -186,8 +187,9 @@ On 2026-07-11, 21 requested runs produced:
 | Rust fixed-lane worker pool | 259.255 ns/task | 21/21 |
 | C++ fixed-ring thread pool | 1,139.283 ns/task | 13/21 |
 
-Both Rust timed paths reported zero allocations. The C++ allocator variants
-force the coroutine-frame path; the inline policy intentionally bypasses frame
+The safe Rust harnesses do not install a global allocator, so their timed paths
+are not allocator-instrumented. The C++ allocator variants force the
+coroutine-frame path; the inline policy intentionally bypasses frame
 allocation. The pool topologies differ and therefore measure policy tradeoffs,
 not a like-for-like language primitive. The C++ completed-run median excludes
 eight five-second timeouts, which are retained as part of the result.
