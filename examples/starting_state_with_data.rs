@@ -7,7 +7,7 @@
 use sml::sml;
 
 /// State data
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct MyStateData(pub u32);
 
 sml! {

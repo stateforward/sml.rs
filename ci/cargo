@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+script_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+
+if [[ -z "${REAL_CARGO:-}" ]]; then
+  echo "REAL_CARGO must name the real cargo executable" >&2
+  exit 2
+fi
+if [[ "${REAL_CARGO}" != /* ]]; then
+  echo "REAL_CARGO must be an absolute path: ${REAL_CARGO}" >&2
+  exit 2
+fi
+if [[ ! -x "${REAL_CARGO}" ]]; then
+  echo "REAL_CARGO is not an executable: ${REAL_CARGO}" >&2
+  exit 2
+fi
+if [[ "${REAL_CARGO}" -ef "${script_path}" ]]; then
+  echo "REAL_CARGO resolves to the cargo wrapper; refusing to recurse" >&2
+  exit 2
+fi
+
+args=("$@")
+fuzz_manifest=false
+for ((index = 0; index < ${#args[@]}; index++)); do
+  manifest=""
+  case "${args[index]}" in
+    --manifest-path)
+      index=$((index + 1))
+      manifest="${args[index]:-}"
+      ;;
+    --manifest-path=*)
+      manifest="${args[index]#--manifest-path=}"
+      ;;
+  esac
+  if [[ "${manifest}" == "fuzz/Cargo.toml" || "${manifest}" == */fuzz/Cargo.toml ]]; then
+    fuzz_manifest=true
+    break
+  fi
+done
+
+if [[ "${fuzz_manifest}" == true ]]; then
+  locked=false
+  for arg in "${args[@]}"; do
+    if [[ "${arg}" == "--" ]]; then
+      break
+    fi
+    if [[ "${arg}" == "--locked" ]]; then
+      locked=true
+      break
+    fi
+  done
+  if [[ "${locked}" == false ]]; then
+    insert_at=${#args[@]}
+    for ((index = 0; index < ${#args[@]}; index++)); do
+      if [[ "${args[index]}" == "--" ]]; then
+        insert_at=${index}
+        break
+      fi
+    done
+    args=("${args[@]:0:insert_at}" --locked "${args[@]:insert_at}")
+  fi
+fi
+
+exec "${REAL_CARGO}" "${args[@]}"

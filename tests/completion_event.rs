@@ -1,6 +1,6 @@
 use sml::sml;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     value: u32,
     valid: bool,
@@ -101,11 +101,13 @@ struct AsyncContext {
 
 impl AsyncCompletionStateMachineContext for AsyncContext {
     async fn origin(&mut self) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.calls.push("origin");
         Ok(())
     }
 
     async fn complete(&mut self) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.calls.push("completion");
         Ok(())
     }
@@ -245,6 +247,7 @@ struct AsyncAnonymousContext {
 
 impl AsyncAnonymousStateMachineContext for AsyncAnonymousContext {
     async fn prepare(&mut self) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.prepared = true;
         Ok(())
     }

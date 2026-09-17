@@ -28,7 +28,7 @@ def build(cpp_dir: Path, thread_pool_dir: Path) -> None:
     env["RUSTFLAGS"] = "-C target-cpu=native"
     subprocess.run(
         [
-            "cargo", "build", "--release", "--example", "async_allocator_benchmark",
+            "cargo", "build", "--locked", "--release", "--example", "async_allocator_benchmark",
             "--example", "thread_pool_benchmark",
         ],
         cwd=ROOT,

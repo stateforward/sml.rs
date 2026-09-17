@@ -69,6 +69,7 @@ struct AsyncProcessContext;
 
 impl AsyncProcessQueueDslStateMachineContext for AsyncProcessContext {
     async fn enable_async_process(&mut self, _: &AsyncEnable) -> Result<(), ()> {
+        core::future::ready(()).await;
         smol::future::yield_now().await;
         Ok(())
     }

@@ -30,6 +30,7 @@ impl StateMachineContext for Context {
         println!("`guard2` called from async context");
         let mut lock = self.lock.write().await;
         *lock = false;
+        drop(lock);
         Ok(true)
     }
 
@@ -50,6 +51,7 @@ impl StateMachineContext for Context {
         println!("`action1` called from async context");
         let mut lock = self.lock.write().await;
         *lock = true;
+        drop(lock);
         Ok(())
     }
 

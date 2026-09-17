@@ -105,7 +105,10 @@ fn validate_action_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Erro
 
                     // Check that the call signature is equivalent to the recorded signature for this
                     // action.
-                    if actions.get(&action.to_string()).unwrap() != &signature {
+                    if actions
+                        .get(&action.to_string())
+                        .is_some_and(|registered| registered != &signature)
+                    {
                         return Err(parse::Error::new(
                             Span::call_site(),
                             format!("Action `{}` can only be reused when all input states, events, and output states have the same data", action),
@@ -123,7 +126,10 @@ fn validate_action_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Erro
                     actions
                         .entry(action.clone())
                         .or_insert_with(|| signature.clone());
-                    if actions.get(&action).unwrap() != &signature {
+                    if actions
+                        .get(&action)
+                        .is_some_and(|registered| registered != &signature)
+                    {
                         return Err(parse::Error::new(
                             eval.action.ident.span(),
                             format!(
@@ -167,7 +173,10 @@ fn validate_guard_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Error
 
                         // Check that the call signature is equivalent to the recorded signature for this
                         // guard.
-                        if guards.get(&guard.ident.to_string()).unwrap() != &signature {
+                        if guards
+                            .get(&guard.ident.to_string())
+                            .is_some_and(|registered| registered != &signature)
+                        {
                             return Err(parse::Error::new(
                                 Span::call_site(),
                                 format!("Guard `{}` can only be reused when all input states and events have the same data", guard.ident),
@@ -185,7 +194,10 @@ fn validate_guard_signatures(sm: &ParsedStateMachine) -> Result<(), parse::Error
                         guards
                             .entry(name.clone())
                             .or_insert_with(|| signature.clone());
-                        if guards.get(&name).unwrap() != &signature {
+                        if guards
+                            .get(&name)
+                            .is_some_and(|registered| registered != &signature)
+                        {
                             return Err(parse::Error::new(
                                 guard.ident.span(),
                                 format!("Eval guard `{name}` has incompatible input state or event data"),
@@ -206,7 +218,7 @@ fn validate_unreachable_transitions(sm: &ParsedStateMachine) -> Result<(), parse
         for (event, event_mapping) in event_mappings {
             // more than single transition for (in_state,event)
             if event_mapping.transitions.len() > 1 {
-                let mut unguarded_count = 0;
+                let mut unguarded_count: usize = 0;
                 for t in &event_mapping.transitions {
                     if let Some(g) = &t.guard {
                         if unguarded_count > 0 {
@@ -219,7 +231,7 @@ fn validate_unreachable_transitions(sm: &ParsedStateMachine) -> Result<(), parse
                         }
                     } else {
                         // unguarded
-                        unguarded_count += 1;
+                        unguarded_count = unguarded_count.saturating_add(1);
                         if unguarded_count > 1 {
                             return Err(parse::Error::new(
                                 Span::call_site(),

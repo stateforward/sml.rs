@@ -200,7 +200,7 @@ region during `initialize()` and again after each handled broadcast. Prefixing
 any orthogonal guard or action with `async` generates an async broadcast and
 stabilization path and awaits callbacks in every region.
 
-State strings are converted to PascalCase generated variants; for example,
+State strings are converted to `PascalCase` generated variants; for example,
 `"fin wait 1"_s` becomes `States::FinWait1`. Named events are converted the
 same way. Generated event enum variants remain useful for named events, while
 typed `event<E>` transitions generate `From<E>` and support direct dispatch.
@@ -210,7 +210,9 @@ typed states and actionless typed targets use `T::default()`. When a transition
 action constructs the target, its final action returns `T`; this is the
 ownership-safe Rust counterpart to sml.cpp injecting a mutable destination
 state object. Use `new_with_state_data(context, value)` to override an inferred
-initial value.
+initial value. This constructor is available only when the machine's policy
+testing slot is `TestingPolicy`; the default `NoPolicy` machine does not
+expose it. Use the testing policy only for focused state setup in tests.
 
 ## Context callbacks
 

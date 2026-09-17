@@ -1,3 +1,4 @@
+use core::convert::TryFrom;
 use sml::utility::{
     with_id, DispatchStatus, DispatchTable, EventQueue, EventQueues, Hierarchical,
     HierarchicalDispatch, OrthogonalRegions, QueueFull, SmPool,
@@ -22,13 +23,13 @@ struct Machine {
     value: i32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Event {
     Add(i32),
     Clear,
 }
 
-fn dispatch(machine: &mut Machine, event: Event) {
+const fn dispatch(machine: &mut Machine, event: Event) {
     match event {
         Event::Add(value) => machine.value += value,
         Event::Clear => machine.value = 0,
@@ -59,7 +60,7 @@ fn pool_supports_indexed_and_batch_dispatch() {
     assert_eq!(pool.storage()[2].value, 3);
 
     pool.reset(|index| Machine {
-        value: index as i32,
+        value: i32::try_from(index).unwrap_or(i32::MAX),
     });
     assert_eq!(pool.storage()[2].value, 2);
     pool.storage_mut()[0].value = 9;
@@ -71,12 +72,21 @@ struct RawEvent {
     value: i32,
 }
 
-fn add(machine: &mut Machine, raw: &RawEvent) -> i32 {
+// The reference shape is required by DispatchTable's erased handler ABI.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the test callback signature mirrors the public callback contract"
+)]
+const fn add(machine: &mut Machine, raw: &RawEvent) -> i32 {
     machine.value += raw.value;
     machine.value
 }
 
-fn subtract(machine: &mut Machine, raw: &RawEvent) -> i32 {
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the test callback signature mirrors the public callback contract"
+)]
+const fn subtract(machine: &mut Machine, raw: &RawEvent) -> i32 {
     machine.value -= raw.value;
     machine.value
 }
@@ -253,6 +263,26 @@ fn bounded_queue_orders_processed_events_before_deferred_events() {
     assert_eq!(queue.pop(), Some(1));
     assert_eq!(queue.pop(), Some(2));
     assert_eq!(queue.pop(), None);
+}
+
+#[test]
+fn event_queues_process_requests_precede_deferred_events_in_process_order() {
+    let mut queues = EventQueues::<u8, 4, 4>::new();
+    let mut seen = Vec::new();
+    queues.dispatch(&mut (), 0, |(), queues, event| {
+        seen.push(event);
+        if event == 0 {
+            queues.defer(1).unwrap();
+            queues.process(2).unwrap();
+            queues.process(3).unwrap();
+        }
+        DispatchStatus {
+            handled: true,
+            transitioned: event == 0,
+        }
+    });
+
+    assert_eq!(seen, vec![0, 3, 2, 1]);
 }
 
 #[test]

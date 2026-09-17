@@ -16,12 +16,12 @@ inline C++ lambdas.
 | `history` | Compiling translation | `tests/sml_cpp_examples.rs::history` exits and re-enters a native child and proves `(H)` retains its active substate |
 | `orthogonal_regions` | Compiling translation | `tests/sml_cpp_examples.rs::orthogonal_regions` preserves both regions and proves event broadcast through joint termination |
 | `defer_and_process` | Compiling translation | `tests/sml_cpp_examples.rs::defer_and_process` preserves deferred replay and post-transition processed-event dispatch with bounded allocation-free queues |
-| `testing` | Compiling translation | `tests/sml_cpp_examples.rs::testing` uses `set_state` to isolate the transition under test and verifies context mutation |
+| `testing` | Compiling translation | `tests/sml_cpp_examples.rs::testing` uses `set_current_states` to isolate the transition under test and verifies context mutation |
 | `visitor` | Compiling translation | `tests/sml_cpp_examples.rs::visitor` visits generated typed states before and after transitions |
 | `logging` | Compiling translation | `tests/sml_cpp_examples.rs::logging` proves every guard leaf, action, and state change invokes its context logging hook |
 | `dependencies` | Compiling Rust-native translation | `tests/sml_cpp_examples.rs::dependencies` stores the injected dependency in context and combines it with borrowed event payloads |
 | `dependency_injection` | Compiling Rust-native translation | `tests/sml_cpp_examples.rs::dependency_injection` injects values through context and lets a borrowing controller own the dispatch workflow |
-| `dispatch_policy` | Compiling Rust-native translation | `tests/sml_cpp_examples.rs::dispatch_policy` runs the policy workload; generated enum matching deliberately leaves branch/jump-table selection to LLVM |
+| `dispatch_policy` | Compiling Rust-native translation | `tests/sml_cpp_examples.rs::dispatch_policy` runs the policy workload; `JumpTable`, `BranchStm`, `SwitchStm`, and custom candidate selection are available through policy slots |
 | `dispatch_table` | Compiling translation | `tests/sml_cpp_examples.rs::dispatch_table` routes contiguous runtime IDs through allocation-free `utility::DispatchTable` |
 | `sdl2` | Compiling ownership-safe adapter | `tests/sml_cpp_examples.rs::sdl2` translates the two-region table and dispatches SDL-style runtime IDs into borrowed typed wrappers |
 | `plant_uml` | Compiling platform translation | `tests/sml_cpp_examples.rs::plant_uml` compiles the source table with the `graphviz` feature, which emits DOT/SVG rather than PlantUML text |

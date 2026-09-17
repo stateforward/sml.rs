@@ -1,0 +1,5 @@
+error: event name `FooBar` collides with `foo-bar`: both normalize to `FooBar`
+  --> tests/compile-fail/normalized_composite_collision.rs:11:17
+   |
+11 |         *Init + FooBar = X,
+   |                 ^^^^^^

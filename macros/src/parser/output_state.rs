@@ -4,33 +4,37 @@ use syn::{parenthesized, parse, spanned::Spanned, token, Ident, LitStr, Token, T
 #[derive(Debug, Clone)]
 pub struct OutputState {
     pub ident: Ident,
+    pub source: String,
     pub internal_transition: bool,
     pub data_type: Option<Type>,
     pub composite: Option<Ident>,
 }
 
 impl parse::Parse for OutputState {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
-            let (internal_transition, mut ident) = if input.peek(Token![_]) {
+            let (internal_transition, mut ident, mut source) = if input.peek(Token![_]) {
                 // Underscore ident here is used to represent an internal transition
                 let underscore = input.parse::<Token![_]>()?;
-                (true, underscore.into())
+                (true, underscore.into(), "identifier:_".to_owned())
             } else if input.peek(LitStr) {
                 let state: LitStr = input.parse()?;
                 (
                     false,
                     crate::parser::state_ident(&state.value(), state.span()),
+                    format!("literal:{}", state.value()),
                 )
             } else {
-                (false, input.parse()?)
+                let ident: Ident = input.parse()?;
+                (false, ident.clone(), format!("identifier:{ident}"))
             };
             let composite = if ident == "state" && input.peek(Token![<]) {
                 input.parse::<Token![<]>()?;
                 let child: Ident = input.parse()?;
                 input.parse::<Token![>]>()?;
                 ident = crate::parser::state_ident(&child.to_string(), child.span());
+                source = format!("composite:{child}");
                 Some(child)
             } else {
                 None
@@ -41,6 +45,7 @@ impl parse::Parse for OutputState {
             if ident == "sml" && input.peek(Token![::]) {
                 input.parse::<Token![::]>()?;
                 ident = input.parse()?;
+                source = format!("identifier:{ident}");
                 if ident != "X" {
                     return Err(parse::Error::new(
                         ident.span(),
@@ -78,6 +83,7 @@ impl parse::Parse for OutputState {
 
             Ok(Self {
                 ident,
+                source,
                 internal_transition,
                 data_type,
                 composite,
@@ -86,6 +92,7 @@ impl parse::Parse for OutputState {
             // Internal transition
             Ok(Self {
                 ident: Ident::new("_", Span::call_site()),
+                source: "internal:_".to_owned(),
                 internal_transition: true,
                 data_type: None,
                 composite: None,

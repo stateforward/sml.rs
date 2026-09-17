@@ -7,11 +7,11 @@
 use sml::sml;
 
 /// Event data
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct MyEventData(pub u32);
 
 /// State data
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct MyStateData(pub u32);
 
 sml! {

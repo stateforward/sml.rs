@@ -1,0 +1,34 @@
+error[E0599]: the associated function or constant `new_with_state_data` exists for struct `TypedInitialStateMachine<Context>`, but its trait bounds were not satisfied
+  --> tests/compile-fail/no_policy_initial_state_data.rs:21:72
+   |
+10 | / sml! {
+11 | |     TypedInitial {
+12 | |         *state<InitialData> + event<Advance> = X,
+13 | |     }
+14 | | }
+   | |_- associated function or constant `new_with_state_data` not found for this struct
+...
+21 |       let _machine = <TypedInitialStateMachine<Context, sml::NoPolicy>>::new_with_state_data(
+   |                                                                          ^^^^^^^^^^^^^^^^^^^ associated function or constant cannot be called on `TypedInitialStateMachine<Context>` due to unsatisfied trait bounds
+   |
+note: if you're trying to build a new `TypedInitialStateMachine<Context>` consider using one of the following associated functions:
+      TypedInitialStateMachine::<__SmlContext, __SmlPolicy>::new_with_policy
+      TypedInitialStateMachine::<__SmlContext>::new
+  --> tests/compile-fail/no_policy_initial_state_data.rs:10:1
+   |
+10 | / sml! {
+11 | |     TypedInitial {
+12 | |         *state<InitialData> + event<Advance> = X,
+13 | |     }
+14 | | }
+   | |_^
+note: trait bound `(): TestingAccess` was not satisfied
+  --> tests/compile-fail/no_policy_initial_state_data.rs:10:1
+   |
+10 | / sml! {
+11 | |     TypedInitial {
+12 | |         *state<InitialData> + event<Advance> = X,
+13 | |     }
+14 | | }
+   | |_^
+   = note: this error originates in the macro `sml` (in Nightly builds, run with -Z macro-backtrace for more info)

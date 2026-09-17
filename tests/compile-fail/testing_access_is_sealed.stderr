@@ -1,0 +1,24 @@
+error[E0277]: the trait bound `ProductionTestingMarker: sml::policy::testing_access::Sealed` is not satisfied
+  --> tests/compile-fail/testing_access_is_sealed.rs:12:29
+   |
+12 | impl sml::TestingAccess for ProductionTestingMarker {}
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `sml::policy::testing_access::Sealed` is not implemented for `ProductionTestingMarker`
+  --> tests/compile-fail/testing_access_is_sealed.rs:6:1
+   |
+ 6 | struct ProductionTestingMarker;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: the trait `sml::policy::testing_access::Sealed` is implemented for `TestingPolicy`
+  --> src/policy.rs
+   |
+   | impl testing_access::Sealed for TestingPolicy {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `TestingAccess`
+  --> src/policy.rs
+   |
+   | pub trait TestingAccess: testing_access::Sealed {}
+   |                          ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `TestingAccess`
+   = note: `TestingAccess` is a "sealed trait", because to implement it you also need to implement `sml::policy::testing_access::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+   = help: the following type implements the trait:
+             sml::TestingPolicy

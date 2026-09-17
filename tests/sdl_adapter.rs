@@ -25,6 +25,11 @@ sml! {
     }
 }
 
+// These flags represent independent SDL lifecycle observations.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the adapter mirrors the source format's independent boolean fields"
+)]
 #[derive(Default)]
 struct Context {
     initialized: bool,
@@ -63,14 +68,26 @@ impl Sdl2StateMachineContext for Context {
 
 type Handler = fn(&mut Sdl2StateMachine<Context>, &SdlEvent) -> bool;
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the adapter callback signature mirrors the public callback contract"
+)]
 fn key_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
     machine.process_event(KeyUp(*event)).is_ok()
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the adapter callback signature mirrors the public callback contract"
+)]
 fn mouse_button_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
     machine.process_event(MouseButtonUp(*event)).is_ok()
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the adapter callback signature mirrors the public callback contract"
+)]
 fn quit(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
     machine.process_event(Quit(*event)).is_ok()
 }

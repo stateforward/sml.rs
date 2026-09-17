@@ -7,7 +7,7 @@
 use sml::sml;
 
 /// Event data
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct MyEventData(pub u32);
 
 sml! {

@@ -64,7 +64,7 @@ fn normal_transition_wins_over_unexpected_handlers() {
     assert!(sm.context().log.is_empty());
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Payload(u32);
 
 sml! {

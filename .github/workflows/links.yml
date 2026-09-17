@@ -6,21 +6,40 @@ on:
   schedule:
     - cron: "00 18 * * *"
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   linkChecker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.0
+
+      - name: Install lychee
+        run: cargo install lychee --version 0.24.2 --locked
 
       - name: Link Checker
         id: lychee
-        uses: lycheeverse/lychee-action@v1
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        run: |
+          mkdir -p lychee
+          : > lychee/out.md
+          lychee \
+            --no-progress \
+            --format markdown \
+            --output lychee/out.md \
+            './**/*.md'
 
       - name: Create Issue From File
-        if: steps.lychee.outputs.exit_code != 0
-        uses: peter-evans/create-issue-from-file@v4
+        if: steps.lychee.outcome == 'failure'
+        uses: peter-evans/create-issue-from-file@433e51abf769039ee20ba1293a088ca19d573b7f # v4
         with:
           title: Link Checker Report
           content-filepath: ./lychee/out.md

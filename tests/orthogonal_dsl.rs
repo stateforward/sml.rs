@@ -113,15 +113,18 @@ struct AsyncContext {
 
 impl AsyncOrthogonalStateMachineContext for AsyncContext {
     async fn async_allowed(&self, _event: &AsyncEvent) -> Result<bool, ()> {
+        core::future::ready(()).await;
         Ok(true)
     }
 
     async fn async_left(&mut self, _event: &AsyncEvent) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.actions += 1;
         Ok(())
     }
 
     async fn async_right(&mut self, _event: &AsyncEvent) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.actions += 1;
         Ok(())
     }
@@ -442,15 +445,18 @@ impl EvalOrthogonalStateMachineContext for EvalContext {
     }
 
     async fn async_before_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.calls.push("async before");
         Ok(())
     }
 
     async fn async_eval_enabled(&self, _: &OrthogonalEvalEvent) -> Result<bool, ()> {
+        core::future::ready(()).await;
         Ok(true)
     }
 
     async fn async_conditional_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.calls.push("async conditional");
         Ok(())
     }
@@ -598,10 +604,12 @@ struct ExceptionOrthogonalContext {
 
 impl ExceptionOrthogonalStateMachineContext for ExceptionOrthogonalContext {
     async fn fail_orthogonal(&mut self, _: &OrthogonalFail) -> Result<(), OrthogonalFailure> {
+        core::future::ready(()).await;
         Err(OrthogonalFailure(42))
     }
 
     async fn recover_typed(&mut self, error: &OrthogonalFailure) -> Result<(), OrthogonalFailure> {
+        core::future::ready(()).await;
         self.code = Some(error.0);
         Ok(())
     }

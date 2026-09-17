@@ -46,12 +46,12 @@ impl<P, C> Hierarchical<P, C> {
     }
 
     /// Activates the child, preserving its previous state.
-    pub fn activate_child(&mut self) {
+    pub const fn activate_child(&mut self) {
         self.child_active = true;
     }
 
     /// Deactivates the child while preserving shallow history.
-    pub fn deactivate_child(&mut self) {
+    pub const fn deactivate_child(&mut self) {
         self.child_active = false;
     }
 
@@ -67,22 +67,22 @@ impl<P, C> Hierarchical<P, C> {
     }
 
     /// Returns the parent machine.
-    pub fn parent(&self) -> &P {
+    pub const fn parent(&self) -> &P {
         &self.parent
     }
 
     /// Returns the parent machine mutably.
-    pub fn parent_mut(&mut self) -> &mut P {
+    pub const fn parent_mut(&mut self) -> &mut P {
         &mut self.parent
     }
 
     /// Returns the child machine.
-    pub fn child(&self) -> &C {
+    pub const fn child(&self) -> &C {
         &self.child
     }
 
     /// Returns the child machine mutably.
-    pub fn child_mut(&mut self) -> &mut C {
+    pub const fn child_mut(&mut self) -> &mut C {
         &mut self.child
     }
 
@@ -166,6 +166,10 @@ pub struct EventQueue<E, const N: usize> {
 
 impl<E, const N: usize> EventQueue<E, N> {
     /// Creates an empty queue.
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released constructor must retain its existing warning behavior"
+    )]
     pub const fn new() -> Self {
         Self {
             events: [const { None }; N],
@@ -185,24 +189,49 @@ impl<E, const N: usize> EventQueue<E, N> {
     }
 
     /// Defers an event until events already in the queue have been processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     pub fn defer(&mut self, event: E) -> Result<(), QueueFull> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
         }
-        let tail = (self.head + self.len) % N;
-        self.events[tail] = Some(event);
-        self.len += 1;
+        // Compute the tail without adding two values that may each be close
+        // to `usize::MAX`. The queue invariant guarantees `self.len <= N`.
+        let tail = if self.head >= N.saturating_sub(self.len) {
+            self.head.saturating_sub(N.saturating_sub(self.len))
+        } else {
+            self.head.saturating_add(self.len)
+        };
+        let Some(slot) = self.events.get_mut(tail) else {
+            return Err(QueueFull);
+        };
+        *slot = Some(event);
+        self.len = self.len.saturating_add(1);
         Ok(())
     }
 
     /// Schedules an event ahead of currently deferred events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     pub fn process(&mut self, event: E) -> Result<(), QueueFull> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
         }
-        self.head = (self.head + N - 1) % N;
-        self.events[self.head] = Some(event);
-        self.len += 1;
+        let new_head = if self.head == 0 {
+            N.saturating_sub(1)
+        } else {
+            self.head.saturating_sub(1)
+        };
+        let Some(slot) = self.events.get_mut(new_head) else {
+            return Err(QueueFull);
+        };
+        self.head = new_head;
+        *slot = Some(event);
+        self.len = self.len.saturating_add(1);
         Ok(())
     }
 
@@ -211,10 +240,14 @@ impl<E, const N: usize> EventQueue<E, N> {
         if self.len == 0 {
             return None;
         }
-        let event = self.events[self.head].take();
-        self.head = (self.head + 1) % N;
-        self.len -= 1;
-        event
+        let event = self.events.get_mut(self.head).and_then(Option::take)?;
+        self.head = if self.head == N.saturating_sub(1) {
+            0
+        } else {
+            self.head.saturating_add(1)
+        };
+        self.len = self.len.saturating_sub(1);
+        Some(event)
     }
 
     /// Drops all queued events.
@@ -251,9 +284,11 @@ pub struct DispatchSummary {
 
 impl DispatchSummary {
     fn record(&mut self, status: DispatchStatus) {
-        self.dispatched += 1;
-        self.handled += usize::from(status.handled);
-        self.transitioned += usize::from(status.transitioned);
+        self.dispatched = self.dispatched.saturating_add(1);
+        self.handled = self.handled.saturating_add(usize::from(status.handled));
+        self.transitioned = self
+            .transitioned
+            .saturating_add(usize::from(status.transitioned));
     }
 }
 
@@ -265,6 +300,10 @@ pub struct EventQueues<E, const DEFERRED: usize, const PROCESSED: usize> {
 
 impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, PROCESSED> {
     /// Creates empty queues.
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released constructor must retain its existing warning behavior"
+    )]
     pub const fn new() -> Self {
         Self {
             deferred: EventQueue::new(),
@@ -273,13 +312,21 @@ impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, 
     }
 
     /// Defers an event until a dispatch changes state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the deferred queue has no remaining capacity.
     pub fn defer(&mut self, event: E) -> Result<(), QueueFull> {
         self.deferred.defer(event)
     }
 
     /// Schedules an event for immediate processing after the current action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the process queue has no remaining capacity.
     pub fn process(&mut self, event: E) -> Result<(), QueueFull> {
-        self.processed.defer(event)
+        self.processed.process(event)
     }
 
     /// Returns the number of deferred events.
@@ -339,6 +386,18 @@ impl<E, const DEFERRED: usize, const PROCESSED: usize> Default
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::EventQueues;
+
+    #[test]
+    fn event_queues_default_creates_empty_queues() {
+        let queues = EventQueues::<u8, 1, 1>::default();
+        assert_eq!(queues.deferred_len(), 0);
+        assert_eq!(queues.processed_len(), 0);
+    }
+}
+
 /// Routes a runtime event ID to one of a contiguous set of typed handlers.
 ///
 /// Each handler is responsible for translating the raw event into the
@@ -374,12 +433,16 @@ impl<'a, M, Raw, R> DispatchTable<'a, M, Raw, R> {
     }
 
     /// Returns a shared reference to the underlying machine.
-    pub fn machine(&self) -> &M {
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released accessor must retain its existing warning behavior"
+    )]
+    pub const fn machine(&self) -> &M {
         self.machine
     }
 
     /// Returns a mutable reference to the underlying machine.
-    pub fn machine_mut(&mut self) -> &mut M {
+    pub const fn machine_mut(&mut self) -> &mut M {
         self.machine
     }
 }
@@ -422,12 +485,12 @@ impl<S> OrthogonalRegions<S> {
     }
 
     /// Returns the region storage.
-    pub fn regions(&self) -> &S {
+    pub const fn regions(&self) -> &S {
         &self.regions
     }
 
     /// Returns the region storage mutably.
-    pub fn regions_mut(&mut self) -> &mut S {
+    pub const fn regions_mut(&mut self) -> &mut S {
         &mut self.regions
     }
 
@@ -440,7 +503,7 @@ impl<S> OrthogonalRegions<S> {
         E: Clone,
     {
         self.regions.as_mut().iter_mut().fold(0, |handled, region| {
-            handled + usize::from(Machine::process_event(region, event.clone()))
+            handled.saturating_add(usize::from(Machine::process_event(region, event.clone())))
         })
     }
 }
@@ -452,12 +515,12 @@ impl<S> SmPool<S> {
     }
 
     /// Returns the underlying storage.
-    pub fn storage(&self) -> &S {
+    pub const fn storage(&self) -> &S {
         &self.storage
     }
 
     /// Returns the underlying storage mutably.
-    pub fn storage_mut(&mut self) -> &mut S {
+    pub const fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 
@@ -501,11 +564,11 @@ impl<S> SmPool<S> {
         F: FnMut(&mut M, E),
     {
         let machines = self.storage.as_mut();
-        let mut handled = 0;
+        let mut handled: usize = 0;
         for index in indices {
             if let Some(machine) = machines.get_mut(index) {
                 dispatch(machine, event.clone());
-                handled += 1;
+                handled = handled.saturating_add(1);
             }
         }
         handled
@@ -521,11 +584,11 @@ impl<S> SmPool<S> {
         F: FnMut(&mut M, E),
     {
         let machines = self.storage.as_mut();
-        let mut handled = 0;
+        let mut handled: usize = 0;
         for IndexedEvent { index, event } in events {
             if let Some(machine) = machines.get_mut(index) {
                 dispatch(machine, event);
-                handled += 1;
+                handled = handled.saturating_add(1);
             }
         }
         handled

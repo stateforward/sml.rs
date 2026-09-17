@@ -8,31 +8,38 @@ fuzz_target!(|data: &[u8]| {
     let mut pool = SmPool::new([0_u8; 32]);
 
     for chunk in data.chunks(2) {
-        let operation = chunk[0];
+        let Some(&operation) = chunk.first() else {
+            continue;
+        };
         let value = chunk.get(1).copied().unwrap_or_default();
-        match operation % 6 {
+        let operation_kind = operation.checked_rem(6).unwrap_or_default();
+        match operation_kind {
             0 => {
-                let _ = queue.defer(value);
+                let _deferred = queue.defer(value).is_ok();
             }
             1 => {
-                let _ = queue.process(value);
+                let _processed = queue.process(value).is_ok();
             }
             2 => {
-                let _ = queue.pop();
+                let _popped = queue.pop().is_some();
             }
             3 => queue.clear(),
             4 => {
-                let _ = pool.process_indexed(
-                    value as usize,
+                let _dispatched = pool
+                    .process_indexed(
+                    usize::from(value),
                     operation,
                     |slot, event| *slot ^= event,
-                );
+                )
+                .is_some();
             }
             _ => {
-                let _ = pool.process_event_batch(
-                    [with_id(value as usize, operation)],
-                    |slot, event| *slot = slot.wrapping_add(event),
-                );
+                let _dispatched = pool
+                    .process_event_batch(
+                        [with_id(usize::from(value), operation)],
+                        |slot, event| *slot = slot.wrapping_add(event),
+                    )
+                    > 0;
             }
         }
         assert!(queue.len() <= 16);

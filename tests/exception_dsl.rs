@@ -54,10 +54,12 @@ struct AsyncContext {
 
 impl AsyncExceptionDslStateMachineContext for AsyncContext {
     async fn fail_guard(&self, _event: &AsyncRun) -> Result<bool, ()> {
+        core::future::ready(()).await;
         Err(())
     }
 
     async fn async_recover(&mut self) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.recovered = true;
         Ok(())
     }
@@ -73,7 +75,7 @@ fn async_exception_transition_handles_guard_result_error() {
     });
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Failure {
     code: u32,
 }

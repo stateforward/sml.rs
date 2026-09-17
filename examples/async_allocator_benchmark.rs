@@ -1,29 +1,7 @@
 //! Native Rust async-dispatch benchmark matching the C++ `co_sm` player workload.
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context as TaskContext, Poll, RawWaker, RawWakerVTable, Waker};
 use sml::sml;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-struct CountingAllocator;
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
-    }
-}
-
-#[global_allocator]
-static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
 
 pub struct OpenClose;
 pub struct CdDetected;
@@ -68,68 +46,49 @@ impl WrappedPlayerStateMachineContext for MachineContext {}
 
 impl AsyncPlayerStateMachineContext for MachineContext {
     async fn action_open(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_close(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_detect(&mut self, _: &CdDetected) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_play(&mut self, _: &Play) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_pause(&mut self, _: &Pause) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_resume(&mut self, _: &EndPause) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_playing(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_paused(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_again(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_open_stopped(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
 }
 
-#[inline(always)]
-fn barrier<T>(value: &mut T) {
-    unsafe {
-        core::arch::asm!("/* {0} */", in(reg) value, options(nostack, preserves_flags));
-    }
-}
-
-fn noop_waker() -> Waker {
-    unsafe fn clone(_: *const ()) -> RawWaker {
-        raw_waker()
-    }
-    unsafe fn wake(_: *const ()) {}
-    unsafe fn wake_by_ref(_: *const ()) {}
-    unsafe fn drop(_: *const ()) {}
-    fn raw_waker() -> RawWaker {
-        RawWaker::new(
-            core::ptr::null(),
-            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
-        )
-    }
-    unsafe { Waker::from_raw(raw_waker()) }
-}
-
-fn block_on_ready<F: Future>(future: F) -> F::Output {
-    let waker = noop_waker();
-    let mut context = TaskContext::from_waker(&waker);
-    let mut future = core::pin::pin!(future);
-    match Pin::as_mut(&mut future).poll(&mut context) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("benchmark callbacks must remain immediately ready"),
-    }
+const fn barrier<T>(value: &mut T) {
+    std::hint::black_box(value);
 }
 
 async fn run(machine: &mut AsyncPlayerStateMachine<MachineContext>) {
@@ -159,7 +118,7 @@ async fn run(machine: &mut AsyncPlayerStateMachine<MachineContext>) {
     }
 }
 
-async fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
+fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
     for _ in 0..1_000_000 {
         machine.process_event(OpenClose).unwrap();
         barrier(machine);
@@ -186,31 +145,31 @@ async fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "all".into());
     if mode == "wrapper" || mode == "all" {
         let mut wrapped = WrappedPlayerStateMachine::new(MachineContext);
-        let allocations_before = ALLOCATIONS.load(Ordering::Relaxed);
         let start = Instant::now();
-        block_on_ready(run_wrapped(&mut wrapped));
+        run_wrapped(&mut wrapped);
         let elapsed = start.elapsed().as_nanos();
-        let wrapper_allocations = ALLOCATIONS.load(Ordering::Relaxed) - allocations_before;
         assert!(matches!(wrapped.state(), WrappedPlayerStates::Empty));
         println!(
-            "rust-wrapper {elapsed} ns total; {:.3} ns/event; {wrapper_allocations} allocations",
+            "rust-wrapper {elapsed} ns total; {:.3} ns/event",
             elapsed as f64 / 11_000_000.0
         );
     }
     if mode == "native" || mode == "all" {
         let mut machine = AsyncPlayerStateMachine::new(MachineContext);
-        let allocations_before = ALLOCATIONS.load(Ordering::Relaxed);
         let start = Instant::now();
-        block_on_ready(run(&mut machine));
+        smol::block_on(run(&mut machine));
         let elapsed = start.elapsed().as_nanos();
-        let native_allocations = ALLOCATIONS.load(Ordering::Relaxed) - allocations_before;
         assert!(matches!(machine.state(), AsyncPlayerStates::Empty));
         println!(
-            "rust-native {elapsed} ns total; {:.3} ns/event; {native_allocations} allocations",
+            "rust-native {elapsed} ns total; {:.3} ns/event",
             elapsed as f64 / 11_000_000.0
         );
     }

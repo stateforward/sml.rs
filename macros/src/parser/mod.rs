@@ -44,10 +44,110 @@ pub fn state_ident(value: &str, span: Span) -> Ident {
     if ident.is_empty() {
         ident.push_str("State");
     }
-    if ident.as_bytes()[0].is_ascii_digit() {
+    if ident
+        .as_bytes()
+        .first()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
         ident.insert(0, 'S');
     }
     Ident::new(&ident, span)
+}
+
+#[derive(Debug, Clone)]
+struct SeenName {
+    source: String,
+}
+
+fn source_display(source: &str) -> &str {
+    source.split_once(':').map_or(source, |(_, value)| value)
+}
+
+fn record_name(
+    names: &mut HashMap<String, SeenName>,
+    ident: &Ident,
+    source: &str,
+    kind: &str,
+) -> parse::Result<()> {
+    match names.get(&ident.to_string()) {
+        Some(previous) if previous.source != source => Err(parse::Error::new(
+            ident.span(),
+            format!(
+                "{kind} `{}` collides with `{}`: both normalize to `{ident}`",
+                source_display(source),
+                source_display(&previous.source),
+            ),
+        )),
+        Some(_) => Ok(()),
+        None => {
+            names.insert(
+                ident.to_string(),
+                SeenName {
+                    source: source.to_owned(),
+                },
+            );
+            Ok(())
+        }
+    }
+}
+
+fn validate_machine_names(machine: &StateMachine) -> parse::Result<()> {
+    let mut states = HashMap::new();
+    let mut events = HashMap::new();
+    for transition in &machine.transitions {
+        if !transition.in_state.wildcard {
+            record_name(
+                &mut states,
+                &transition.in_state.ident,
+                &transition.in_state.source,
+                "state name",
+            )?;
+        }
+        if !transition.out_state.internal_transition {
+            record_name(
+                &mut states,
+                &transition.out_state.ident,
+                &transition.out_state.source,
+                "state name",
+            )?;
+        }
+        // Completion triggers name an existing event variant; they do not
+        // declare a second generated event name. Validate only declarations
+        // that can introduce a new variant spelling here.
+        if !transition.event.wildcard && transition.event.kind == EventKind::Normal {
+            record_name(
+                &mut events,
+                &transition.event.ident,
+                &transition.event.source,
+                "event name",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_name_collisions(machine: &StateMachine) -> parse::Result<()> {
+    validate_machine_names(machine)
+}
+
+pub(crate) fn validate_name_collisions_many(machines: &[&StateMachine]) -> parse::Result<()> {
+    let mut events = HashMap::new();
+    for machine in machines {
+        validate_machine_names(machine)?;
+        for transition in &machine.transitions {
+            // A completion trigger refers to an existing event variant and
+            // must not conflict with its declaration spelling.
+            if !transition.event.wildcard && transition.event.kind == EventKind::Normal {
+                record_name(
+                    &mut events,
+                    &transition.event.ident,
+                    &transition.event.source,
+                    "event name",
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +164,7 @@ impl AsyncIdent {
     }
 }
 impl fmt::Display for AsyncIdent {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_async {
             write!(f, "{}().await", self.ident)
         } else {
@@ -111,9 +211,12 @@ fn add_transition(
     transition_map: &mut TransitionMap,
     state_data: &DataDefinitions,
 ) -> Result<(), parse::Error> {
-    let p = transition_map
-        .get_mut(&transition.in_state.ident.to_string())
-        .unwrap();
+    let Some(p) = transition_map.get_mut(&transition.in_state.ident.to_string()) else {
+        return Err(parse::Error::new(
+            transition.in_state.ident.span(),
+            "transition source state is missing from the parsed state table",
+        ));
+    };
 
     match p.entry(event_key(&transition.event)) {
         hash_map::Entry::Vacant(entry) => {
@@ -342,13 +445,14 @@ impl ParsedStateMachine {
         };
         let mut callback_lifetimes = lifetimes.clone();
         if temporary_context_uses_event_generics {
-            let context = self
-                .temporary_context_type
-                .as_ref()
-                .expect("generic temporary context exists");
-            for param in self.event_generics.lifetimes() {
-                if Self::type_uses_generic_param(context, &GenericParam::Lifetime(param.clone())) {
-                    callback_lifetimes.insert(&param.lifetime);
+            if let Some(context) = self.temporary_context_type.as_ref() {
+                for param in self.event_generics.lifetimes() {
+                    if Self::type_uses_generic_param(
+                        context,
+                        &GenericParam::Lifetime(param.clone()),
+                    ) {
+                        callback_lifetimes.insert(&param.lifetime);
+                    }
                 }
             }
         }
@@ -605,7 +709,7 @@ impl ParsedStateMachine {
                         let name = match generic {
                             GenericParam::Type(param) => param.ident.to_string(),
                             GenericParam::Const(param) => param.ident.to_string(),
-                            GenericParam::Lifetime(_) => unreachable!(),
+                            GenericParam::Lifetime(param) => param.lifetime.to_string(),
                         };
                         return Err(parse::Error::new(
                             state.span(),
@@ -658,7 +762,7 @@ impl ParsedStateMachine {
                     let name = match generic {
                         GenericParam::Type(param) => param.ident.to_string(),
                         GenericParam::Const(param) => param.ident.to_string(),
-                        GenericParam::Lifetime(_) => unreachable!(),
+                        GenericParam::Lifetime(param) => param.lifetime.to_string(),
                     };
                     return Err(parse::Error::new(
                         transition.event.ident.span(),
@@ -709,7 +813,7 @@ impl ParsedStateMachine {
                     let name = match generic {
                         GenericParam::Type(param) => param.ident.to_string(),
                         GenericParam::Const(param) => param.ident.to_string(),
-                        GenericParam::Lifetime(_) => unreachable!(),
+                        GenericParam::Lifetime(param) => param.lifetime.to_string(),
                     };
                     return Err(parse::Error::new(
                         context.span(),
@@ -750,6 +854,7 @@ impl ParsedStateMachine {
         for transition in sm.transitions.iter_mut() {
             if transition.out_state.internal_transition && !transition.in_state.wildcard {
                 transition.out_state.ident = transition.in_state.ident.clone();
+                transition.out_state.source = transition.in_state.source.clone();
                 transition
                     .out_state
                     .data_type
@@ -757,6 +862,8 @@ impl ParsedStateMachine {
                 transition.out_state.internal_transition = false;
             }
         }
+
+        validate_name_collisions(&sm)?;
 
         // Check the initial state definition
         let mut starting_transitions_iter = sm.transitions.iter().filter(|sm| sm.in_state.start);
@@ -831,9 +938,12 @@ impl ParsedStateMachine {
 
                 for (name, in_state) in &states {
                     // skip already set input state
-                    let p = states_events_mapping
-                        .get_mut(&in_state.to_string())
-                        .unwrap();
+                    let Some(p) = states_events_mapping.get_mut(&in_state.to_string()) else {
+                        return Err(parse::Error::new(
+                            in_state.span(),
+                            "wildcard transition source state is missing from the parsed state table",
+                        ));
+                    };
 
                     if p.contains_key(&event_key(&transition.event)) {
                         continue;
@@ -844,6 +954,7 @@ impl ParsedStateMachine {
                         start: false,
                         wildcard: false,
                         ident: in_state.clone(),
+                        source: format!("identifier:{in_state}"),
                         data_type: state_data.data_types.get(name).cloned(),
                         composite: None,
                         history: false,

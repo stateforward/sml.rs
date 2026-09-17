@@ -275,20 +275,24 @@ struct AsyncContext {
 
 impl AsyncParentStateMachineContext for AsyncContext {
     async fn child_ready(&self, _event: &AsyncChildEvent) -> Result<bool, ()> {
+        core::future::ready(()).await;
         Ok(true)
     }
 
     async fn async_child(&mut self, _event: &AsyncChildEvent) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.actions += 1;
         Ok(())
     }
 
     async fn async_enter(&mut self, _event: &AsyncEnter) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.actions += 1;
         Ok(())
     }
 
     async fn parent_completed(&mut self) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.actions += 1;
         Ok(())
     }
@@ -638,10 +642,12 @@ impl EvalParentStateMachineContext for CompositeEvalContext {
     }
 
     async fn child_eval_enabled(&self, _: &RunChildEval) -> Result<bool, ()> {
+        core::future::ready(()).await;
         Ok(true)
     }
 
     async fn child_conditional_eval(&mut self, _: &RunChildEval) -> Result<(), ()> {
+        core::future::ready(()).await;
         self.calls.push("child conditional");
         Ok(())
     }
@@ -824,6 +830,7 @@ struct CompositeExceptionContext {
 
 impl ExceptionParentStateMachineContext for CompositeExceptionContext {
     async fn fail_in_child(&mut self, _: &FailInChild) -> Result<(), CompositeExceptionFailure> {
+        core::future::ready(()).await;
         Err(CompositeExceptionFailure(17))
     }
 
@@ -831,6 +838,7 @@ impl ExceptionParentStateMachineContext for CompositeExceptionContext {
         &mut self,
         error: &CompositeExceptionFailure,
     ) -> Result<(), CompositeExceptionFailure> {
+        core::future::ready(()).await;
         self.code = Some(error.0);
         Ok(())
     }
@@ -868,6 +876,7 @@ impl ExceptionFallbackParentStateMachineContext for ParentExceptionContext {
     type Error = CompositeExceptionFailure;
 
     async fn fail_in_parent(&mut self, _: &FailInParent) -> Result<(), Self::Error> {
+        core::future::ready(()).await;
         Err(CompositeExceptionFailure(23))
     }
 
@@ -976,6 +985,7 @@ impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
         temporary: &mut usize,
         _: &BuildFeatureA,
     ) -> Result<FeatureAData, MultiFailure> {
+        core::future::ready(()).await;
         *temporary += 1;
         Ok(FeatureAData(7))
     }
@@ -985,6 +995,7 @@ impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
         _: &mut usize,
         _: &FailFeatureA,
     ) -> Result<(), MultiFailure> {
+        core::future::ready(()).await;
         Err(MultiFailure(9))
     }
 
@@ -1169,6 +1180,7 @@ struct NestedOrthogonalContext {
 
 impl OrthogonalCompositeRootStateMachineContext for NestedOrthogonalContext {
     async fn make_nested_left(&mut self, _: &EnterNestedOrthogonal) -> Result<NestedLeftData, ()> {
+        core::future::ready(()).await;
         Ok(NestedLeftData(5))
     }
 

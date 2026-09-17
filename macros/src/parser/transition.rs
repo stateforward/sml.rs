@@ -42,7 +42,7 @@ pub struct EvalAction {
 }
 
 impl parse::Parse for StateTransitions {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         // parse the input pattern
         let mut in_states = Vec::new();
         loop {
@@ -131,7 +131,7 @@ impl parse::Parse for StateTransitions {
                         } else {
                             actions.push(AsyncIdent { ident, is_async });
                         }
-                        position += 1;
+                        position = position.saturating_add(1);
                         if content.is_empty() {
                             break;
                         }
@@ -193,7 +193,7 @@ pub enum GuardExpression {
     Or(Box<GuardExpression>, Box<GuardExpression>),
 }
 impl fmt::Display for GuardExpression {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GuardExpression::Guard(async_ident) => write!(f, "{}", async_ident),
             GuardExpression::Not(expr) => write!(f, "!{}", expr),
@@ -259,12 +259,12 @@ where
 }
 
 impl parse::Parse for GuardExpression {
-    fn parse(input: parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: parse::ParseStream<'_>) -> syn::Result<Self> {
         parse_or(input)
     }
 }
 
-fn parse_or(input: parse::ParseStream) -> syn::Result<GuardExpression> {
+fn parse_or(input: parse::ParseStream<'_>) -> syn::Result<GuardExpression> {
     let mut left = parse_and(input)?;
     while input.peek(Token![||]) {
         let _or: Token![||] = input.parse()?;
@@ -274,7 +274,7 @@ fn parse_or(input: parse::ParseStream) -> syn::Result<GuardExpression> {
     Ok(left)
 }
 
-fn parse_and(input: parse::ParseStream) -> syn::Result<GuardExpression> {
+fn parse_and(input: parse::ParseStream<'_>) -> syn::Result<GuardExpression> {
     let mut left = parse_not(input)?;
     while input.peek(Token![&&]) {
         let _and: Token![&&] = input.parse()?;
@@ -284,7 +284,7 @@ fn parse_and(input: parse::ParseStream) -> syn::Result<GuardExpression> {
     Ok(left)
 }
 
-fn parse_not(input: parse::ParseStream) -> syn::Result<GuardExpression> {
+fn parse_not(input: parse::ParseStream<'_>) -> syn::Result<GuardExpression> {
     if input.peek(Token![!]) {
         let _not: Token![!] = input.parse()?;
         let expr = parse_primary(input)?;
@@ -293,7 +293,7 @@ fn parse_not(input: parse::ParseStream) -> syn::Result<GuardExpression> {
     parse_primary(input)
 }
 
-fn parse_primary(input: parse::ParseStream) -> syn::Result<GuardExpression> {
+fn parse_primary(input: parse::ParseStream<'_>) -> syn::Result<GuardExpression> {
     if input.peek(token::Paren) {
         let content;
         syn::parenthesized!(content in input);

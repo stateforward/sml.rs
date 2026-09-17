@@ -10,7 +10,8 @@ source state + event [guard] / action = target state
 ```
 
 The generated machine uses ordinary Rust enums, borrows event data, stores its
-context by value, and has no runtime allocator or dynamic dispatch.
+context by value, and has no runtime allocator or dynamic dispatch overhead in
+the default `NoPolicy` path.
 
 ## Install
 
@@ -18,15 +19,24 @@ context by value, and has no runtime allocator or dynamic dispatch.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.2" }
+sml = { package = "stateforward-sml", version = "1.4" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.2", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "1.4", features = ["graphviz"] }
 ```
+
+The runtime and procedural-macro crates both forbid unsafe Rust at the source
+and Cargo target boundaries; the quality gate also builds all package targets
+with warnings denied. The generated machines use ordinary ownership and
+borrowing, and the default queues use bounded storage with checked indexing
+and overflow-safe counters. A custom
+`ThreadSafety` policy does not make a machine shareable by itself: generated
+event processing still requires `&mut self`, so shared access must use an
+owner-provided synchronization boundary.
 
 ## Quick start
 
@@ -145,17 +155,122 @@ APIs.
 
 | Shape | Main state API |
 |---|---|
-| Flat | `state()`, `is(...)`, `set_state(...)`, `visit_current_state(...)` |
-| Orthogonal | `states()`, `state(region)`, `is_region(...)` |
-| Composite | Parent state methods plus typed child state, active, setter, and visitor methods |
+| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `set_current_states(...)` with `TestingPolicy` |
+| Orthogonal | `states()`, `state(region)`, `is_region(...)`, `set_current_states(...)` with `TestingPolicy` |
+| Composite | Parent state methods plus typed child state, active, setter, visitor, and `set_current_states(...)` with `TestingPolicy` |
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
 completion stabilization after every handled event.
 
+The machine owner can query the static event types reachable from its current
+state with `visit_current_events`:
+
+```rust
+use core::any::TypeId;
+use sml::{Event, EventVisitor};
+
+struct Visitor;
+
+impl EventVisitor for Visitor {
+    fn visit<E: Event>(&mut self) {
+        let type_id = TypeId::of::<E>();
+        println!("{}: {:?}", E::name(), type_id);
+    }
+}
+
+machine.visit_current_events(&mut Visitor);
+```
+
+The query is read-only, allocation-free, and does not evaluate guards or
+observe context. It includes transitions declared on active composite
+ancestors and reports the union of active orthogonal regions, once per static
+payload type. Catch-all unexpected transitions are omitted; specific typed
+unexpected transitions are included. The generated `Events::EVENT_NAMES`
+constant provides the corresponding deterministic variant-name table. The
+visitor API is intended for an actor or other owner to query its own machine;
+it is not a general introspection facility and is not exposed through events or
+messages. Payloads containing non-static borrowed lifetimes are not reported,
+because `TypeId` requires a `'static` type.
+
 Generated callbacks return `Result`. Without a custom error type, guards use
 `Result<bool, ()>` and actions use `Result<(), ()>`. A final action targeting a
 payload state returns that payload value instead.
+
+### Policies
+
+Generated machines take an optional policy bundle:
+
+```rust
+use sml::{sml, sml_policies, Logger, PolicyBundle, TestingPolicy};
+
+struct Trace;
+impl Logger for Trace {}
+
+sml_policies!(TestPolicies {
+    logger: Trace,
+    testing: TestingPolicy,
+});
+
+// The default constructor remains the zero-cost NoPolicy path. A custom
+// bundle is supplied explicitly:
+let machine = MyStateMachine::new_with_policy(
+    context,
+    TestPolicies::new(
+        Trace,
+        (),
+        (),
+        TestingPolicy,
+        sml::DefaultQueuePolicy,
+        sml::DefaultQueuePolicy,
+    ),
+);
+```
+
+`NoPolicy` is the default and all of its slots are zero-sized. Its generated
+machines retain the allocation-free default queues and the normal dispatch
+code. `sml_policies!` names only the slots a consumer changes; omitted slots
+use `()`, `JumpTable`, or the built-in bounded queue factory.
+
+The policy hooks correspond to the four `sml.cpp` logger callbacks:
+`Logger::log_process_event`, `log_state_change`, `log_action`, and
+`log_guard`. Generated events and states implement `EventName` and `StateName`,
+so adapters can use stable static variant names without serializing machine
+state. `Observer` receives the same callbacks and is useful for tracing or
+OpenTelemetry adapters without adding a telemetry dependency to sml.rs.
+
+`JumpTable` is the default dispatch strategy; `BranchStm` and `SwitchStm` are
+available as parity names. A custom `Dispatch` policy can accept or reject an
+event and can select among same-event transition candidates before generated
+guards and actions run. It cannot replace guard, action, queue, completion, or
+hierarchy semantics, so guards remain evaluated by `process_event`.
+
+`ThreadSafe<L>` wraps a `RawMutex` and holds its guard for event processing.
+The `spin` feature provides a no-std mutex adapter; the `std` feature provides
+the `std::sync::Mutex<T>` adapter. The default `()` thread-safety policy is a
+no-op and adds no allocation. A custom lock must keep its guard scoped to the
+lock state itself; generated machines may mutate the other policy slots while
+the guard is held.
+
+`TestingPolicy` opts a machine into the `set_current_states` helper;
+production `NoPolicy` machines do not expose that state mutation method. The
+capability marker is sealed, so a custom production policy cannot opt itself
+into state mutation. Flat machines pass one state; orthogonal machines pass
+one state per region.
+`PolicyBundle` also selects the defer and process queue factories, allowing a
+bounded ring or another user-owned allocation-free container to implement
+`Queue<E>`.
+
+`Policies` and `PolicyParts` are sealed implementation traits. This is
+intentional: custom slot implementations remain supported, while the generated
+machine retains ownership of policy storage and keeps the thread-safety guard
+separate from the mutable transition engine. Use `PolicyBundle` or
+`sml_policies!` to compose policies; do not implement those integration traits
+directly.
+
+These policies are for the machine's owner to configure and query its own
+machine. They are not a general introspection or control channel and must not
+be made reachable through an event, message, or other domain input.
 
 ## State and event data
 
@@ -269,7 +384,7 @@ The SDL-style runtime-ID adapter is covered by
 
 <!-- graphviz feature behavior implemented by macros/src/lib.rs -->
 
-With the `graphviz` feature enabled, compiling a flat `sml!` table renders
+With the `graphviz` feature active, compiling a flat `sml!` table renders
 `sml_<Machine>.svg` when the `dot` executable is available. If Graphviz is not
 installed, the macro writes `sml_<Machine>.dot` under Cargo's `OUT_DIR`
 instead. Diagram generation is a build-time feature and is not required at
@@ -288,7 +403,7 @@ the 25 programs under `../sml.cpp/example` in
 
 Rust-specific mappings, including trait methods instead of inline lambdas,
 context fields instead of type-based dependency injection, `Result` instead of
-thrown values, and LLVM-selected dispatch lowering, are documented and tested
+thrown values, and policy-selectable dispatch lowering, are documented and tested
 there.
 
 ## Performance
@@ -313,6 +428,22 @@ In 21 alternating native-release runs on 2026-07-13, the new
 3.424 ms for `sml.cpp`, 30.8% lower elapsed time and 44.5% higher throughput on
 the test machine. These small timing differences are sensitive to scheduling and
 thermals, so compare repeated alternating runs locally.
+
+The same player workload can select each dispatch policy by passing a mode to
+the benchmark. The default invocation above remains the `NoPolicy`/`JumpTable`
+baseline; these rows are intentionally measured separately because the policy
+selection is a compile-time monomorphization:
+
+| Mode | Policy | Command |
+|---|---|---|
+| baseline | `NoPolicy` / `JumpTable` | `cargo run --release --example player_benchmark` |
+| branch | `BranchStm` | `cargo run --release --example player_benchmark -- branch` |
+| switch | `SwitchStm` | `cargo run --release --example player_benchmark -- switch` |
+| custom | owner `Dispatch` policy | `cargo run --release --example player_benchmark -- custom` |
+
+Each alternate mode prints the same `ns/event` result and executes the same
+11-million-event sequence. The custom row uses a trivial allow-all policy to
+measure policy-hook overhead separately from owner-specific routing work.
 
 The same Rust executable accepts `async` to measure
 `Machine::process_event_async`. The matching C++ harness uses `co_sm` with its
@@ -377,7 +508,9 @@ developer-visible build times, separate from the runtime throughput results.
 The pool runner compares `SmPool<Vec<u8>>` with C++ `sm_pool` using the same
 10,000-slot, 50,000-event workload, identical local and seeded-random indices,
 and 1,001 rounds per sample. Each language is also measured against its own
-flat byte-array loop. Rust's allocation counter covers the timed path.
+flat byte-array loop. Setup storage is created before timing; the safe Rust
+harness does not install a global allocator, so the comparison measures the
+timed throughput path without weakening the crate's safety contract.
 
 ```bash
 python3 benchmarks/compare_sm_pool.py --runs 21
@@ -385,14 +518,14 @@ python3 benchmarks/compare_sm_pool.py --runs 21
 
 The 2026-07-11 rotated native-release run produced:
 
-| Path | Local | Random | Timed allocations |
+| Path | Local | Random |
 |---|---:|---:|---:|
-| Rust flat array | 0.312 ns/event | 0.335 ns/event | 0 |
-| C++ flat array | 0.275 ns/event | 0.282 ns/event | setup only |
-| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event | 0 |
-| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event | setup only |
-| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event | 0 |
-| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event | setup only |
+| Rust flat array | 0.312 ns/event | 0.335 ns/event |
+| C++ flat array | 0.275 ns/event | 0.282 ns/event |
+| Rust `SmPool` scalar | 0.421 ns/event | 0.430 ns/event |
+| C++ `sm_pool` scalar | 0.629 ns/event | 0.680 ns/event |
+| Rust `SmPool` batch | 0.362 ns/event | 0.370 ns/event |
+| C++ `sm_pool` batch | 0.474 ns/event | 0.478 ns/event |
 
 Rust batch dispatch was 23.6% faster locally and 22.6% faster under random
 access than C++ `sm_pool`. It stayed within 16.0% of Rust's flat-array local
@@ -403,9 +536,11 @@ dispatch and access locality from application-specific work.
 
 The extended runner compares the same 11-million-event player sequence through
 Rust futures and C++ `co_sm` allocator policies. It also compares bounded,
-persistent eight-worker fork/join schedulers over 5,000 rounds. Rust's global
-allocation counter verifies that every timed Rust loop performs zero heap
-allocations after setup.
+persistent eight-worker fork/join schedulers over 5,000 rounds. The safe Rust
+harnesses do not install a global allocator: allocator instrumentation would
+require a forbidden implementation path. Their timed loops use the prebuilt
+machine and fixed caller-owned storage; the runner accepts optional allocation
+counts from harnesses that provide them.
 
 ```bash
 # The thread-pool policy currently lives on this sibling branch.
@@ -420,11 +555,11 @@ python3 benchmarks/compare_extended.py \
 
 The 2026-07-11 alternating run produced:
 
-| Workload | Median | Timed allocations | Completed runs |
+| Workload | Median | Allocation instrumentation | Completed runs |
 |---|---:|---:|---:|
-| Rust async façade over synchronous actions | 0.361 ns/event | 0 | 21/21 |
+| Rust async façade over synchronous actions | 0.361 ns/event | safe harness; not instrumented | 21/21 |
 | C++ inline `co_sm` | 1.982 ns/event | inline fast path | 21/21 |
-| Rust machine with native async callbacks | 3.372 ns/event | 0 | 21/21 |
+| Rust machine with native async callbacks | 3.372 ns/event | safe harness; not instrumented | 21/21 |
 | C++ `co_sm` with pooled coroutine frames | 21.506 ns/event | pooled frame/event | 21/21 |
 | C++ `co_sm` with heap coroutine frames | 49.427 ns/event | heap frame/event | 21/21 |
 | Rust fixed-lane worker pool | 259.255 ns/task | 0 | 21/21 |
@@ -436,7 +571,9 @@ C++ player table does not model. The worker-pool rows compare policy designs,
 not identical implementations: Rust uses one fixed atomic lane per worker,
 while C++ uses a shared fixed MPMC task ring. Eight C++ runs exceeded the
 runner's five-second timeout; the median above includes completed runs only and
-must be read together with that reliability result.
+must be read together with that reliability result. The safe Rust harnesses
+avoid allocator instrumentation and exercise their stack-polled paths
+directly.
 
 ## Development
 
@@ -451,15 +588,29 @@ The same gate runs locally and on every push and pull request:
 It enforces formatting, warning-free Clippy across every target and feature,
 the full feature matrix, rustdoc warnings, documentation links, Python harness
 syntax, package construction, dependency advisories and licenses, at least 90%
-whole-workspace line coverage, and 100% runtime function coverage. Separate
-required jobs run the suite on Linux, macOS, and Windows, enforce public API
-compatibility, execute AddressSanitizer and Miri, and fuzz the runtime
-utilities.
+runtime line coverage, and 100% runtime function coverage. The runtime and
+procedural-macro implementations also deny Clippy's `pedantic` and `nursery`
+groups; the macro generator has only a documented allow-list for structural
+token-building heuristics. Conversion, panic, indexing, overflow, and other
+high-risk checks remain denied, and every lint suppression carries an explicit
+reason. Production crates also reject implicit numeric suffix formatting and
+deny package-metadata lint failures. The compile-time procedural-macro
+implementation is excluded from the runtime coverage report; its unit tests
+remain part of the workspace test gates. Separate required jobs run the suite
+on Linux, macOS, and Windows, enforce public API compatibility, execute
+AddressSanitizer and Miri, and fuzz the runtime utilities.
 
-Run the fuzz target locally with a nightly toolchain and `cargo-fuzz`:
+Run the fuzz target locally with the pinned nightly toolchain, `cargo-fuzz` version,
+and checked-in Cargo wrapper:
 
 ```bash
-cargo fuzz run runtime_utilities
+cargo install cargo-fuzz --version 0.13.2 --locked
+REAL_CARGO="$(command -v cargo)"
+export REAL_CARGO
+export PATH="${PWD}/ci:${PATH}"
+cargo +nightly-2026-08-24 check --manifest-path fuzz/Cargo.toml --locked
+cargo +nightly-2026-08-24 fuzz run -v runtime_utilities -- -max_total_time=60 -timeout=10
+git diff --exit-code -- fuzz/Cargo.lock
 ```
 
 The crate is licensed under either Apache-2.0 or MIT.

@@ -1,5 +1,9 @@
 use core::fmt::Debug;
-use sml::{sml, Machine};
+use sml::{sml, sml_policies, Machine};
+
+sml_policies!(TestingPolicies {
+    testing: sml::TestingPolicy,
+});
 
 pub struct Owned<T>(T);
 
@@ -397,10 +401,14 @@ impl GenericLaterEntryStateMachineContext for LaterEntryContext {
 
 #[test]
 fn initialize_runs_later_state_entry_actions_with_generic_context() {
-    let mut machine = GenericLaterEntryStateMachine::new(LaterEntryContext);
+    let mut machine: GenericLaterEntryStateMachine<LaterEntryContext, TestingPolicies> =
+        GenericLaterEntryStateMachine::new_with_policy(
+            LaterEntryContext,
+            TestingPolicies::default(),
+        );
     let mut values = TemporaryEntryValues(vec![String::from("value")]);
 
-    machine.set_state(GenericLaterEntryStates::Ready);
+    machine.set_current_states(GenericLaterEntryStates::Ready);
     machine.initialize(&mut values).unwrap();
     assert!(values.0.is_empty());
 }
@@ -491,7 +499,10 @@ sml! {
 struct NestedLifetimeContext;
 
 impl GenericNestedLifetimeStateMachineContext for NestedLifetimeContext {
-    #[allow(clippy::needless_lifetimes)]
+    #[allow(
+        clippy::needless_lifetimes,
+        reason = "the test preserves the explicit lifetime shape of the generic event API"
+    )]
     fn inspect_nested<'event, T>(
         &mut self,
         event: &NestedLifetimeEvent<Option<&'event u8>, T>,
@@ -522,6 +533,11 @@ sml! {
 struct HigherRankedContext;
 
 impl GenericHigherRankedStateMachineContext for HigherRankedContext {
+    // The generated callback ABI borrows generic event payloads uniformly.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the test callback signature mirrors the generic event contract"
+    )]
     fn inspect_higher_ranked<T>(&mut self, event: &HigherRankedEvent<fn(&T), T>) -> Result<(), ()> {
         let _ = (&event.0, &event.1);
         Ok(())
@@ -530,6 +546,10 @@ impl GenericHigherRankedStateMachineContext for HigherRankedContext {
 
 #[test]
 fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the test callback signature mirrors the generic event contract"
+    )]
     fn observe(_: &u32) {}
 
     let event: HigherRankedEvent<fn(&u32), u32> =

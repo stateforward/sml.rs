@@ -17,7 +17,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 RESULT = re.compile(r"^(\d+) ns total; ([0-9.]+) ns/event$")
 EVENTS = 11_000_000
-RUST_BUILD = ["cargo", "build", "--release", "--example", "player_benchmark"]
+RUST_BUILD = ["cargo", "build", "--locked", "--release", "--example", "player_benchmark"]
 
 
 def output(command: list[str]) -> str:
