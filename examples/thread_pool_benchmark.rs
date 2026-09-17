@@ -15,6 +15,10 @@ struct Lane {
     stop: AtomicBool,
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn main() {
     let calls = Arc::new(AtomicU64::new(0));
     let lanes = (0..WORKERS)
@@ -29,12 +33,12 @@ fn main() {
             let mut seen = 0;
             while !lane.stop.load(Ordering::Acquire) {
                 let generation = lane.generation.load(Ordering::Acquire);
-                if generation != seen {
+                if generation == seen {
+                    core::hint::spin_loop();
+                } else {
                     calls.fetch_add(1, Ordering::Relaxed);
                     seen = generation;
                     lane.completed.store(generation, Ordering::Release);
-                } else {
-                    core::hint::spin_loop();
                 }
             }
         }));

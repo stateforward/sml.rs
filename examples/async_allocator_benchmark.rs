@@ -46,39 +46,48 @@ impl WrappedPlayerStateMachineContext for MachineContext {}
 
 impl AsyncPlayerStateMachineContext for MachineContext {
     async fn action_open(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_close(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_detect(&mut self, _: &CdDetected) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_play(&mut self, _: &Play) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_pause(&mut self, _: &Pause) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_resume(&mut self, _: &EndPause) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_playing(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_paused(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_stop_again(&mut self, _: &Stop) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
     async fn action_open_stopped(&mut self, _: &OpenClose) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
 }
 
-#[inline(always)]
-fn barrier<T>(value: &mut T) {
+const fn barrier<T>(value: &mut T) {
     std::hint::black_box(value);
 }
 
@@ -109,7 +118,7 @@ async fn run(machine: &mut AsyncPlayerStateMachine<MachineContext>) {
     }
 }
 
-async fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
+fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
     for _ in 0..1_000_000 {
         machine.process_event(OpenClose).unwrap();
         barrier(machine);
@@ -136,12 +145,16 @@ async fn run_wrapped(machine: &mut WrappedPlayerStateMachine<MachineContext>) {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "all".into());
     if mode == "wrapper" || mode == "all" {
         let mut wrapped = WrappedPlayerStateMachine::new(MachineContext);
         let start = Instant::now();
-        smol::block_on(run_wrapped(&mut wrapped));
+        run_wrapped(&mut wrapped);
         let elapsed = start.elapsed().as_nanos();
         assert!(matches!(wrapped.state(), WrappedPlayerStates::Empty));
         println!(

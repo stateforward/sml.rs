@@ -22,6 +22,56 @@ require python3
 
 failures=0
 
+clippy_base_flags=(
+  -D warnings
+  -D unsafe_code
+  -D clippy::cargo
+  -D clippy::pedantic
+  -D clippy::nursery
+  -D clippy::allow-attributes-without-reason
+)
+
+clippy_safety_flags=(
+  -D clippy::arithmetic_side_effects
+  -D clippy::as_conversions
+  -D clippy::cast_possible_truncation
+  -D clippy::cast_possible_wrap
+  -D clippy::cast_precision_loss
+  -D clippy::cast_sign_loss
+  -D clippy::dbg_macro
+  -D clippy::exit
+  -D clippy::expect_used
+  -D clippy::float_cmp
+  -D clippy::float_arithmetic
+  -D clippy::get_unwrap
+  -D clippy::infinite_loop
+  -D clippy::indexing_slicing
+  -D clippy::integer_division
+  -D clippy::integer_division_remainder_used
+  -D clippy::large_stack_arrays
+  -D clippy::let_underscore_must_use
+  -D clippy::lossy_float_literal
+  -D clippy::mem_forget
+  -D clippy::mixed_read_write_in_expression
+  -D clippy::modulo_arithmetic
+  -D clippy::option_env_unwrap
+  -D clippy::panicking_overflow_checks
+  -D clippy::panic
+  -D clippy::panic_in_result_fn
+  -D clippy::rc_buffer
+  -D clippy::rc_mutex
+  -D clippy::string_slice
+  -D clippy::todo
+  -D clippy::unimplemented
+  -D clippy::unreachable
+  -D clippy::unseparated_literal_suffix
+  -D clippy::transmute_ptr_to_ptr
+  -D clippy::transmute_undefined_repr
+  -D clippy::uninit_assumed_init
+  -D clippy::unwrap_in_result
+  -D clippy::unwrap_used
+)
+
 source_safety() {
   python3 - "${ROOT}" <<'PY'
 import re
@@ -61,7 +111,13 @@ run_gate format cargo fmt --all -- --check
 
 section clippy
 run_gate clippy cargo clippy --workspace --all-targets --all-features --locked -- \
-  -D warnings -D unsafe_code
+  "${clippy_base_flags[@]}"
+run_gate clippy-pedantic-runtime cargo clippy --package stateforward-sml --lib \
+  --no-deps --all-features --locked -- \
+  "${clippy_base_flags[@]}" "${clippy_safety_flags[@]}"
+run_gate clippy-pedantic-macros cargo clippy --package stateforward-sml-macros --lib \
+  --no-deps --all-features --locked -- \
+  "${clippy_base_flags[@]}" "${clippy_safety_flags[@]}"
 
 section rustc-strict
 run_gate rustc-strict env \
@@ -90,6 +146,10 @@ run_gate example-tests cargo test --workspace --all-features --examples --locked
 section auxiliary-harnesses
 run_gate sanitizer-check cargo check --manifest-path sanitizer/Cargo.toml --locked
 run_gate fuzz-check cargo check --manifest-path fuzz/Cargo.toml --locked
+run_gate sanitizer-clippy cargo clippy --manifest-path sanitizer/Cargo.toml --locked -- \
+  "${clippy_base_flags[@]}" "${clippy_safety_flags[@]}"
+run_gate fuzz-clippy cargo clippy --manifest-path fuzz/Cargo.toml --locked -- \
+  "${clippy_base_flags[@]}" "${clippy_safety_flags[@]}"
 
 section documentation
 run_gate documentation env RUSTDOCFLAGS="-D warnings" \

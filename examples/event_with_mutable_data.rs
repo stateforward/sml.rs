@@ -7,7 +7,6 @@
 use sml::sml;
 
 /// Event data
-#[derive(PartialEq)]
 pub struct MyEventData(pub u32);
 
 sml! {

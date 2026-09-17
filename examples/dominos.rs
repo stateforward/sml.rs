@@ -7,7 +7,7 @@ use sml::sml;
 sml! {
     _[
         states_attr: #[derive(Debug)],
-        events_attr: #[derive(Debug)]
+        events_attr: #[derive(Debug, Clone, Copy)]
     ] {
         *D0 +  ToD1 / to_d2  = D1,
         D1(Option<Events>) +  ToD2 / to_d3  = D2,
@@ -37,16 +37,24 @@ impl StateMachineContext for Context {
         Ok(Some(Events::ToD5))
     }
     fn transition_callback(&self, exit: &States, entry: &States) {
-        println!("Domino {:?} fell. Next up: {:?}", exit, entry);
+        println!("Domino {exit:?} fell. Next up: {entry:?}");
     }
 }
 
-// The macros does not derive Copy/Clone traits to the events, so we need to add them so that the
-// event can be moved out of the state data
-impl Copy for Events {}
-impl Clone for Events {
-    fn clone(&self) -> Self {
-        *self
+// Keep every state arm explicit so adding a state cannot silently omit its
+// event propagation behavior.
+#[allow(
+    clippy::match_same_arms,
+    reason = "the explicit state mapping documents the generated enum coverage"
+)]
+const fn next_event(state: &States) -> Option<Events> {
+    match state {
+        States::D0 => None,
+        States::D1(event) => *event,
+        States::D2(event) => *event,
+        States::D3(event) => *event,
+        States::D4(event) => *event,
+        States::D5 => None,
     }
 }
 
@@ -62,14 +70,7 @@ fn main() {
 
         // use pattern matching to extract the event from any state with an action that fires one
         // good practice here NOT to use a wildcard to ensure you don't miss any states
-        event = match state {
-            States::D0 => None,
-            States::D1(event) => *event,
-            States::D2(event) => *event,
-            States::D3(event) => *event,
-            States::D4(event) => *event,
-            States::D5 => None,
-        };
+        event = next_event(state);
     }
 
     // All the dominos fell!

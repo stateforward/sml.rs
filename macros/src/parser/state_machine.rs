@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn parses_every_native_configuration_field() {
         let machine: StateMachine = syn::parse_str(
-            r#"
+            r"
             name: Player,
             custom_error: true,
             temporary_context: (&'static str, [u8; 2]),
@@ -187,7 +187,7 @@ mod tests {
                 *Idle + Start = Running,
                 Running + Stop = Idle,
             },
-            "#,
+            ",
         )
         .unwrap();
 

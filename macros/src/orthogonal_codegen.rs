@@ -560,6 +560,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         use ::sml::Queue as _;
 
         /// Guards, actions, lifecycle hooks, and logging for this orthogonal machine.
+        #[allow(clippy::unused_async_trait_impl)]
         pub trait #context_name {
             #context_error
             #guard_methods
@@ -595,6 +596,9 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         #(#conversions)*
         #event_names_table
 
+        // Error payloads are generic user types and are intentionally only
+        // required to implement PartialEq, not Eq.
+        #[allow(clippy::derive_partial_eq_without_eq)]
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
             InvalidEvent,
@@ -614,6 +618,13 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
+        // These control-flow patterns are emitted by the DSL lowering. They
+        // preserve broadcast and completion ordering across regions.
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
             #[inline(always)]
@@ -784,6 +795,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
 
         }
 
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
             #public_api
@@ -856,7 +872,10 @@ pub(crate) struct EmbeddedOrthogonal {
     pub terminal: TokenStream,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal embedded generation carries region and tree context"
+)]
 pub(crate) fn generate_embedded(
     machine: &StateMachine,
     states_name: &Ident,
@@ -1356,7 +1375,10 @@ fn insert_unique(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal dispatch generation keeps region inputs explicit"
+)]
 fn generate_region_dispatch(
     index: usize,
     region: &Region,
@@ -1520,7 +1542,10 @@ fn generate_region_dispatch(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal transition generation keeps region inputs explicit"
+)]
 fn generate_transition_branch(
     index: usize,
     transition: &StateTransition,
@@ -1747,7 +1772,10 @@ fn generate_transition_branch(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal exception generation keeps region inputs explicit"
+)]
 fn generate_exception_dispatch(
     regions: &[Region],
     machine: &StateMachine,
@@ -1842,7 +1870,10 @@ fn generate_exception_dispatch(
     Ok(quote! { #(#region_dispatches)* })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal completion generation keeps region inputs explicit"
+)]
 fn generate_completion_dispatch(
     index: usize,
     region: &Region,
@@ -2082,9 +2113,11 @@ fn guard_tokens(
 
 fn guard_contains_async(guard: &GuardExpression) -> bool {
     let mut contains_async = false;
-    let _ = visit_guards(guard, |guard| {
+    match visit_guards(guard, |guard| {
         contains_async |= guard.is_async;
         Ok(())
-    });
-    contains_async
+    }) {
+        Ok(()) => contains_async,
+        Err(_) => false,
+    }
 }

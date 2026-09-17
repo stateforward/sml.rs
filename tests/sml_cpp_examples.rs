@@ -4,7 +4,10 @@
 //! transition behavior. Callback lambdas become methods on the generated
 //! context trait, which is the ownership-safe Rust spelling.
 
-#![allow(private_interfaces)]
+#![allow(
+    private_interfaces,
+    reason = "the parity fixtures intentionally exercise generated private types"
+)]
 
 mod hello_world {
     use sml::sml;
@@ -637,7 +640,7 @@ mod dependency_injection {
     }
     impl DependencyInjectionExampleStateMachineContext for Context {
         fn injected_guard(&self, _: &E2) -> Result<bool, ()> {
-            Ok(self.integer == 42 && self.real == 87.0)
+            Ok(self.integer == 42 && (self.real - 87.0).abs() < f64::EPSILON)
         }
         fn injected_action(&mut self, _: &E2) -> Result<(), ()> {
             assert_eq!(self.integer, 42);
@@ -836,9 +839,18 @@ mod dispatch_table {
     struct Context;
     impl DispatchTableExampleStateMachineContext for Context {}
     type Handler = fn(&mut DispatchTableExampleStateMachine<Context>, &RuntimeEvent) -> bool;
+    // The reference shape is required by DispatchTable's erased handler ABI.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the example callback signature mirrors the sml.cpp contract"
+    )]
     fn event1(sm: &mut DispatchTableExampleStateMachine<Context>, _: &RuntimeEvent) -> bool {
         sm.process_event(Event1).is_ok()
     }
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the example callback signature mirrors the sml.cpp contract"
+    )]
     fn event2(sm: &mut DispatchTableExampleStateMachine<Context>, _: &RuntimeEvent) -> bool {
         sm.process_event(Event2).is_ok()
     }
@@ -976,12 +988,24 @@ mod sdl2 {
         }
     }
     type Handler = fn(&mut Sdl2ExampleStateMachine<Context>, &SdlEvent) -> bool;
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the example callback signature mirrors the sml.cpp contract"
+    )]
     fn key(sm: &mut Sdl2ExampleStateMachine<Context>, e: &SdlEvent) -> bool {
         sm.process_event(KeyUp(*e)).is_ok()
     }
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the example callback signature mirrors the sml.cpp contract"
+    )]
     fn mouse(sm: &mut Sdl2ExampleStateMachine<Context>, _: &SdlEvent) -> bool {
         sm.process_event(MouseUp).is_ok()
     }
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the example callback signature mirrors the sml.cpp contract"
+    )]
     fn quit(sm: &mut Sdl2ExampleStateMachine<Context>, _: &SdlEvent) -> bool {
         sm.process_event(Quit).is_ok()
     }
@@ -990,9 +1014,9 @@ mod sdl2 {
         let handlers: [Handler; 3] = [key, mouse, quit];
         let mut sm = Sdl2ExampleStateMachine::new(Context);
         let mut dispatch = DispatchTable::new(&mut sm, KEY_UP, &handlers);
-        dispatch.dispatch(&SdlEvent { key: 32 }, KEY_UP);
-        dispatch.dispatch(&SdlEvent { key: 0 }, MOUSE_UP);
-        dispatch.dispatch(&SdlEvent { key: 0 }, QUIT);
+        let _ = dispatch.dispatch(&SdlEvent { key: 32 }, KEY_UP);
+        let _ = dispatch.dispatch(&SdlEvent { key: 0 }, MOUSE_UP);
+        let _ = dispatch.dispatch(&SdlEvent { key: 0 }, QUIT);
         assert!(dispatch.machine().is_terminated());
     }
 }

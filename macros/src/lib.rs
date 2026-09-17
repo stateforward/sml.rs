@@ -12,20 +12,80 @@
 )]
 #![deny(
     clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::allow_attributes_without_reason,
     clippy::dbg_macro,
     clippy::mem_forget,
     clippy::todo,
-    clippy::unimplemented
+    clippy::unimplemented,
+    clippy::unseparated_literal_suffix
+)]
+// The generator is intentionally organized around large, explicit token
+// builders and compatibility-preserving output order. These style lints do
+// not improve generated-code safety and would obscure the checks below.
+#![allow(
+    clippy::explicit_iter_loop,
+    clippy::items_after_statements,
+    clippy::manual_let_else,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::missing_const_for_fn,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::or_fun_call,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pub_crate,
+    clippy::ref_option,
+    clippy::semicolon_if_nothing_returned,
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::struct_field_names,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_semicolon,
+    clippy::unnecessary_wraps,
+    clippy::use_self,
+    clippy::wildcard_imports,
+    reason = "these generator-internal style exceptions preserve explicit token-building structure"
 )]
 #![cfg_attr(
     not(test),
     deny(
+        clippy::as_conversions,
         clippy::panic,
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
-        clippy::unreachable
+        clippy::unreachable,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::exit,
+        clippy::float_arithmetic,
+        clippy::float_cmp,
+        clippy::get_unwrap,
+        clippy::infinite_loop,
+        clippy::integer_division,
+        clippy::integer_division_remainder_used,
+        clippy::large_stack_arrays,
+        clippy::let_underscore_must_use,
+        clippy::lossy_float_literal,
+        clippy::mixed_read_write_in_expression,
+        clippy::modulo_arithmetic,
+        clippy::option_env_unwrap,
+        clippy::panicking_overflow_checks,
+        clippy::panic_in_result_fn,
+        clippy::rc_buffer,
+        clippy::rc_mutex,
+        clippy::string_slice,
+        clippy::transmute_ptr_to_ptr,
+        clippy::transmute_undefined_repr,
+        clippy::uninit_assumed_init,
+        clippy::unwrap_in_result
     )
 )]
 
@@ -170,13 +230,13 @@ fn expand(input: parser::state_machine::StateMachine) -> proc_macro::TokenStream
                     .unwrap_or(false);
 
                 if !rendered {
-                    let _ = std::fs::remove_file(svg_name);
+                    let _removed = std::fs::remove_file(svg_name).is_ok();
                     let dot_name = format!("sml_{diagram_name}.dot");
                     let dot_path = std::env::var_os("OUT_DIR")
                         .map(std::path::PathBuf::from)
                         .map(|directory| directory.join(&dot_name))
                         .unwrap_or_else(|| std::env::temp_dir().join(dot_name));
-                    let _ = std::fs::write(dot_path, diagram.as_bytes());
+                    let _written = std::fs::write(dot_path, diagram.as_bytes()).is_ok();
                 }
             }
 

@@ -588,11 +588,17 @@ The same gate runs locally and on every push and pull request:
 It enforces formatting, warning-free Clippy across every target and feature,
 the full feature matrix, rustdoc warnings, documentation links, Python harness
 syntax, package construction, dependency advisories and licenses, at least 90%
-runtime line coverage, and 100% runtime function coverage. The compile-time
-procedural-macro implementation is excluded from the runtime coverage report;
-its unit tests remain part of the workspace test gates. Separate required jobs
-run the suite on Linux, macOS, and Windows, enforce public API compatibility,
-execute AddressSanitizer and Miri, and fuzz the runtime utilities.
+runtime line coverage, and 100% runtime function coverage. The runtime and
+procedural-macro implementations also deny Clippy's `pedantic` and `nursery`
+groups; the macro generator has only a documented allow-list for structural
+token-building heuristics. Conversion, panic, indexing, overflow, and other
+high-risk checks remain denied, and every lint suppression carries an explicit
+reason. Production crates also reject implicit numeric suffix formatting and
+deny package-metadata lint failures. The compile-time procedural-macro
+implementation is excluded from the runtime coverage report; its unit tests
+remain part of the workspace test gates. Separate required jobs run the suite
+on Linux, macOS, and Windows, enforce public API compatibility, execute
+AddressSanitizer and Miri, and fuzz the runtime utilities.
 
 Run the fuzz target locally with the pinned nightly toolchain, `cargo-fuzz` version,
 and checked-in Cargo wrapper:

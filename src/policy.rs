@@ -76,7 +76,7 @@ pub trait Dispatch {
     /// skips that candidate and allows the generated engine to try the next
     /// one. The default accepts every candidate, preserving the zero-cost
     /// behavior of the built-in strategies and simple custom gates.
-    #[inline(always)]
+    #[inline]
     fn dispatch_candidate(
         &self,
         state: &'static str,
@@ -102,21 +102,21 @@ pub struct BranchStm;
 pub struct SwitchStm;
 
 impl Dispatch for JumpTable {
-    #[inline(always)]
+    #[inline]
     fn dispatch(&self, _event: &'static str) -> bool {
         true
     }
 }
 
 impl Dispatch for BranchStm {
-    #[inline(always)]
+    #[inline]
     fn dispatch(&self, _event: &'static str) -> bool {
         true
     }
 }
 
 impl Dispatch for SwitchStm {
-    #[inline(always)]
+    #[inline]
     fn dispatch(&self, _event: &'static str) -> bool {
         true
     }
@@ -194,6 +194,11 @@ impl<T> RawMutex for std::sync::Mutex<T> {
     where
         Self: 'a;
 
+    #[allow(
+        clippy::use_self,
+        clippy::option_if_let_else,
+        reason = "the fully qualified path and explicit match document the std-only fail-stop adapter boundary"
+    )]
     fn lock(&self) -> Self::Guard<'_> {
         // The trait cannot report poisoning. Abort rather than resuming
         // processing after a panic may have left owner state inconsistent.
@@ -212,7 +217,7 @@ impl<T> RawMutex for spin::Mutex<T> {
         Self: 'a;
 
     fn lock(&self) -> Self::Guard<'_> {
-        spin::Mutex::lock(self)
+        Self::lock(self)
     }
 }
 
@@ -250,8 +255,16 @@ pub trait Queue<E>: Sized {
     /// Creates an empty queue.
     fn new() -> Self;
     /// Appends an event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     fn defer(&mut self, event: E) -> Result<(), QueueFull>;
     /// Inserts an event ahead of deferred events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     fn process(&mut self, event: E) -> Result<(), QueueFull>;
     /// Removes the next event.
     fn pop(&mut self) -> Option<E>;
@@ -259,19 +272,19 @@ pub trait Queue<E>: Sized {
 
 impl<E, const N: usize> Queue<E> for EventQueue<E, N> {
     fn new() -> Self {
-        EventQueue::new()
+        Self::new()
     }
 
     fn defer(&mut self, event: E) -> Result<(), QueueFull> {
-        EventQueue::defer(self, event)
+        Self::defer(self, event)
     }
 
     fn process(&mut self, event: E) -> Result<(), QueueFull> {
-        EventQueue::process(self, event)
+        Self::process(self, event)
     }
 
     fn pop(&mut self) -> Option<E> {
-        EventQueue::pop(self)
+        Self::pop(self)
     }
 }
 
@@ -383,7 +396,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
     }
 
     /// Creates a policy bundle with an explicitly configured dispatch policy.
-    pub fn with_dispatch(
+    pub const fn with_dispatch(
         dispatch: D,
         logger: L,
         observer: O,
@@ -641,7 +654,7 @@ where
     }
 
     fn into_parts(self) -> (Self::Parts, Self::ThreadSafe) {
-        PolicyBundle::into_parts(self)
+        Self::into_parts(self)
     }
 }
 
@@ -1084,10 +1097,11 @@ mod tests {
 
     #[test]
     fn dispatch_strategies_and_testing_markers_have_their_defaults() {
+        fn assert_testing<T: Testing>() {}
+
         assert!(JumpTable.dispatch("event"));
         assert!(BranchStm.dispatch("event"));
         assert!(SwitchStm.dispatch("event"));
-        fn assert_testing<T: Testing>() {}
         assert_testing::<()>();
         assert_testing::<TestingPolicy>();
     }
@@ -1118,34 +1132,34 @@ mod tests {
             DefaultQueuePolicy,
             DefaultQueuePolicy,
         );
-        let _ = Policies::logger(&bundle);
-        let _ = Policies::logger_mut(&mut bundle);
-        let _ = Policies::observer(&bundle);
-        let _ = Policies::observer_mut(&mut bundle);
-        let _ = Policies::dispatch(&bundle);
-        let _ = Policies::thread_safe(&bundle);
-        let _ = Policies::testing(&bundle);
+        let _: &() = Policies::logger(&bundle);
+        let _: &mut () = Policies::logger_mut(&mut bundle);
+        let _: &() = Policies::observer(&bundle);
+        let _: &mut () = Policies::observer_mut(&mut bundle);
+        let _: &JumpTable = Policies::dispatch(&bundle);
+        let _: &() = Policies::thread_safe(&bundle);
+        let _: &() = Policies::testing(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&bundle);
-        let (bundle_parts, _) = Policies::into_parts(bundle);
-        let _ = PolicyParts::testing(&bundle_parts);
+        let (bundle_parts, ()) = Policies::into_parts(bundle);
+        let _: &() = PolicyParts::testing(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_defer_queue(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_process_queue(&bundle_parts);
 
         let mut no_policy = NoPolicy::default();
-        let _ = Policies::logger(&no_policy);
-        let _ = Policies::logger_mut(&mut no_policy);
-        let _ = Policies::observer(&no_policy);
-        let _ = Policies::observer_mut(&mut no_policy);
-        let _ = Policies::dispatch(&no_policy);
-        let _ = Policies::thread_safe(&no_policy);
-        let _ = Policies::testing(&no_policy);
+        let _: &() = Policies::logger(&no_policy);
+        let _: &mut () = Policies::logger_mut(&mut no_policy);
+        let _: &() = Policies::observer(&no_policy);
+        let _: &mut () = Policies::observer_mut(&mut no_policy);
+        let _: &JumpTable = Policies::dispatch(&no_policy);
+        let _: &() = Policies::thread_safe(&no_policy);
+        let _: &() = Policies::testing(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&no_policy);
-        let (no_policy_parts, _) = Policies::into_parts(no_policy);
-        let _ = PolicyParts::logger(&no_policy_parts);
-        let _ = PolicyParts::observer(&no_policy_parts);
-        let _ = PolicyParts::testing(&no_policy_parts);
+        let (no_policy_parts, ()) = Policies::into_parts(no_policy);
+        let _: &() = PolicyParts::logger(&no_policy_parts);
+        let _: &() = PolicyParts::observer(&no_policy_parts);
+        let _: &() = PolicyParts::testing(&no_policy_parts);
     }
 
     #[test]

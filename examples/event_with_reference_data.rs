@@ -7,7 +7,7 @@
 use sml::sml;
 
 /// Reference wrapper
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MyReferenceWrapper<'a>(pub &'a u32);
 
 sml! {
@@ -27,7 +27,7 @@ impl StateMachineContext for Context {
     }
 
     fn action1(&mut self, event_data: &[u8]) -> Result<(), ()> {
-        println!("Got valid Event Data = {:?}", event_data);
+        println!("Got valid Event Data = {event_data:?}");
         Ok(())
     }
 

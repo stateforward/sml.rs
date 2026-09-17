@@ -84,7 +84,7 @@ fn multiple_lifetimes() {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "the fixture exercises generated state variants")]
     struct Context;
 
     impl StateMachineContext for Context {
@@ -117,10 +117,10 @@ fn multiple_lifetimes() {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "the fixture exercises generated state variants")]
     struct WrappedStates<'a, 'b>(States<'a, 'b>);
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "the fixture exercises generated state variants")]
     struct WrappedEvents<'a, 'b, 'c>(Events<'a, 'b, 'c>);
 }
 
@@ -142,7 +142,7 @@ fn derive_display_events_states() {
     assert!(matches!(sm.state(), &States::Init));
 
     let event = Events::Event;
-    assert_eq!(format!("{}", event), "Event");
+    assert_eq!(format!("{event}"), "Event");
 
     sm.process_event(event).unwrap();
     assert!(matches!(sm.state(), &States::End));
@@ -166,7 +166,7 @@ fn named_derive_display_events_states() {
     assert!(matches!(sm.state(), &SMStates::Init));
 
     let event = SMEvents::Event;
-    assert_eq!(format!("{}", event), "Event");
+    assert_eq!(format!("{event}"), "Event");
 
     sm.process_event(event).unwrap();
     assert!(matches!(sm.state(), &SMStates::End));
@@ -188,10 +188,12 @@ fn async_guards_and_actions() {
 
         impl StateMachineContext for Context {
             async fn guard1(&self) -> Result<bool, ()> {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
                 Ok(true)
             }
 
             async fn action1(&mut self) -> Result<(), ()> {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
                 Ok(())
             }
         }
@@ -221,13 +223,21 @@ fn async_on_entry_and_exit() {
         struct Context;
 
         impl StateMachineContext for Context {
-            async fn on_entry_state1(&mut self) {}
+            async fn on_entry_state1(&mut self) {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
+            }
 
-            async fn on_exit_state1(&mut self) {}
+            async fn on_exit_state1(&mut self) {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
+            }
 
-            async fn on_entry_state2(&mut self) {}
+            async fn on_entry_state2(&mut self) {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
+            }
 
-            async fn on_exit_state2(&mut self) {}
+            async fn on_exit_state2(&mut self) {
+                core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
+            }
         }
 
         let mut sm = StateMachine::new(Context);
@@ -242,7 +252,7 @@ fn async_on_entry_and_exit() {
 
 #[test]
 fn guard_expressions() {
-    #[derive(PartialEq, Display)]
+    #[derive(PartialEq, Eq, Display)]
     pub struct Entry(pub u32);
 
     sml! {
@@ -532,7 +542,10 @@ fn test_specify_attrs() {
     sml! {
         _[
             states_attr: #[derive(Debug, Clone, Copy, Serialize)] #[non_exhaustive] #[repr(u8)] #[serde(tag="type")],
-            events_attr: #[derive(Debug)] #[allow(non_camel_case_types)]
+            events_attr: #[derive(Debug)] #[allow(
+                non_camel_case_types,
+                reason = "the fixture preserves the source DSL's event naming"
+            )]
         ] {
             *State1 + tostate2 = State2,
             State2 + tostate3 / increment_count = State3

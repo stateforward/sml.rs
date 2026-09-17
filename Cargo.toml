@@ -52,6 +52,13 @@ unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 warnings = "deny"
 
+[lints.clippy]
+all = "deny"
+cargo = "deny"
+pedantic = "deny"
+nursery = "deny"
+allow-attributes-without-reason = "deny"
+
 [dependencies.spin]
 version = "0.9"
 optional = true

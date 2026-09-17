@@ -499,7 +499,10 @@ sml! {
 struct NestedLifetimeContext;
 
 impl GenericNestedLifetimeStateMachineContext for NestedLifetimeContext {
-    #[allow(clippy::needless_lifetimes)]
+    #[allow(
+        clippy::needless_lifetimes,
+        reason = "the test preserves the explicit lifetime shape of the generic event API"
+    )]
     fn inspect_nested<'event, T>(
         &mut self,
         event: &NestedLifetimeEvent<Option<&'event u8>, T>,
@@ -530,6 +533,11 @@ sml! {
 struct HigherRankedContext;
 
 impl GenericHigherRankedStateMachineContext for HigherRankedContext {
+    // The generated callback ABI borrows generic event payloads uniformly.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the test callback signature mirrors the generic event contract"
+    )]
     fn inspect_higher_ranked<T>(&mut self, event: &HigherRankedEvent<fn(&T), T>) -> Result<(), ()> {
         let _ = (&event.0, &event.1);
         Ok(())
@@ -538,6 +546,10 @@ impl GenericHigherRankedStateMachineContext for HigherRankedContext {
 
 #[test]
 fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the test callback signature mirrors the generic event contract"
+    )]
     fn observe(_: &u32) {}
 
     let event: HigherRankedEvent<fn(&u32), u32> =

@@ -82,6 +82,7 @@ struct AsyncContext;
 #[cfg(feature = "std")]
 impl PolicyAsyncStateMachineContext for AsyncContext {
     async fn async_act(&mut self, _: &AsyncGo) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(())
     }
 }
@@ -207,7 +208,7 @@ fn flat_logger_and_custom_dispatch_are_owner_policies() {
     assert_eq!(PolicyFlatStates::name(&PolicyFlatStates::Idle), "Idle");
     assert_eq!(PolicyFlatEvents::name(&PolicyFlatEvents::Go(Go)), "Go");
     machine.process_event(Go).unwrap();
-    assert!(!machine.process_event(Stop).is_ok());
+    assert!(machine.process_event(Stop).is_err());
     assert!(machine.process_event(Fail).is_err());
     assert_eq!(machine.logger().process, 3);
     assert_eq!(machine.logger().guards, 1);

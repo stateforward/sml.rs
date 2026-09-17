@@ -200,7 +200,7 @@ region during `initialize()` and again after each handled broadcast. Prefixing
 any orthogonal guard or action with `async` generates an async broadcast and
 stabilization path and awaits callbacks in every region.
 
-State strings are converted to PascalCase generated variants; for example,
+State strings are converted to `PascalCase` generated variants; for example,
 `"fin wait 1"_s` becomes `States::FinWait1`. Named events are converted the
 same way. Generated event enum variants remain useful for named events, while
 typed `event<E>` transitions generate `From<E>` and support direct dispatch.

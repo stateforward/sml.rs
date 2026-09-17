@@ -617,12 +617,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         };
         entries_exits.extend(quote! {
             #[doc = concat!("Called on entry to ", #state_name)]
+            #[allow(clippy::unused_async_trait_impl)]
             #[inline(always)]
             #entry_exit_async fn #entry_ident(&mut self) {}
         });
         let exit_ident = format_ident!("on_exit_{}", string_morph::to_snake_case(state));
         entries_exits.extend(quote! {
             #[doc = concat!("Called on exit from ", #state_name)]
+            #[allow(clippy::unused_async_trait_impl)]
             #[inline(always)]
             #entry_exit_async fn #exit_ident(&mut self) {}
         });
@@ -688,6 +690,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                             guard_list.extend(quote! {
                             #[allow(missing_docs)]
                             #[allow(clippy::result_unit_err)]
+                            #[allow(clippy::unused_async_trait_impl)]
                             #is_async fn #guard #callback_impl_generics (&self, #temporary_context #state_data #event_data) -> Result<bool,#custom_error> #callback_where_clause;
                         });
                         };
@@ -713,6 +716,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                             guard_list.extend(quote! {
                                 #[allow(missing_docs)]
                                 #[allow(clippy::result_unit_err)]
+                                #[allow(clippy::unused_async_trait_impl)]
                                 #is_async fn #guard #callback_impl_generics(
                                     &self,
                                     #temporary_context #state_data #event_data
@@ -791,6 +795,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         action_list.extend(quote! {
                             #[allow(missing_docs)]
                             #[allow(clippy::unused_unit)]
+                            #[allow(clippy::unused_async_trait_impl)]
                             #is_async fn #action #callback_impl_generics (&mut self, #temporary_context #state_data #event_data) -> #return_type #callback_where_clause;
                         });
                     }
@@ -816,6 +821,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                     };
                     action_list.extend(quote! {
                         #[allow(missing_docs)]
+                        #[allow(clippy::unused_async_trait_impl)]
                         #is_async fn #action #callback_impl_generics(
                             &mut self,
                             #temporary_context #state_data #event_data
@@ -2100,6 +2106,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
         /// This trait outlines the guards and actions that need to be implemented for the state
         /// machine.
+        #[allow(clippy::unused_async_trait_impl)]
         pub trait #state_machine_context_type_name {
             #custom_error
             #guard_list
@@ -2172,6 +2179,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
 
         /// List of possible errors
+        // Error payloads are generic user types and are intentionally only
+        // required to implement PartialEq, not Eq.
+        #[allow(clippy::derive_partial_eq_without_eq)]
         #[derive(Debug,PartialEq)]
         pub enum #error_type_name  <T=()> {
             /// When an event is processed which should not come in the current state.
@@ -2197,6 +2207,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             thread_safe: <#policy_type_ident as ::sml::Policies>::ThreadSafe,
         }
 
+        // These control-flow patterns are emitted by the DSL lowering. They
+        // preserve transition ordering and are not user-authored code.
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
             #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
@@ -2353,6 +2370,11 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
         }
 
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
@@ -2391,7 +2413,10 @@ fn type_matches_state(data_type: &Type, state: &str) -> bool {
                 && path.path.segments.last().is_some_and(|segment| segment.ident == state)
     )
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated transition action builder mirrors the DSL phases"
+)]
 fn generate_actions(
     actions: &[AsyncIdent],
     temporary_context_call: &TokenStream,

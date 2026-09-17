@@ -8,11 +8,11 @@
 use sml::sml;
 
 /// Event data
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct MyEventData(pub u32);
 
 /// State data
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct MyStateData(pub u32);
 
 sml! {
@@ -48,34 +48,28 @@ impl StateMachineContext for Context {
 
     // Action2 has access to the data from State2
     fn action2(&mut self, state_data: &MyStateData) -> Result<(), ()> {
-        println!("Printing state data {:?}", state_data);
+        println!("Printing state data {state_data:?}");
         Ok(())
     }
 
     fn log_process_event(&self, current_state: &States, event: &Events) {
-        println!(
-            "[StateMachineLogger]\t[{:?}] Processing event {:?}",
-            current_state, event
-        );
+        println!("[StateMachineLogger]\t[{current_state:?}] Processing event {event:?}");
     }
 
     fn log_guard(&self, guard: &'static str, result: bool) {
         if result {
-            println!("[StateMachineLogger]\tEnabled `{}`", guard);
+            println!("[StateMachineLogger]\tEnabled `{guard}`");
         } else {
-            println!("[StateMachineLogger]\tDisabled `{}`", guard);
+            println!("[StateMachineLogger]\tDisabled `{guard}`");
         }
     }
 
     fn log_action(&self, action: &'static str) {
-        println!("[StateMachineLogger]\tRunning `{}`", action);
+        println!("[StateMachineLogger]\tRunning `{action}`");
     }
 
     fn transition_callback(&self, old_state: &States, new_state: &States) {
-        println!(
-            "[StateMachineLogger]\tTransitioning {:?} -> {:?}",
-            old_state, new_state
-        );
+        println!("[StateMachineLogger]\tTransitioning {old_state:?} -> {new_state:?}");
     }
 }
 

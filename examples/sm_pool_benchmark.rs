@@ -30,8 +30,7 @@ fn ids(random: bool) -> Vec<usize> {
         .collect()
 }
 
-#[inline(always)]
-fn toggle(flag: &mut u8, _: Pulse) {
+const fn toggle(flag: &mut u8, _: Pulse) {
     *flag ^= 1;
 }
 
@@ -70,6 +69,12 @@ fn measure_batch(indices: &[usize], label: &str) {
     report(label, elapsed, pool.storage());
 }
 
+// Benchmark counters are deliberately rendered as floating point rates; the
+// bounded workload is more useful here than a fallible display conversion.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn report(label: &str, elapsed: u128, flags: &[u8]) {
     let checksum: usize = flags.iter().map(|&flag| flag as usize).sum();
     assert_ne!(checksum, 0);

@@ -24,7 +24,8 @@ impl parse::Parse for SmlDefinitions {
         let mut machines = Vec::new();
         while !input.is_empty() {
             machines.push(input.parse::<SmlDefinition>()?.machine);
-            let _ = input.parse::<Token![,]>();
+            // A comma is optional between adjacent machine definitions.
+            let _optional_separator = input.parse::<Token![,]>();
         }
         Ok(Self { machines })
     }
@@ -141,7 +142,7 @@ fn split_transitions(body: TokenStream) -> Vec<TokenStream> {
     let tokens = body.into_iter().collect::<Vec<_>>();
     let mut transitions = Vec::new();
     let mut current = TokenStream::new();
-    let mut angle_depth = 0usize;
+    let mut angle_depth = 0_usize;
     for (index, token) in tokens.iter().enumerate() {
         let punct = match token {
             TokenTree::Punct(punct) => Some(punct.as_char()),

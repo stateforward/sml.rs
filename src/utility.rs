@@ -46,12 +46,12 @@ impl<P, C> Hierarchical<P, C> {
     }
 
     /// Activates the child, preserving its previous state.
-    pub fn activate_child(&mut self) {
+    pub const fn activate_child(&mut self) {
         self.child_active = true;
     }
 
     /// Deactivates the child while preserving shallow history.
-    pub fn deactivate_child(&mut self) {
+    pub const fn deactivate_child(&mut self) {
         self.child_active = false;
     }
 
@@ -67,22 +67,22 @@ impl<P, C> Hierarchical<P, C> {
     }
 
     /// Returns the parent machine.
-    pub fn parent(&self) -> &P {
+    pub const fn parent(&self) -> &P {
         &self.parent
     }
 
     /// Returns the parent machine mutably.
-    pub fn parent_mut(&mut self) -> &mut P {
+    pub const fn parent_mut(&mut self) -> &mut P {
         &mut self.parent
     }
 
     /// Returns the child machine.
-    pub fn child(&self) -> &C {
+    pub const fn child(&self) -> &C {
         &self.child
     }
 
     /// Returns the child machine mutably.
-    pub fn child_mut(&mut self) -> &mut C {
+    pub const fn child_mut(&mut self) -> &mut C {
         &mut self.child
     }
 
@@ -166,6 +166,7 @@ pub struct EventQueue<E, const N: usize> {
 
 impl<E, const N: usize> EventQueue<E, N> {
     /// Creates an empty queue.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             events: [const { None }; N],
@@ -185,6 +186,10 @@ impl<E, const N: usize> EventQueue<E, N> {
     }
 
     /// Defers an event until events already in the queue have been processed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     pub fn defer(&mut self, event: E) -> Result<(), QueueFull> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
@@ -205,6 +210,10 @@ impl<E, const N: usize> EventQueue<E, N> {
     }
 
     /// Schedules an event ahead of currently deferred events.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the queue has no remaining capacity.
     pub fn process(&mut self, event: E) -> Result<(), QueueFull> {
         if self.len == N || N == 0 {
             return Err(QueueFull);
@@ -288,6 +297,7 @@ pub struct EventQueues<E, const DEFERRED: usize, const PROCESSED: usize> {
 
 impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, PROCESSED> {
     /// Creates empty queues.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             deferred: EventQueue::new(),
@@ -296,11 +306,19 @@ impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, 
     }
 
     /// Defers an event until a dispatch changes state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the deferred queue has no remaining capacity.
     pub fn defer(&mut self, event: E) -> Result<(), QueueFull> {
         self.deferred.defer(event)
     }
 
     /// Schedules an event for immediate processing after the current action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the process queue has no remaining capacity.
     pub fn process(&mut self, event: E) -> Result<(), QueueFull> {
         self.processed.process(event)
     }
@@ -402,6 +420,7 @@ impl<'a, M, Raw, R> DispatchTable<'a, M, Raw, R> {
     ///
     /// Returns `None` when the ID is outside the table's contiguous range.
     #[inline]
+    #[must_use]
     pub fn dispatch(&mut self, raw: &Raw, id: usize) -> Option<R> {
         let index = id.checked_sub(self.first_id)?;
         let handler = *self.handlers.get(index)?;
@@ -409,12 +428,13 @@ impl<'a, M, Raw, R> DispatchTable<'a, M, Raw, R> {
     }
 
     /// Returns a shared reference to the underlying machine.
-    pub fn machine(&self) -> &M {
+    #[must_use]
+    pub const fn machine(&self) -> &M {
         self.machine
     }
 
     /// Returns a mutable reference to the underlying machine.
-    pub fn machine_mut(&mut self) -> &mut M {
+    pub const fn machine_mut(&mut self) -> &mut M {
         self.machine
     }
 }
@@ -457,12 +477,12 @@ impl<S> OrthogonalRegions<S> {
     }
 
     /// Returns the region storage.
-    pub fn regions(&self) -> &S {
+    pub const fn regions(&self) -> &S {
         &self.regions
     }
 
     /// Returns the region storage mutably.
-    pub fn regions_mut(&mut self) -> &mut S {
+    pub const fn regions_mut(&mut self) -> &mut S {
         &mut self.regions
     }
 
@@ -487,12 +507,12 @@ impl<S> SmPool<S> {
     }
 
     /// Returns the underlying storage.
-    pub fn storage(&self) -> &S {
+    pub const fn storage(&self) -> &S {
         &self.storage
     }
 
     /// Returns the underlying storage mutably.
-    pub fn storage_mut(&mut self) -> &mut S {
+    pub const fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
     }
 

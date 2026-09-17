@@ -63,7 +63,6 @@ impl PlayerStateMachineContext for Context {
 struct AllowAll;
 
 impl Dispatch for AllowAll {
-    #[inline(always)]
     fn dispatch(&self, _event: &'static str) -> bool {
         true
     }
@@ -75,17 +74,14 @@ type CustomPolicies = PolicyBundle<(), (), AllowAll>;
 
 // Keep benchmark state observable to the optimizer without a compiler
 // boundary that would weaken the crate's safety contract.
-#[inline(always)]
-fn barrier<T>(value: &mut T) {
+const fn barrier<T>(value: &mut T) {
     std::hint::black_box(value);
 }
 
-#[inline(always)]
 fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
-#[inline(always)]
 fn process_with_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
@@ -171,6 +167,10 @@ fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn run_policy_benchmark<P: Policies>(label: &str, policy: P) {
     let mut sm = PlayerStateMachine::new_with_policy(Context, policy);
     let start = Instant::now();
@@ -185,6 +185,10 @@ fn run_policy_benchmark<P: Policies>(label: &str, policy: P) {
     );
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     if mode == "branch" {

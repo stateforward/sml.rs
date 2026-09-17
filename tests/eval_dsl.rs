@@ -62,6 +62,7 @@ struct AsyncContext {
 
 impl AsyncEvalDslStateMachineContext for AsyncContext {
     async fn async_enabled(&self, _event: &AsyncRun) -> Result<bool, ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         Ok(true)
     }
 
@@ -71,6 +72,7 @@ impl AsyncEvalDslStateMachineContext for AsyncContext {
     }
 
     async fn async_conditional(&mut self, _event: &AsyncRun) -> Result<(), ()> {
+        core::future::poll_fn(|_| core::task::Poll::Ready(())).await;
         self.actions += 1;
         Ok(())
     }

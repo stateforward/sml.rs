@@ -843,6 +843,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         use ::sml::Queue as _;
 
         /// Unified callbacks for the parent and its composite child.
+        #[allow(clippy::unused_async_trait_impl)]
         pub trait #context_name {
             #context_error
             #guards
@@ -877,6 +878,9 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         #(#conversions)*
         #event_names_table
 
+        // Error payloads are generic user types and are intentionally only
+        // required to implement PartialEq, not Eq.
+        #[allow(clippy::derive_partial_eq_without_eq)]
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
             InvalidEvent,
@@ -906,6 +910,20 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
+        // These control-flow patterns are emitted by the DSL lowering. They
+        // preserve parent/child transition and completion ordering.
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        // These control-flow patterns are emitted by the DSL lowering. They
+        // preserve nested-region transition and completion ordering.
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
             #[inline(always)]
@@ -1101,6 +1119,16 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
 
         }
 
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
             #public_api
@@ -1199,7 +1227,7 @@ fn generate_multi_code(
         .clone();
     let mut queue = child_references
         .iter()
-        .map(|reference| ((*reference).clone(), parent_name_original.clone(), 1usize))
+        .map(|reference| ((*reference).clone(), parent_name_original.clone(), 1_usize))
         .collect::<std::collections::VecDeque<_>>();
     let mut normalized_children = Vec::new();
     let mut all_child_references = Vec::<Ident>::new();
@@ -2657,6 +2685,7 @@ fn generate_multi_code(
     Ok(quote! {
         use ::sml::Queue as _;
 
+        #[allow(clippy::unused_async_trait_impl)]
         pub trait #context_name {
             #context_error
             #guards
@@ -2685,6 +2714,9 @@ fn generate_multi_code(
         #(#conversions)*
         #event_names_table
 
+        // Error payloads are generic user types and are intentionally only
+        // required to implement PartialEq, not Eq.
+        #[allow(clippy::derive_partial_eq_without_eq)]
         #[derive(Debug, PartialEq)]
         pub enum #error_name<E = ()> {
             InvalidEvent,
@@ -2704,6 +2736,13 @@ fn generate_multi_code(
             thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
+        // These control-flow patterns are emitted by the DSL lowering. They
+        // preserve nested-region transition and completion ordering.
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #core_name<T, #policy_name> {
             #[inline(always)]
@@ -2834,6 +2873,11 @@ fn generate_multi_code(
 
         }
 
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
             #public_api
@@ -2921,7 +2965,10 @@ fn tree_children<'a>(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated composite tree builder carries independent DSL phases"
+)]
 fn tree_embedded_orthogonal(
     root: &Ident,
     index: usize,
@@ -3053,7 +3100,10 @@ fn tree_descendant_region(
     None
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated composite child entry builder carries tree context"
+)]
 fn tree_enter_children(
     root: &Ident,
     owner: &Ident,
@@ -3084,7 +3134,10 @@ fn tree_enter_children(
     Ok(quote! { match &#owner_place { #(#arms,)* _ => {} } })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated composite node entry builder carries tree context"
+)]
 fn tree_enter_node(
     root: &Ident,
     index: usize,
@@ -3178,7 +3231,10 @@ fn tree_enter_node(
     Ok(quote! { #reset #entry_hook #enter_descendant })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated composite child exit builder carries tree context"
+)]
 fn tree_exit_children(
     root: &Ident,
     owner: &Ident,
@@ -3209,7 +3265,10 @@ fn tree_exit_children(
     Ok(quote! { match &#owner_place { #(#arms,)* _ => {} } })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the generated composite node exit builder carries tree context"
+)]
 fn tree_exit_node(
     root: &Ident,
     index: usize,
@@ -3784,7 +3843,10 @@ fn insert_unique(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "dispatch generation keeps all transition-table inputs explicit"
+)]
 fn dispatch_code(
     machine: &StateMachine,
     state_place: TokenStream,
@@ -3937,7 +3999,10 @@ fn dispatch_code(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transition generation keeps all transition-table inputs explicit"
+)]
 fn transition_code(
     transition: &StateTransition,
     state_place: &TokenStream,
@@ -4166,7 +4231,10 @@ fn composite_lifecycle(
     (exit, entry)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "exception generation keeps all transition-table inputs explicit"
+)]
 fn exception_code(
     machine: &StateMachine,
     state_place: TokenStream,
@@ -4255,7 +4323,10 @@ fn exception_code(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "completion generation keeps all transition-table inputs explicit"
+)]
 fn completion_code(
     machine: &StateMachine,
     state_place: TokenStream,
@@ -4543,9 +4614,11 @@ fn guard_code(
 
 fn guard_contains_async(guard: &GuardExpression) -> bool {
     let mut contains_async = false;
-    let _ = visit_guards(guard, |guard| {
+    match visit_guards(guard, |guard| {
         contains_async |= guard.is_async;
         Ok(())
-    });
-    contains_async
+    }) {
+        Ok(()) => contains_async,
+        Err(_) => false,
+    }
 }
