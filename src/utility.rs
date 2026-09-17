@@ -166,7 +166,10 @@ pub struct EventQueue<E, const N: usize> {
 
 impl<E, const N: usize> EventQueue<E, N> {
     /// Creates an empty queue.
-    #[must_use]
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released constructor must retain its existing warning behavior"
+    )]
     pub const fn new() -> Self {
         Self {
             events: [const { None }; N],
@@ -297,7 +300,10 @@ pub struct EventQueues<E, const DEFERRED: usize, const PROCESSED: usize> {
 
 impl<E, const DEFERRED: usize, const PROCESSED: usize> EventQueues<E, DEFERRED, PROCESSED> {
     /// Creates empty queues.
-    #[must_use]
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released constructor must retain its existing warning behavior"
+    )]
     pub const fn new() -> Self {
         Self {
             deferred: EventQueue::new(),
@@ -420,7 +426,6 @@ impl<'a, M, Raw, R> DispatchTable<'a, M, Raw, R> {
     ///
     /// Returns `None` when the ID is outside the table's contiguous range.
     #[inline]
-    #[must_use]
     pub fn dispatch(&mut self, raw: &Raw, id: usize) -> Option<R> {
         let index = id.checked_sub(self.first_id)?;
         let handler = *self.handlers.get(index)?;
@@ -428,7 +433,10 @@ impl<'a, M, Raw, R> DispatchTable<'a, M, Raw, R> {
     }
 
     /// Returns a shared reference to the underlying machine.
-    #[must_use]
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "this released accessor must retain its existing warning behavior"
+    )]
     pub const fn machine(&self) -> &M {
         self.machine
     }

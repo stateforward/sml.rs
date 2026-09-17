@@ -140,9 +140,9 @@ jobs:
       - name: Check documentation links
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          lychee
-            --no-progress
-            --exclude-path target
-            --exclude-path fuzz/corpus
+        run: |
+          lychee \
+            --no-progress \
+            --exclude-path target \
+            --exclude-path fuzz/corpus \
             './**/*.md'
