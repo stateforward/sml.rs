@@ -333,3 +333,48 @@ fn orthogonal_node_completion_fault_recovered_by_the_parent_exits_the_region_onc
     assert!(machine.is(&RegionExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
+
+sml! {
+    FlatExit {
+        *"idle"_s + event<Poke> = "working"_s,
+         "working"_s + on_entry<_> / entered,
+         "working"_s + on_exit<_> / exited,
+         "working"_s + event<Poke> / poke = "idle"_s,
+         "working"_s + exception<Fault> / recover = "idle"_s,
+    }
+}
+
+impl FlatExitStateMachineContext for ExitContext {
+    fn entered(&mut self) -> Result<(), Fault> {
+        self.push("entry");
+        Ok(())
+    }
+    fn exited(&mut self) -> Result<(), Fault> {
+        self.push("exit");
+        Ok(())
+    }
+    fn poke(&mut self, event: &Poke) -> Result<(), Fault> {
+        self.act(event.fail)
+    }
+    fn recover(&mut self, _: &Fault) -> Result<(), Fault> {
+        self.push("recover");
+        Ok(())
+    }
+}
+
+#[test]
+fn flat_event_fault_recovery_exits_the_source_once() {
+    let mut machine = FlatExitStateMachine::new(ExitContext::default());
+    machine.process_event(Poke { fail: false }).unwrap();
+    machine.process_event(Poke { fail: true }).unwrap();
+    assert!(machine.is(&FlatExitStates::Idle));
+    assert_eq!(
+        machine.context().log,
+        ["entry", "exit", "action", "recover"]
+    );
+    machine.context_mut().log.clear();
+    machine.process_event(Poke { fail: false }).unwrap();
+    machine.process_event(Poke { fail: false }).unwrap();
+    assert!(machine.is(&FlatExitStates::Idle));
+    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+}
