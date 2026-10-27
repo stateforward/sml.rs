@@ -18,6 +18,10 @@ All notable changes to this project are documented here. This project follows
   continues only when the handling row moves to another state. In a machine
   with orthogonal regions such a recovery settles only the region that
   faulted, so peer regions still run their pending completions.
+- Exit a state once per entry in composite and orthogonal machines when a
+  transition's action fails after its source's `on_exit` already ran and an
+  `exception<E>` row's recovery then leaves that state; the recovery no
+  longer runs the same `on_exit` a second time.
 - Borrow a composite child's state data per row, so several rows on one
   trigger from a data-carrying state (`Name(T)`) can all read that data, as in
   a flat table, instead of failing borrow checking (E0502).

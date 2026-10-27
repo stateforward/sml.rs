@@ -465,7 +465,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             #child_entry_hook
         }
     };
-    let exit_child_current = current_lifecycle_code(
+    let exit_child_hook = current_lifecycle_code(
         &child_lifecycle,
         false,
         &child_states_name,
@@ -474,6 +474,13 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &error_name,
         &temporary_context_argument,
     );
+    let exit_child_current = quote! {
+        if self.child_state_exit_skip {
+            self.child_state_exit_skip = false;
+        } else {
+            #exit_child_hook
+        }
+    };
     let child_dispatch = dispatch_code(
         child,
         quote! { self.child_state },
@@ -915,6 +922,10 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         {
             state: #parent_states_name,
             child_state: #child_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            state_exit_skip: bool,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            child_state_exit_skip: bool,
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
@@ -1151,6 +1162,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                     core: #core_name {
                         state: #parent_states_name::#parent_initial #parent_initial_value,
                         child_state: #child_states_name::#child_initial #child_initial_value,
+                        state_exit_skip: false,
+                        child_state_exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1190,6 +1203,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                     core: #core_name {
                         state: #parent_states_name::#parent_initial #parent_initial_value,
                         child_state: #child_states_name::#child_initial #child_initial_value,
+                        state_exit_skip: false,
+                        child_state_exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1662,8 +1677,16 @@ fn generate_multi_code(
                     }
                 }
             });
-            child_fields.push(quote! { #field: [#child_states_name; #region_count], });
-            child_initializers.push(quote! { #field: [#(#initials),*], });
+            let exit_skip = format_ident!("{}_exit_skip", field);
+            child_fields.push(quote! {
+                #field: [#child_states_name; #region_count],
+                #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+                #exit_skip: [bool; #region_count],
+            });
+            child_initializers.push(quote! {
+                #field: [#(#initials),*],
+                #exit_skip: [false; #region_count],
+            });
             child_callback_methods.push(quote! {
                 fn #callback(
                     &self,
@@ -1875,9 +1898,16 @@ fn generate_multi_code(
                 }
             }
         });
-        child_fields.push(quote! { #field: #child_states_name, });
-        child_initializers
-            .push(quote! { #field: #child_states_name::#child_initial #child_initial_value, });
+        let exit_skip = format_ident!("{}_exit_skip", field);
+        child_fields.push(quote! {
+            #field: #child_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            #exit_skip: bool,
+        });
+        child_initializers.push(quote! {
+            #field: #child_states_name::#child_initial #child_initial_value,
+            #exit_skip: false,
+        });
         child_callback_methods.push(quote! {
             fn #callback(&self, old_state: &#child_states_name, new_state: &#child_states_name) {}
         });
@@ -2531,14 +2561,28 @@ fn generate_multi_code(
         }
     };
     let root_state_field = if let Some(region_count) = root_region_count {
-        quote! { states: [#parent_states_name; #region_count], }
+        quote! {
+            states: [#parent_states_name; #region_count],
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            states_exit_skip: [bool; #region_count],
+        }
     } else {
-        quote! { state: #parent_states_name, }
+        quote! {
+            state: #parent_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            state_exit_skip: bool,
+        }
     };
-    let root_state_init = if root_orthogonal {
-        quote! { states: [#(#root_initial_values),*], }
+    let root_state_init = if let Some(region_count) = root_region_count {
+        quote! {
+            states: [#(#root_initial_values),*],
+            states_exit_skip: [false; #region_count],
+        }
     } else {
-        quote! { state: #parent_states_name::#parent_initial #parent_initial_value, }
+        quote! {
+            state: #parent_states_name::#parent_initial #parent_initial_value,
+            state_exit_skip: false,
+        }
     };
     let initialize_method = if let Some(region_count) = root_region_count {
         quote! {
@@ -3548,7 +3592,15 @@ fn tree_exit_node(
         error_name,
         temporary_context,
     );
-    Ok(quote! { #exit_descendant #exit_hook })
+    let exit_skip = exit_skip_place(&quote! { self.#field });
+    Ok(quote! {
+        if #exit_skip {
+            #exit_skip = false;
+        } else {
+            #exit_descendant
+            #exit_hook
+        }
+    })
 }
 
 fn tree_active_condition(
@@ -4394,13 +4446,20 @@ fn transition_code(
                 error_name,
             )
         };
+        let exit_skip = exit_skip_place(state_place);
         quote! {
-            #composite_exit
-            #exit
+            if #exit_skip {
+                #exit_skip = false;
+            } else {
+                #composite_exit
+                #exit
+            }
+            #exit_skip = true;
             #action_code
             #output_data
             let new_state_value = #target_expression;
             let old_state = core::mem::replace(&mut #state_place, new_state_value);
+            #exit_skip = false;
             let new_state = &#state_place;
             #callback
             #entry
@@ -4546,6 +4605,25 @@ fn exception_code(
             if handled { exception_recovery = Some(moved); }
         }
     })
+}
+
+/// Returns the place of the exit-skip token kept beside a state slot
+/// (`self.state` -> `self.state_exit_skip`, `self.states` ->
+/// `self.states_exit_skip`).
+///
+/// An external transition runs its source's exits before its actions and
+/// replaces the state only after they succeed. It sets this token once those
+/// exits ran and clears it when it replaces the state, so after a failed
+/// action the token says the slot's current state (and its subtree) has
+/// already been exited. The next exit of that slot, by an exception row's
+/// recovery or by an ancestor leaving it, consumes the token instead of
+/// running the exits again: each entry gets exactly one exit.
+pub(crate) fn exit_skip_place(state_place: &TokenStream) -> TokenStream {
+    let mut tokens = state_place.clone().into_iter().collect::<Vec<_>>();
+    if let Some(proc_macro2::TokenTree::Ident(ident)) = tokens.last_mut() {
+        *ident = format_ident!("{}_exit_skip", ident);
+    }
+    tokens.into_iter().collect()
 }
 
 /// Returns whether an exception row changes the active state configuration

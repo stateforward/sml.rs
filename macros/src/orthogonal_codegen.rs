@@ -486,6 +486,8 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             #policy_name: ::sml::Policies,
         {
             states: [#states_name; #region_count],
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            states_exit_skip: [bool; #region_count],
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
@@ -826,6 +828,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 Self {
                     core: #core_name {
                         states: [#(#initial_states),*],
+                        states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
@@ -862,6 +865,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 Self {
                     core: #core_name {
                         states: [#(#initial_states),*],
+                        states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
@@ -1051,8 +1055,20 @@ pub(crate) fn generate_embedded(
                         Some(quote! { #states_name::#state_ident => { #calls } })
                     }
                 });
-                quote! {
+                let hooks = quote! {
                     match &#states_place[#index] { #(#arms,)* _ => {} }
+                };
+                if entry {
+                    hooks
+                } else {
+                    let exit_skip = crate::composite_codegen::exit_skip_place(&states_place);
+                    quote! {
+                        if #exit_skip[#index] {
+                            #exit_skip[#index] = false;
+                        } else {
+                            #hooks
+                        }
+                    }
                 }
             })
             .collect::<TokenStream>()
@@ -1764,13 +1780,21 @@ fn generate_transition_branch(
                 error_name,
             )
         };
+        // See `exit_skip_place`: one exit per entry when the action fails.
+        let exit_skip = crate::composite_codegen::exit_skip_place(states_place);
         quote! {
-            #exit_composite
-            #exit
+            if #exit_skip[#index] {
+                #exit_skip[#index] = false;
+            } else {
+                #exit_composite
+                #exit
+            }
+            #exit_skip[#index] = true;
             #action_code
             #output_data
             let new_state = #target_expression;
             let old_state = core::mem::replace(&mut #states_place[#index], new_state);
+            #exit_skip[#index] = false;
             let new_state = &#states_place[#index];
             #callback
             #entry
