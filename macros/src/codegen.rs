@@ -2010,6 +2010,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 &mut self,
                 state: #states_type_name <#state_lifetimes>
             ) -> #states_type_name <#state_lifetimes> {
+                self.core.exit_skip = false;
                 core::mem::replace(&mut self.core.state, state)
             }
         }

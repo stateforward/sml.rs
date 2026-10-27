@@ -179,6 +179,15 @@ fn composite_event_fault_recovered_by_a_same_level_row_exits_the_source_once() {
         machine.context().log,
         ["entry", "exit", "action", "recover"]
     );
+    // Leave and re-enter the child: the next cycle pairs one entry with one
+    // exit.
+    machine.process_event(Poke { fail: false }).unwrap();
+    assert!(machine.is(&SameLevelExitStates::Idle));
+    machine.context_mut().log.clear();
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Poke { fail: false }).unwrap();
+    assert!(machine.is_child(&SameLevelExitSameLevelExitKidStates::Done));
+    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -187,6 +196,7 @@ sml! {
          "left working"_s + on_entry<_> / entered,
          "left working"_s + on_exit<_> / exited,
          "left working"_s + exception<Fault> / recover = "left recovered"_s,
+         "left recovered"_s + event<Go> = "left working"_s,
 
         *"right idle"_s + event<Halt> = X,
     }
@@ -225,6 +235,15 @@ fn orthogonal_event_fault_recovered_by_a_region_row_exits_the_source_once() {
         machine.context().log,
         ["entry", "exit", "action", "recover"]
     );
+    // Re-enter the region state: the next cycle pairs one entry with one exit.
+    machine.context_mut().log.clear();
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Poke { fail: false }).unwrap();
+    assert!(matches!(
+        machine.state(0),
+        Some(OrthogonalExitStates::LeftDone)
+    ));
+    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -377,4 +396,174 @@ fn flat_event_fault_recovery_exits_the_source_once() {
     machine.process_event(Poke { fail: false }).unwrap();
     assert!(machine.is(&FlatExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+}
+
+pub struct Leave;
+
+sml! {
+    ReNestLeaf {
+        *"working"_s + event<Poke> / poke = "done"_s,
+         "working"_s + on_entry<_> / entered,
+         "working"_s + on_exit<_> / exited,
+         "done"_s + event<Halt> = X,
+    }
+
+    ReNestNode {
+        *"left idle"_s + event<Go> = state<ReNestLeaf>,
+         state<ReNestLeaf> + completion<_> = "left idle"_s,
+
+        *"right idle"_s + event<Halt> = X,
+    }
+
+    ReNest {
+        *"idle"_s + event<Go> = state<ReNestNode>,
+         state<ReNestNode> + exception<Fault> / recover = "idle"_s,
+         state<ReNestNode> + event<Leave> = "idle"_s,
+    }
+}
+
+impl ReNestStateMachineContext for ExitContext {
+    fn entered(&mut self) -> Result<(), Fault> {
+        self.push("entry");
+        Ok(())
+    }
+    fn exited(&mut self) -> Result<(), Fault> {
+        self.push("exit");
+        Ok(())
+    }
+    fn poke(&mut self, event: &Poke) -> Result<(), Fault> {
+        self.act(event.fail)
+    }
+    fn recover(&mut self, _: &Fault) -> Result<(), Fault> {
+        self.push("recover");
+        Ok(())
+    }
+}
+
+// A stale token must not outlive the occupancy it belongs to. Leaving an
+// orthogonal node exits the composite child active in each of its regions,
+// and re-entering that child clears its token, so the next exit after a
+// failed nested action that an ancestor recovered still runs exactly once.
+
+#[test]
+fn reentering_a_nested_child_after_an_ancestor_recovery_pairs_its_hooks() {
+    let mut machine = ReNestStateMachine::new(ExitContext::default());
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Poke { fail: true }).unwrap();
+    assert!(machine.is(&ReNestStates::Idle));
+    assert_eq!(
+        machine.context().log,
+        ["entry", "exit", "action", "recover"]
+    );
+    for _ in 0..2 {
+        machine.context_mut().log.clear();
+        machine.process_event(Go { fail: false }).unwrap();
+        machine.process_event(Go { fail: false }).unwrap();
+        machine.process_event(Poke { fail: false }).unwrap();
+        assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+        machine.process_event(Leave).unwrap();
+        assert!(machine.is(&ReNestStates::Idle));
+    }
+}
+
+#[test]
+fn leaving_an_orthogonal_node_exits_its_nested_child() {
+    let mut machine = ReNestStateMachine::new(ExitContext::default());
+    for _ in 0..2 {
+        machine.context_mut().log.clear();
+        machine.process_event(Go { fail: false }).unwrap();
+        machine.process_event(Go { fail: false }).unwrap();
+        machine.process_event(Leave).unwrap();
+        assert!(machine.is(&ReNestStates::Idle));
+        assert_eq!(machine.context().log, ["entry", "exit"]);
+    }
+}
+
+sml! {
+    InitNestLeaf {
+        *"working"_s + event<Poke> / poke = "done"_s,
+         "working"_s + on_entry<_> / entered,
+         "working"_s + on_exit<_> / exited,
+         "done"_s + event<Halt> = X,
+    }
+
+    InitNestNode {
+        *state<InitNestLeaf> + completion<_> = "left idle"_s,
+
+        *"right idle"_s + event<Halt> = X,
+    }
+
+    InitNest {
+        *"idle"_s + event<Go> = state<InitNestNode>,
+         state<InitNestNode> + event<Leave> = "idle"_s,
+         state<InitNestNode> + exception<Fault> = "idle"_s,
+    }
+}
+
+impl InitNestStateMachineContext for ExitContext {
+    fn entered(&mut self) -> Result<(), Fault> {
+        self.push("entry");
+        Ok(())
+    }
+    fn exited(&mut self) -> Result<(), Fault> {
+        self.push("exit");
+        Ok(())
+    }
+    fn poke(&mut self, event: &Poke) -> Result<(), Fault> {
+        self.act(event.fail)
+    }
+}
+
+#[test]
+fn entering_an_orthogonal_node_enters_a_nested_initial_child() {
+    let mut machine = InitNestStateMachine::new(ExitContext::default());
+    for _ in 0..2 {
+        machine.context_mut().log.clear();
+        machine.process_event(Go { fail: false }).unwrap();
+        assert_eq!(machine.context().log, ["entry"]);
+        machine.process_event(Leave).unwrap();
+        assert!(machine.is(&InitNestStates::Idle));
+        assert_eq!(machine.context().log, ["entry", "exit"]);
+    }
+}
+
+sml! {
+    RootNestLeaf {
+        *"working"_s + event<Poke> / poke = "done"_s,
+         "working"_s + on_entry<_> / entered,
+         "working"_s + on_exit<_> / exited,
+         "done"_s + event<Halt> = X,
+    }
+
+    RootNest {
+        *state<RootNestLeaf> + event<Leave> = "left idle"_s,
+         state<RootNestLeaf> + exception<Fault> = "left idle"_s,
+
+        *"right idle"_s + event<Halt> = X,
+    }
+}
+
+impl RootNestStateMachineContext for ExitContext {
+    fn entered(&mut self) -> Result<(), Fault> {
+        self.push("entry");
+        Ok(())
+    }
+    fn exited(&mut self) -> Result<(), Fault> {
+        self.push("exit");
+        Ok(())
+    }
+    fn poke(&mut self, event: &Poke) -> Result<(), Fault> {
+        self.act(event.fail)
+    }
+}
+
+#[test]
+fn initializing_an_orthogonal_root_enters_a_nested_initial_child_once() {
+    let mut machine = RootNestStateMachine::new(ExitContext::default());
+    machine.initialize().unwrap();
+    assert_eq!(machine.context().log, ["entry"]);
+    machine.process_event(Leave).unwrap();
+    assert!(machine.is_region(0, &RootNestStates::LeftIdle));
+    assert_eq!(machine.context().log, ["entry", "exit"]);
 }

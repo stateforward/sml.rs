@@ -549,6 +549,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.states_exit_skip.fill(false);
             core::mem::replace(&mut self.core.states, states)
         }
 
@@ -773,6 +774,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.states_exit_skip.fill(false);
                 core::mem::replace(&mut self.states, states)
             }
 
@@ -1058,14 +1060,36 @@ pub(crate) fn generate_embedded(
                 let hooks = quote! {
                     match &#states_place[#index] { #(#arms,)* _ => {} }
                 };
-                if entry {
-                    hooks
+                // A region state that is a composite node is entered after
+                // the region state's own entry hook and exited before its
+                // exit hook, as a scalar composite node enters and exits its
+                // active child.
+                let nested = if entry {
+                    &composite_entry
                 } else {
-                    let exit_skip = crate::composite_codegen::exit_skip_place(&states_place);
+                    &composite_exit
+                };
+                let region_index =
+                    (!nested.is_empty()).then(|| quote! { let region_index = #index; });
+                let exit_skip = crate::composite_codegen::exit_skip_place(&states_place);
+                if entry {
+                    // Entering a region starts a new occupancy, so its
+                    // exit-skip token is cleared (see `exit_skip_place`).
+                    quote! {
+                        {
+                            #region_index
+                            #exit_skip[#index] = false;
+                            #hooks
+                            #nested
+                        }
+                    }
+                } else {
                     quote! {
                         if #exit_skip[#index] {
                             #exit_skip[#index] = false;
                         } else {
+                            #region_index
+                            #nested
                             #hooks
                         }
                     }

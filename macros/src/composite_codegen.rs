@@ -457,11 +457,17 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         .transitions
         .iter()
         .any(|transition| transition.in_state.history);
+    // Entering the child starts a new occupancy, so its exit-skip token is
+    // cleared (see `exit_skip_place`).
     let enter_child_current = if child_has_history {
-        child_entry_hook
+        quote! {
+            self.child_state_exit_skip = false;
+            #child_entry_hook
+        }
     } else {
         quote! {
             self.child_state = #child_states_name::#child_initial #child_initial_value;
+            self.child_state_exit_skip = false;
             #child_entry_hook
         }
     };
@@ -789,6 +795,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.state_exit_skip = false;
             core::mem::replace(&mut self.core.state, state)
         }
 
@@ -797,6 +804,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.child_state_exit_skip = false;
             core::mem::replace(&mut self.core.child_state, state)
         }
 
@@ -1053,6 +1061,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.state_exit_skip = false;
                 core::mem::replace(&mut self.state, state)
             }
 
@@ -1061,6 +1070,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.child_state_exit_skip = false;
                 core::mem::replace(&mut self.child_state, state)
             }
 
@@ -1946,6 +1956,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.#exit_skip = false;
                 core::mem::replace(&mut self.#field, state)
             }
             fn #visit_method<R>(
@@ -2611,6 +2622,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.states_exit_skip.fill(false);
                 core::mem::replace(&mut self.states, states)
             }
             fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool { self.states == *expected }
@@ -2626,6 +2638,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.state_exit_skip = false;
                 core::mem::replace(&mut self.state, state)
             }
             fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
@@ -3478,7 +3491,10 @@ fn tree_enter_node(
             .then(|| quote! { (core::default::Default::default()) });
         quote! { self.#field = #states_name::#initial #value; }
     };
-    Ok(quote! { #reset #entry_hook #enter_descendant })
+    // Entering the node starts a new occupancy, so its exit-skip token is
+    // cleared (see `exit_skip_place`).
+    let exit_skip = exit_skip_place(&quote! { self.#field });
+    Ok(quote! { #reset #exit_skip = false; #entry_hook #enter_descendant })
 }
 
 #[allow(
@@ -4618,6 +4634,12 @@ fn exception_code(
 /// already been exited. The next exit of that slot, by an exception row's
 /// recovery or by an ancestor leaving it, consumes the token instead of
 /// running the exits again: each entry gets exactly one exit.
+///
+/// A token never outlives the occupancy it belongs to: every path that enters
+/// a slot (a transition replacing its state, entering a composite node or an
+/// orthogonal region, history re-entry, the testing state setters) clears it,
+/// and every path that leaves a subtree runs or consumes the exits of each
+/// nested slot it leaves.
 pub(crate) fn exit_skip_place(state_place: &TokenStream) -> TokenStream {
     let mut tokens = state_place.clone().into_iter().collect::<Vec<_>>();
     if let Some(proc_macro2::TokenTree::Ident(ident)) = tokens.last_mut() {

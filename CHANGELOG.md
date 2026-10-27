@@ -22,6 +22,10 @@ All notable changes to this project are documented here. This project follows
   when a transition's action fails after its source's `on_exit` already ran
   and an `exception<E>` row's recovery then leaves that state; the recovery
   no longer runs the same `on_exit` a second time.
+- Enter and exit the composite child active in an orthogonal region when its
+  orthogonal node or root is entered (including `initialize`) or left, and
+  clear a state's exit-skip token on every entry, so `on_entry` and `on_exit`
+  stay paired across re-entry after a recovered fault.
 - Borrow a composite child's state data per row, so several rows on one
   trigger from a data-carrying state (`Name(T)`) can all read that data, as in
   a flat table, instead of failing borrow checking (E0502).
