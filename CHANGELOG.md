@@ -8,6 +8,13 @@ All notable changes to this project are documented here. This project follows
 
 ### Fixed
 
+- Route guard and action faults raised by `completion<E>` and anonymous
+  `completion<_>` rows in composite and orthogonal machines to `exception<E>`
+  rows, innermost active state first, as event dispatch already did; such a
+  fault no longer escapes `process_event` and leaves a child mid-flow.
+- Borrow a composite child's state data per row, so several rows on one
+  trigger from a data-carrying state (`Name(T)`) can all read that data, as in
+  a flat table, instead of failing borrow checking (E0502).
 - Keep thread-safety guards in a separate generated storage slot so policy
   logging and event processing use ordinary safe Rust borrowing with no raw
   pointer or unsafe-code path.

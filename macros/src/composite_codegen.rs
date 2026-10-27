@@ -636,6 +636,30 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         })
         .unwrap_or_default();
 
+    // The innermost-first exception walk shared by event dispatch and by
+    // stabilize(): the active child's exception rows, then the parent's.
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_handled = false;
+        if self.child_is_active() { #child_exception }
+        #parent_exception
+    };
+    let completion_step = quote! {
+        if self.child_is_active() {
+            #child_completion
+        }
+        if !handled {
+            #parent_completion
+        }
+    };
+    let stabilize_body = recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -657,10 +681,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         };
         let recover_guard = quote! {
-            let error_data = &error;
-            let mut exception_handled = false;
-            if self.child_is_active() { #child_exception }
-            #parent_exception
+            #recover_walk
             if exception_handled {
                 (true, true)
             } else {
@@ -668,10 +689,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         };
         let recover_action = quote! {
-            let error_data = &error;
-            let mut exception_handled = false;
-            if self.child_is_active() { #child_exception }
-            #parent_exception
+            #recover_walk
             if exception_handled {
                 (true, true)
             } else {
@@ -1009,16 +1027,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut handled = false;
-                    if self.child_is_active() {
-                        #child_completion
-                    }
-                    if !handled {
-                        #parent_completion
-                    }
-                    if !handled { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #[inline(always)]
@@ -2312,6 +2321,26 @@ fn generate_multi_code(
         .iter()
         .flat_map(|machine| &machine.transitions)
         .any(|transition| transition.event.kind == EventKind::Exception);
+    // The innermost-first exception walk shared by event dispatch and by
+    // stabilize(): active descendants deepest first, then the root table.
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_handled = false;
+        #(#child_exceptions)*
+        #parent_exception
+    };
+    let completion_step = quote! {
+        #(#child_completions)*
+        if !handled { #parent_completion }
+    };
+    let stabilize_body = recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -2335,18 +2364,12 @@ fn generate_multi_code(
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #(#child_exceptions)*
-                    #parent_exception
+                    #recover_walk
                     if exception_handled { (true, true) }
                     else { return Err(#error_name::GuardFailed(error)); }
                 }
                 Err(#error_name::ActionFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #(#child_exceptions)*
-                    #parent_exception
+                    #recover_walk
                     if exception_handled { (true, true) }
                     else { return Err(#error_name::ActionFailed(error)); }
                 }
@@ -2824,12 +2847,7 @@ fn generate_multi_code(
             #initialize_method
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut handled = false;
-                    #(#child_completions)*
-                    if !handled { #parent_completion }
-                    if !handled { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #root_state_api
@@ -2936,6 +2954,90 @@ fn generate_multi_code(
                 }
             }
         }
+    })
+}
+
+/// Generates the body of a composite machine's `stabilize()` loop.
+///
+/// Each pass runs the completion step (`completion<E>` and anonymous
+/// `completion<_>` rows, innermost active state first). With exception rows in
+/// the tree, a guard or action fault raised by that step is routed through the
+/// same innermost-to-outermost exception walk as event dispatch, so a fault in
+/// a completion chain cannot leave a child mid-flow. A recovered fault
+/// continues stabilizing with no origin event, exactly as event dispatch calls
+/// `stabilize(None)` after recovery; an unhandled fault returns the error.
+pub(crate) fn recovering_stabilize_body(
+    has_exception_handlers: bool,
+    is_async_machine: bool,
+    completion_step: &TokenStream,
+    recover_walk: &TokenStream,
+    error_name: &Ident,
+    generated_error: &TokenStream,
+) -> TokenStream {
+    if !has_exception_handlers {
+        return quote! {
+            loop {
+                let mut handled = false;
+                #completion_step
+                if !handled { return Ok(()); }
+            }
+        };
+    }
+    // An async block adds an await point that holds `&mut self`; use it only
+    // when the completion step itself awaits, so a machine whose completions
+    // are all synchronous keeps a `stabilize` future with no await points.
+    let attempt = if is_async_machine && tokens_contain_await(completion_step.clone()) {
+        quote! {
+            async {
+                let mut handled = false;
+                #completion_step
+                Ok::<bool, #generated_error>(handled)
+            }.await
+        }
+    } else {
+        quote! {
+            (|| -> Result<bool, #generated_error> {
+                let mut handled = false;
+                #completion_step
+                Ok(handled)
+            })()
+        }
+    };
+    quote! {
+        let mut origin = origin;
+        loop {
+            let completion_result = #attempt;
+            let handled = match completion_result {
+                Ok(handled) => handled,
+                Err(#error_name::GuardFailed(error)) => {
+                    #recover_walk
+                    if !exception_handled {
+                        return Err(#error_name::GuardFailed(error));
+                    }
+                    origin = None;
+                    true
+                }
+                Err(#error_name::ActionFailed(error)) => {
+                    #recover_walk
+                    if !exception_handled {
+                        return Err(#error_name::ActionFailed(error));
+                    }
+                    origin = None;
+                    true
+                }
+                Err(error) => return Err(error),
+            };
+            if !handled { return Ok(()); }
+        }
+    }
+}
+
+/// Returns whether generated tokens contain an `.await` expression.
+fn tokens_contain_await(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Ident(ident) => ident == "await",
+        proc_macro2::TokenTree::Group(group) => tokens_contain_await(group.stream()),
+        proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
     })
 }
 
@@ -3915,7 +4017,7 @@ fn dispatch_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -3952,7 +4054,7 @@ fn dispatch_code(
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -3983,7 +4085,7 @@ fn dispatch_code(
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4204,10 +4306,20 @@ fn transition_code(
             handled = true;
         }
     };
-    Ok(if let Some(guard) = guard {
+    let row = if let Some(guard) = guard {
         quote! { if !handled && #candidate_dispatch && #guard { #body } }
     } else {
         quote! { if !handled && #candidate_dispatch { #body } }
+    };
+    // A data-carrying source state is borrowed per row, not once for the whole
+    // match arm: the borrow then ends inside each row, before that row replaces
+    // the state, so several rows on one trigger can all read the state data.
+    Ok(if state_arg.is_some() {
+        quote! {
+            if let #states_name::#source(state_data) = &#state_place { #row }
+        }
+    } else {
+        row
     })
 }
 
@@ -4278,7 +4390,7 @@ fn exception_code(
         let source = &first.in_state.ident;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4400,7 +4512,7 @@ fn completion_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4479,7 +4591,7 @@ fn completion_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };

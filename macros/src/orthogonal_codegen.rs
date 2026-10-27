@@ -356,6 +356,26 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             })
     });
 
+    // stabilize() routes completion faults through the same exception rows as
+    // event dispatch (see `recovering_stabilize_body`).
+    let completion_step = quote! {
+        let mut progressed = false;
+        #(#completion_dispatch)*
+        handled = progressed;
+    };
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_handled = false;
+        #exception_dispatch
+    };
+    let stabilize_body = crate::composite_codegen::recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -379,9 +399,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #exception_dispatch
+                    #recover_walk
                     if exception_handled {
                         (true, true)
                     } else {
@@ -389,9 +407,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                     }
                 }
                 Err(#error_name::ActionFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #exception_dispatch
+                    #recover_walk
                     if exception_handled {
                         (true, true)
                     } else {
@@ -710,11 +726,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut progressed = false;
-                    #(#completion_dispatch)*
-                    if !progressed { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #[inline(always)]
