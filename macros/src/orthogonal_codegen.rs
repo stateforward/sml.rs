@@ -365,7 +365,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     };
     let recover_walk = quote! {
         let error_data = &error;
-        let mut exception_handled = false;
+        let mut exception_recovery: Option<bool> = None;
         #exception_dispatch
     };
     let stabilize_body = crate::composite_codegen::recovering_stabilize_body(
@@ -400,7 +400,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
                     #recover_walk
-                    if exception_handled {
+                    if exception_recovery.is_some() {
                         (true, true)
                     } else {
                         return Err(#error_name::GuardFailed(error));
@@ -408,7 +408,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 }
                 Err(#error_name::ActionFailed(error)) => {
                     #recover_walk
-                    if exception_handled {
+                    if exception_recovery.is_some() {
                         (true, true)
                     } else {
                         return Err(#error_name::ActionFailed(error));
@@ -1858,24 +1858,37 @@ fn generate_exception_dispatch(
                         composite_entry,
                         0,
                     )?;
-                    Ok(if typed {
+                    let branch = if typed {
                         quote! { let event_data = error_data; #branch }
                     } else {
                         branch
+                    };
+                    let moves = crate::composite_codegen::exception_row_moves(transition);
+                    Ok(quote! {
+                        if !region_handled {
+                            #branch
+                            if region_handled { region_moved = #moves; }
+                        }
                     })
                 })
                 .collect::<parse::Result<Vec<_>>>()?;
             arms.push(quote! { #state_pattern => { #(#branches)* } });
         }
+        // Each region recovers on its own; the walk has made progress when any
+        // region's handling row changed that region's state.
         region_dispatches.push(quote! {
             {
                 let region_index = #index;
                 let mut region_handled = false;
+                let mut region_moved = false;
                 match &mut #states_place[#index] {
                     #(#arms,)*
                     _ => {}
                 }
-                exception_handled |= region_handled;
+                if region_handled {
+                    exception_recovery =
+                        Some(region_moved || exception_recovery == Some(true));
+                }
             }
         });
     }

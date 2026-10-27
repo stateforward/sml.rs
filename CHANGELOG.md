@@ -12,6 +12,10 @@ All notable changes to this project are documented here. This project follows
   `completion<_>` rows in composite and orthogonal machines to `exception<E>`
   rows, innermost active state first, as event dispatch already did; such a
   fault no longer escapes `process_event` and leaves a child mid-flow.
+- End the run-to-completion step after a completion fault is recovered by an
+  internal or self-targeting `exception<E>` row, instead of rerunning the
+  faulting completion forever in `process_event` or `initialize`; stabilizing
+  continues only when the handling row moves to another state.
 - Borrow a composite child's state data per row, so several rows on one
   trigger from a data-carrying state (`Name(T)`) can all read that data, as in
   a flat table, instead of failing borrow checking (E0502).

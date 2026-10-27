@@ -640,7 +640,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     // stabilize(): the active child's exception rows, then the parent's.
     let recover_walk = quote! {
         let error_data = &error;
-        let mut exception_handled = false;
+        let mut exception_recovery: Option<bool> = None;
         if self.child_is_active() { #child_exception }
         #parent_exception
     };
@@ -682,7 +682,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         };
         let recover_guard = quote! {
             #recover_walk
-            if exception_handled {
+            if exception_recovery.is_some() {
                 (true, true)
             } else {
                 return Err(#error_name::GuardFailed(error));
@@ -690,7 +690,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         };
         let recover_action = quote! {
             #recover_walk
-            if exception_handled {
+            if exception_recovery.is_some() {
                 (true, true)
             } else {
                 return Err(#error_name::ActionFailed(error));
@@ -1959,7 +1959,7 @@ fn generate_multi_code(
         child_exceptions.push((
             depth,
             quote! {
-                if !exception_handled && #active { #exception }
+                if exception_recovery.is_none() && #active { #exception }
             },
         ));
         if node_parents.get(&reference.to_string()) == Some(parent_name) {
@@ -2325,7 +2325,7 @@ fn generate_multi_code(
     // stabilize(): active descendants deepest first, then the root table.
     let recover_walk = quote! {
         let error_data = &error;
-        let mut exception_handled = false;
+        let mut exception_recovery: Option<bool> = None;
         #(#child_exceptions)*
         #parent_exception
     };
@@ -2365,12 +2365,12 @@ fn generate_multi_code(
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
                     #recover_walk
-                    if exception_handled { (true, true) }
+                    if exception_recovery.is_some() { (true, true) }
                     else { return Err(#error_name::GuardFailed(error)); }
                 }
                 Err(#error_name::ActionFailed(error)) => {
                     #recover_walk
-                    if exception_handled { (true, true) }
+                    if exception_recovery.is_some() { (true, true) }
                     else { return Err(#error_name::ActionFailed(error)); }
                 }
                 Err(error) => return Err(error),
@@ -2963,9 +2963,18 @@ fn generate_multi_code(
 /// `completion<_>` rows, innermost active state first). With exception rows in
 /// the tree, a guard or action fault raised by that step is routed through the
 /// same innermost-to-outermost exception walk as event dispatch, so a fault in
-/// a completion chain cannot leave a child mid-flow. A recovered fault
-/// continues stabilizing with no origin event, exactly as event dispatch calls
-/// `stabilize(None)` after recovery; an unhandled fault returns the error.
+/// a completion chain cannot leave a child mid-flow. The walk leaves
+/// `exception_recovery` as `None` when no row handled the fault, or as
+/// `Some(moved)` where `moved` says whether the handling row changed the
+/// active state configuration (see `exception_row_moves`).
+///
+/// A recovered fault ends the run-to-completion step unless the recovery made
+/// progress: when the handling row moved to another state, stabilizing
+/// continues with no origin event, exactly as event dispatch calls
+/// `stabilize(None)` after recovery, so a parent `completion<_>` can still
+/// run; when the row was internal or targeted its own source state,
+/// `stabilize()` returns `Ok(())`, because running the same completion step
+/// again would fault again forever. An unhandled fault returns the error.
 pub(crate) fn recovering_stabilize_body(
     has_exception_handlers: bool,
     is_async_machine: bool,
@@ -3011,17 +3020,19 @@ pub(crate) fn recovering_stabilize_body(
                 Ok(handled) => handled,
                 Err(#error_name::GuardFailed(error)) => {
                     #recover_walk
-                    if !exception_handled {
+                    let Some(moved) = exception_recovery else {
                         return Err(#error_name::GuardFailed(error));
-                    }
+                    };
+                    if !moved { return Ok(()); }
                     origin = None;
                     true
                 }
                 Err(#error_name::ActionFailed(error)) => {
                     #recover_walk
-                    if !exception_handled {
+                    let Some(moved) = exception_recovery else {
                         return Err(#error_name::ActionFailed(error));
-                    }
+                    };
+                    if !moved { return Ok(()); }
                     origin = None;
                     true
                 }
@@ -4414,25 +4425,44 @@ fn exception_code(
                     async_queue,
                     0,
                 )?;
-                Ok(if transition.event.wildcard {
+                let branch = if transition.event.wildcard {
                     branch
                 } else {
                     quote! { let event_data = error_data; #branch }
+                };
+                let moves = exception_row_moves(transition);
+                Ok(quote! {
+                    if !handled {
+                        #branch
+                        if handled { moved = #moves; }
+                    }
                 })
             })
             .collect::<parse::Result<Vec<_>>>()?;
         arms.push(quote! { #state_pattern => { #(#branches)* } });
     }
     Ok(quote! {
-        if !exception_handled {
+        if exception_recovery.is_none() {
             let mut handled = false;
+            let mut moved = false;
             match &#state_place {
                 #(#arms,)*
                 _ => {}
             }
-            exception_handled = handled;
+            if handled { exception_recovery = Some(moved); }
         }
     })
+}
+
+/// Returns whether an exception row changes the active state configuration
+/// at its level: an external transition to a state other than its source.
+///
+/// An internal row, or a row that targets its own source state, recovers the
+/// fault without progress, so `stabilize()` must not run the completion step
+/// that faulted again (see `recovering_stabilize_body`). Wildcard source rows
+/// are expanded to concrete states by the parser before code generation.
+pub(crate) fn exception_row_moves(transition: &StateTransition) -> bool {
+    !transition.internal_transition && transition.out_state.ident != transition.in_state.ident
 }
 
 #[allow(

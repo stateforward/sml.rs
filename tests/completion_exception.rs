@@ -394,3 +394,166 @@ fn orthogonal_region_completion_fault_is_caught_by_its_exception_row() {
     ));
     assert_eq!(machine.context().log, ["right_tick", "left_step"]);
 }
+
+// A recovered completion fault ends the run-to-completion step unless the
+// exception row that handled it changed the active state. An anonymous
+// `completion<_>` that always faults, recovered by an internal or a
+// self-targeting exception row, would otherwise retry forever; the faulting
+// action counts its calls and panics past `SPIN_LIMIT` so a hang shows up as a
+// test failure.
+
+const SPIN_LIMIT: u32 = 10;
+
+#[derive(Default)]
+struct SpinContext {
+    spins: u32,
+    faults: u32,
+}
+
+impl SpinContext {
+    fn count_spin(&mut self) -> Result<(), Fault> {
+        self.spins += 1;
+        assert!(
+            self.spins <= SPIN_LIMIT,
+            "a recovered completion fault was retried {} times",
+            self.spins
+        );
+        Err(Fault(7))
+    }
+
+    fn count_fault(&mut self, error: Fault) {
+        assert_eq!(error, Fault(7));
+        self.faults += 1;
+    }
+}
+
+pub struct Spin;
+
+sml! {
+    InternalSpinKid {
+        *"spinning"_s + completion<_> / spin = X,
+         "spinning"_s + exception<Fault> / spin_fault,
+    }
+
+    InternalSpin {
+        *"idle"_s + event<Spin> = state<InternalSpinKid>,
+         state<InternalSpinKid> + completion<_> = "idle"_s,
+    }
+}
+
+impl InternalSpinStateMachineContext for SpinContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn completion_fault_recovered_by_an_internal_row_ends_process_event() {
+    let mut machine = InternalSpinStateMachine::new(SpinContext::default());
+    machine.process_event(Spin).unwrap();
+    // The internal row left the child in "spinning"; the step ended there.
+    assert!(machine.is(&InternalSpinStates::InternalSpinKid));
+    assert!(machine.is_child(&InternalSpinInternalSpinKidStates::Spinning));
+    assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
+}
+
+sml! {
+    InitialSpinKid {
+        *"spinning"_s + completion<_> / spin = X,
+         "spinning"_s + exception<Fault> / spin_fault,
+    }
+
+    InitialSpin {
+        *state<InitialSpinKid> + completion<_> = "idle"_s,
+         "idle"_s + event<Spin> = state<InitialSpinKid>,
+    }
+}
+
+impl InitialSpinStateMachineContext for SpinContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn completion_fault_recovered_by_an_internal_row_ends_initialize() {
+    let mut machine = InitialSpinStateMachine::new(SpinContext::default());
+    machine.initialize().unwrap();
+    assert!(machine.is(&InitialSpinStates::InitialSpinKid));
+    assert!(machine.is_child(&InitialSpinInitialSpinKidStates::Spinning));
+    assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
+}
+
+sml! {
+    SelfSpinKid {
+        *"spinning"_s + completion<_> / spin = X,
+         "spinning"_s + exception<Fault> / spin_fault = "spinning"_s,
+    }
+
+    SelfSpin {
+        *"idle"_s + event<Spin> = state<SelfSpinKid>,
+         state<SelfSpinKid> + completion<_> = "idle"_s,
+    }
+}
+
+impl SelfSpinStateMachineContext for SpinContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn completion_fault_recovered_by_a_self_targeting_row_ends_process_event() {
+    let mut machine = SelfSpinStateMachine::new(SpinContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(machine.is(&SelfSpinStates::SelfSpinKid));
+    assert!(machine.is_child(&SelfSpinSelfSpinKidStates::Spinning));
+    assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
+}
+
+sml! {
+    OrthogonalSpin {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right idle"_s + event<Halt> = X,
+    }
+}
+
+impl OrthogonalSpinStateMachineContext for SpinContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_completion_fault_recovered_by_an_internal_row_ends_process_event() {
+    let mut machine = OrthogonalSpinStateMachine::new(SpinContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(matches!(
+        machine.state(0),
+        Some(OrthogonalSpinStates::LeftSpinning)
+    ));
+    assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
+}
