@@ -659,6 +659,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &recover_walk,
         &error_name,
         &generated_error,
+        None,
     );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
@@ -1357,6 +1358,27 @@ fn generate_multi_code(
             .flat_map(|machine| &machine.transitions)
             .any(|transition| !transition.process_events.is_empty());
     let async_queue = is_async_machine && has_queue_actions;
+    let has_exception_handlers = all_machines
+        .iter()
+        .flat_map(|machine| &machine.transitions)
+        .any(|transition| transition.event.kind == EventKind::Exception);
+    // With exception rows and orthogonal regions anywhere in the tree, every
+    // completion block (an orthogonal region, a scalar child, or the scalar
+    // root) is a stabilize() settle site numbered here, so a recovery without
+    // progress settles only the site that faulted and its peer regions keep
+    // stabilizing (see `recovering_stabilize_body`). Without regions the
+    // completion step is not split and such a recovery ends the step.
+    let track_settle_sites = has_exception_handlers
+        && (root_orthogonal
+            || child_machines.iter().any(|child| {
+                child
+                    .transitions
+                    .iter()
+                    .filter(|transition| transition.in_state.start)
+                    .count()
+                    > 1
+            }));
+    let mut next_settle_site = 0_usize;
 
     let fixed_error_types = all_machines
         .iter()
@@ -1568,8 +1590,12 @@ fn generate_multi_code(
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
+                track_settle_sites.then_some(next_settle_site),
             )?;
             let region_count = embedded.region_count;
+            if track_settle_sites {
+                next_settle_site = next_settle_site.saturating_add(region_count);
+            }
             let variants = &embedded.state_variants;
             let initials = &embedded.initial_values;
             let regions = crate::orthogonal_codegen::discover_regions(child)?;
@@ -1950,12 +1976,21 @@ fn generate_multi_code(
                 handled |= outer_handled;
             },
         ));
-        child_completions.push((
-            depth,
+        let completion = if track_settle_sites {
+            let site = next_settle_site;
+            next_settle_site = next_settle_site.saturating_add(1);
+            quote! {
+                if !handled && #active && !settled_sites[#site] {
+                    faulting_site = #site;
+                    #completion
+                }
+            }
+        } else {
             quote! {
                 if !handled && #active { #completion }
-            },
-        ));
+            }
+        };
+        child_completions.push((depth, completion));
         child_exceptions.push((
             depth,
             quote! {
@@ -2266,9 +2301,20 @@ fn generate_multi_code(
             &temporary_context_argument,
             has_deferred_events,
             async_queue,
+            track_settle_sites.then_some(next_settle_site),
         )?)
     } else {
         None
+    };
+    let parent_completion_site = if !track_settle_sites {
+        None
+    } else if let Some(embedded) = &root_embedded {
+        next_settle_site = next_settle_site.saturating_add(embedded.region_count);
+        None
+    } else {
+        let site = next_settle_site;
+        next_settle_site = next_settle_site.saturating_add(1);
+        Some(site)
     };
     let (parent_completion, parent_exception, parent_initial_entry) =
         root_embedded.as_ref().map_or_else(
@@ -2317,10 +2363,6 @@ fn generate_multi_code(
             quote! { #(#descendants)* if !handled { #scalar_parent_dispatch } }
         };
 
-    let has_exception_handlers = all_machines
-        .iter()
-        .flat_map(|machine| &machine.transitions)
-        .any(|transition| transition.event.kind == EventKind::Exception);
     // The innermost-first exception walk shared by event dispatch and by
     // stabilize(): active descendants deepest first, then the root table.
     let recover_walk = quote! {
@@ -2329,9 +2371,19 @@ fn generate_multi_code(
         #(#child_exceptions)*
         #parent_exception
     };
+    let parent_completion_step = if let Some(site) = parent_completion_site {
+        quote! {
+            if !handled && !settled_sites[#site] {
+                faulting_site = #site;
+                #parent_completion
+            }
+        }
+    } else {
+        quote! { if !handled { #parent_completion } }
+    };
     let completion_step = quote! {
         #(#child_completions)*
-        if !handled { #parent_completion }
+        #parent_completion_step
     };
     let stabilize_body = recovering_stabilize_body(
         has_exception_handlers,
@@ -2340,6 +2392,7 @@ fn generate_multi_code(
         &recover_walk,
         &error_name,
         &generated_error,
+        track_settle_sites.then_some(next_settle_site),
     );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
@@ -2968,13 +3021,27 @@ fn generate_multi_code(
 /// `Some(moved)` where `moved` says whether the handling row changed the
 /// active state configuration (see `exception_row_moves`).
 ///
-/// A recovered fault ends the run-to-completion step unless the recovery made
-/// progress: when the handling row moved to another state, stabilizing
-/// continues with no origin event, exactly as event dispatch calls
-/// `stabilize(None)` after recovery, so a parent `completion<_>` can still
-/// run; when the row was internal or targeted its own source state,
-/// `stabilize()` returns `Ok(())`, because running the same completion step
-/// again would fault again forever. An unhandled fault returns the error.
+/// When the handling row moved to another state, stabilizing continues with
+/// no origin event, exactly as event dispatch calls `stabilize(None)` after
+/// recovery, so a parent `completion<_>` can still run. When the row was
+/// internal or targeted its own source state, the recovery made no progress
+/// and running the same completion again would fault again forever:
+///
+/// - With `settle_sites` as `None` (no orthogonal regions), the recovered
+///   fault ends the run-to-completion step and `stabilize()` returns `Ok(())`.
+/// - With `settle_sites` as `Some(count)`, the completion step is split into
+///   `count` sites (one per orthogonal region), each guarded by
+///   `settled_sites[site]` and recording itself in `faulting_site` before it
+///   runs. Only the site that faulted is settled for the rest of this call;
+///   stabilizing continues with the origin event kept, so every peer region
+///   still runs its pending completions (including `completion<E>` rows for
+///   the origin event) until the whole machine is stable.
+///
+/// An unhandled fault returns the error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stabilize generation keeps all completion and recovery inputs explicit"
+)]
 pub(crate) fn recovering_stabilize_body(
     has_exception_handlers: bool,
     is_async_machine: bool,
@@ -2982,6 +3049,7 @@ pub(crate) fn recovering_stabilize_body(
     recover_walk: &TokenStream,
     error_name: &Ident,
     generated_error: &TokenStream,
+    settle_sites: Option<usize>,
 ) -> TokenStream {
     if !has_exception_handlers {
         return quote! {
@@ -3012,8 +3080,32 @@ pub(crate) fn recovering_stabilize_body(
             })()
         }
     };
+    let (sites, after_recovery) = if let Some(count) = settle_sites {
+        (
+            quote! {
+                let mut settled_sites = [false; #count];
+                let mut faulting_site: usize = 0;
+            },
+            quote! {
+                if moved {
+                    origin = None;
+                } else {
+                    settled_sites[faulting_site] = true;
+                }
+            },
+        )
+    } else {
+        (
+            TokenStream::new(),
+            quote! {
+                if !moved { return Ok(()); }
+                origin = None;
+            },
+        )
+    };
     quote! {
         let mut origin = origin;
+        #sites
         loop {
             let completion_result = #attempt;
             let handled = match completion_result {
@@ -3023,8 +3115,7 @@ pub(crate) fn recovering_stabilize_body(
                     let Some(moved) = exception_recovery else {
                         return Err(#error_name::GuardFailed(error));
                     };
-                    if !moved { return Ok(()); }
-                    origin = None;
+                    #after_recovery
                     true
                 }
                 Err(#error_name::ActionFailed(error)) => {
@@ -3032,8 +3123,7 @@ pub(crate) fn recovering_stabilize_body(
                     let Some(moved) = exception_recovery else {
                         return Err(#error_name::ActionFailed(error));
                     };
-                    if !moved { return Ok(()); }
-                    origin = None;
+                    #after_recovery
                     true
                 }
                 Err(error) => return Err(error),
@@ -3094,6 +3184,7 @@ fn tree_embedded_orthogonal(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
+    settle_site_base: Option<usize>,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
     let node = nodes.get(index).ok_or_else(|| {
         parse::Error::new(
@@ -3168,6 +3259,7 @@ fn tree_embedded_orthogonal(
         temporary_context,
         has_deferred_events,
         async_queue,
+        settle_site_base,
     )
 }
 
@@ -3294,6 +3386,7 @@ fn tree_enter_node(
             temporary_context,
             false,
             false,
+            None,
         )?;
         let initials = embedded.initial_values;
         let enter = embedded.enter_current;
@@ -3425,6 +3518,7 @@ fn tree_exit_node(
             temporary_context,
             false,
             false,
+            None,
         )?;
         return Ok(embedded.exit_current);
     }

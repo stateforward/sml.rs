@@ -15,7 +15,9 @@ All notable changes to this project are documented here. This project follows
 - End the run-to-completion step after a completion fault is recovered by an
   internal or self-targeting `exception<E>` row, instead of rerunning the
   faulting completion forever in `process_event` or `initialize`; stabilizing
-  continues only when the handling row moves to another state.
+  continues only when the handling row moves to another state. In a machine
+  with orthogonal regions such a recovery settles only the region that
+  faulted, so peer regions still run their pending completions.
 - Borrow a composite child's state data per row, so several rows on one
   trigger from a data-carrying state (`Name(T)`) can all read that data, as in
   a flat table, instead of failing borrow checking (E0502).

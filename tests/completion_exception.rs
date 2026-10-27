@@ -557,3 +557,270 @@ fn orthogonal_completion_fault_recovered_by_an_internal_row_ends_process_event()
     ));
     assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
 }
+
+// A recovery that does not move settles only the region whose completion
+// faulted: a peer region's pending completion chain still runs to the end of
+// the same run-to-completion step, and the faulting region is not retried.
+
+#[derive(Default)]
+struct PeerContext {
+    spin: SpinContext,
+    log: Vec<&'static str>,
+}
+
+sml! {
+    OrthogonalPeer {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right idle"_s + event<Spin> = "right one"_s,
+         "right one"_s + completion<_> / right_one = "right two"_s,
+         "right two"_s + completion<_> / right_two = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+}
+
+impl OrthogonalPeerStateMachineContext for PeerContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn right_one(&mut self) -> Result<(), Fault> {
+        self.log.push("right_one");
+        Ok(())
+    }
+
+    fn right_two(&mut self) -> Result<(), Fault> {
+        self.log.push("right_two");
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_no_progress_recovery_lets_a_peer_region_finish_on_process_event() {
+    let mut machine = OrthogonalPeerStateMachine::new(PeerContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(matches!(
+        machine.state(0),
+        Some(OrthogonalPeerStates::LeftSpinning)
+    ));
+    assert!(matches!(
+        machine.state(1),
+        Some(OrthogonalPeerStates::RightDone)
+    ));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.log, ["right_one", "right_two"]);
+}
+
+sml! {
+    OrthogonalInitialPeer {
+        *"left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right one"_s + completion<_> / right_one = "right two"_s,
+         "right two"_s + completion<_> / right_two = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+}
+
+impl OrthogonalInitialPeerStateMachineContext for PeerContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn right_one(&mut self) -> Result<(), Fault> {
+        self.log.push("right_one");
+        Ok(())
+    }
+
+    fn right_two(&mut self) -> Result<(), Fault> {
+        self.log.push("right_two");
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_no_progress_recovery_lets_a_peer_region_finish_on_initialize() {
+    let mut machine = OrthogonalInitialPeerStateMachine::new(PeerContext::default());
+    machine.initialize().unwrap();
+    assert!(matches!(
+        machine.state(0),
+        Some(OrthogonalInitialPeerStates::LeftSpinning)
+    ));
+    assert!(matches!(
+        machine.state(1),
+        Some(OrthogonalInitialPeerStates::RightDone)
+    ));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.log, ["right_one", "right_two"]);
+}
+
+sml! {
+    NestedPeerKid {
+        *"left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right one"_s + completion<_> / right_one = "right two"_s,
+         "right two"_s + completion<_> / right_two = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+
+    NestedPeer {
+        *"idle"_s + event<Spin> = state<NestedPeerKid>,
+         state<NestedPeerKid> + completion<_> = "idle"_s,
+    }
+}
+
+impl NestedPeerStateMachineContext for PeerContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn right_one(&mut self) -> Result<(), Fault> {
+        self.log.push("right_one");
+        Ok(())
+    }
+
+    fn right_two(&mut self) -> Result<(), Fault> {
+        self.log.push("right_two");
+        Ok(())
+    }
+}
+
+#[test]
+fn nested_orthogonal_no_progress_recovery_lets_a_peer_region_finish() {
+    let mut machine = NestedPeerStateMachine::new(PeerContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(machine.is(&NestedPeerStates::NestedPeerKid));
+    assert!(matches!(
+        machine.nested_peer_kid_state(0),
+        Some(NestedPeerNestedPeerKidStates::LeftSpinning)
+    ));
+    assert!(matches!(
+        machine.nested_peer_kid_state(1),
+        Some(NestedPeerNestedPeerKidStates::RightDone)
+    ));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.log, ["right_one", "right_two"]);
+}
+
+sml! {
+    RootPeerKid {
+        *"one"_s + completion<_> / right_one = "two"_s,
+         "two"_s + completion<_> / right_two = X,
+    }
+
+    RootPeer {
+        *"left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *state<RootPeerKid> + completion<_> = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+}
+
+impl RootPeerStateMachineContext for PeerContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn right_one(&mut self) -> Result<(), Fault> {
+        self.log.push("right_one");
+        Ok(())
+    }
+
+    fn right_two(&mut self) -> Result<(), Fault> {
+        self.log.push("right_two");
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_root_no_progress_recovery_lets_a_peer_region_finish_on_initialize() {
+    let mut machine = RootPeerStateMachine::new(PeerContext::default());
+    machine.initialize().unwrap();
+    assert!(machine.is_region(0, &RootPeerStates::LeftSpinning));
+    assert!(machine.is_region(1, &RootPeerStates::RightDone));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.log, ["right_one", "right_two"]);
+}
+
+sml! {
+    AsyncOrthogonalPeer {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / async spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right idle"_s + event<Spin> = "right one"_s,
+         "right one"_s + completion<_> / async right_one = "right two"_s,
+         "right two"_s + completion<_> / right_two = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+}
+
+impl AsyncOrthogonalPeerStateMachineContext for PeerContext {
+    async fn spin(&mut self) -> Result<(), Fault> {
+        core::future::ready(()).await;
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    async fn right_one(&mut self) -> Result<(), Fault> {
+        core::future::ready(()).await;
+        self.log.push("right_one");
+        Ok(())
+    }
+
+    fn right_two(&mut self) -> Result<(), Fault> {
+        self.log.push("right_two");
+        Ok(())
+    }
+}
+
+#[test]
+fn async_orthogonal_no_progress_recovery_lets_a_peer_region_finish() {
+    smol::block_on(async {
+        let mut machine = AsyncOrthogonalPeerStateMachine::new(PeerContext::default());
+        machine.process_event(Spin).await.unwrap();
+        assert!(matches!(
+            machine.state(0),
+            Some(AsyncOrthogonalPeerStates::LeftSpinning)
+        ));
+        assert!(matches!(
+            machine.state(1),
+            Some(AsyncOrthogonalPeerStates::RightDone)
+        ));
+        let context = machine.context();
+        assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+        assert_eq!(context.log, ["right_one", "right_two"]);
+    });
+}

@@ -278,6 +278,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             )
         })
         .collect::<parse::Result<Vec<_>>>()?;
+    let has_exception_handlers = machine
+        .transitions
+        .iter()
+        .any(|transition| transition.event.kind == EventKind::Exception);
+
     let completion_dispatch = regions
         .iter()
         .enumerate()
@@ -305,6 +310,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &TokenStream::new(),
                 &TokenStream::new(),
                 &quote! { true },
+                has_exception_handlers.then_some(index),
             )
         })
         .collect::<parse::Result<Vec<_>>>()?;
@@ -329,11 +335,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         &TokenStream::new(),
         &TokenStream::new(),
     )?;
-    let has_exception_handlers = machine
-        .transitions
-        .iter()
-        .any(|transition| transition.event.kind == EventKind::Exception);
-
     let initial_entries = regions.iter().enumerate().filter_map(|(index, region)| {
         lifecycle
             .get(&region.initial.to_string())
@@ -375,6 +376,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         &recover_walk,
         &error_name,
         &generated_error,
+        Some(regions.len()),
     );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
@@ -902,6 +904,7 @@ pub(crate) fn generate_embedded(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
+    settle_site_base: Option<usize>,
 ) -> parse::Result<EmbeddedOrthogonal> {
     let mut normalized_machine = machine.clone();
     for transition in &mut normalized_machine.transitions {
@@ -993,6 +996,7 @@ pub(crate) fn generate_embedded(
                 &composite_exit,
                 &composite_entry,
                 &composite_terminal,
+                settle_site_base.map(|base| base.saturating_add(index)),
             )
         })
         .collect::<parse::Result<TokenStream>>()?;
@@ -1915,6 +1919,7 @@ fn generate_completion_dispatch(
     composite_exit: &TokenStream,
     composite_entry: &TokenStream,
     composite_terminal: &TokenStream,
+    settle_site: Option<usize>,
 ) -> parse::Result<TokenStream> {
     let mut anonymous_arms = Vec::new();
     let mut origin_arms = Vec::new();
@@ -2016,24 +2021,35 @@ fn generate_completion_dispatch(
             });
         }
     }
-    Ok(quote! {
-        {
-            let region_index = #index;
-            let mut region_handled = false;
-            if let Some(origin) = origin {
-                match (&mut #states_place[#index], origin) {
-                    #(#origin_arms,)*
-                    _ => {}
-                }
+    let region = quote! {
+        let region_index = #index;
+        let mut region_handled = false;
+        if let Some(origin) = origin {
+            match (&mut #states_place[#index], origin) {
+                #(#origin_arms,)*
+                _ => {}
             }
-            if !region_handled {
-                match &mut #states_place[#index] {
-                    #(#anonymous_arms,)*
-                    _ => {}
-                }
-            }
-            progressed |= region_handled;
         }
+        if !region_handled {
+            match &mut #states_place[#index] {
+                #(#anonymous_arms,)*
+                _ => {}
+            }
+        }
+        progressed |= region_handled;
+    };
+    // With exception rows, a region is a stabilize() settle site: a fault in
+    // its completions that is recovered without progress settles this region
+    // alone, and its peers keep stabilizing (see `recovering_stabilize_body`).
+    Ok(if let Some(site) = settle_site {
+        quote! {
+            if !settled_sites[#site] {
+                faulting_site = #site;
+                #region
+            }
+        }
+    } else {
+        quote! { { #region } }
     })
 }
 
