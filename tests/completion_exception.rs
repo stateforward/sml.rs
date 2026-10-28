@@ -1075,3 +1075,140 @@ fn peer_region_composite_exception_move_does_not_retry_the_faulting_region() {
     assert_eq!(context.spin.spins, 1);
     assert_eq!(context.peer_faults, 1);
 }
+
+// Settled marks belong to an occupancy: when a recovery leaves the subtree
+// that holds a settled site, re-entering it within the same stabilize() runs
+// that site's completions again.
+
+#[derive(Default)]
+struct ReenterContext {
+    left: u32,
+    right: u32,
+    recoveries: u32,
+}
+
+impl ReenterContext {
+    const fn attempt(&self) -> Result<(), Fault> {
+        if self.recoveries == 0 {
+            Err(Fault(7))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+sml! {
+    ReenterKid {
+        *"left spinning"_s + completion<_> / left = X,
+         "left spinning"_s + exception<Fault> [left_owns] / left_fault,
+
+        *"right spinning"_s + completion<_> / right = X,
+    }
+
+    Reenter {
+        *"idle"_s + event<Go> = state<ReenterKid>,
+         state<ReenterKid> + exception<Fault> / root_recover = "retry"_s,
+         "retry"_s + completion<_> = state<ReenterKid>,
+         state<ReenterKid> + completion<_> = "done"_s,
+    }
+}
+
+impl ReenterStateMachineContext for ReenterContext {
+    fn left(&mut self) -> Result<(), Fault> {
+        self.left += 1;
+        self.attempt()
+    }
+
+    // Only the left region's own first fault: right has not run yet.
+    fn left_owns(&self, _: &Fault) -> Result<bool, Fault> {
+        Ok(self.right == 0)
+    }
+
+    fn left_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        assert_eq!(*error, Fault(7));
+        Ok(())
+    }
+
+    fn right(&mut self) -> Result<(), Fault> {
+        self.right += 1;
+        self.attempt()
+    }
+
+    fn root_recover(&mut self, error: &Fault) -> Result<(), Fault> {
+        assert_eq!(*error, Fault(7));
+        self.recoveries += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_settled_site_runs_again_after_a_recovery_reenters_its_node() {
+    let mut machine = ReenterStateMachine::new(ReenterContext::default());
+    machine.process_event(Go { fail_at: 0 }).unwrap();
+    assert!(machine.is(&ReenterStates::Done));
+    let context = machine.context();
+    assert_eq!((context.left, context.right, context.recoveries), (2, 2, 1));
+}
+
+#[derive(Default)]
+struct MovedSettledContext {
+    left: u32,
+    right: u32,
+    left_after_move: u32,
+}
+
+sml! {
+    MovedSettled {
+        *"left one"_s + completion<_> / left = "left two"_s,
+         "left one"_s + exception<Fault> [right_idle] / left_fault,
+         "left one"_s + exception<Fault> [right_ran] / left_fault = "left three"_s,
+         "left three"_s + completion<_> / left_after = "left done"_s,
+         "left done"_s + event<Halt> = X,
+
+        *"right spinning"_s + completion<_> / right = "right done"_s,
+         "right done"_s + event<Halt> = X,
+    }
+}
+
+impl MovedSettledStateMachineContext for MovedSettledContext {
+    fn left(&mut self) -> Result<(), Fault> {
+        self.left += 1;
+        Err(Fault(7))
+    }
+
+    fn right_idle(&self, _: &Fault) -> Result<bool, Fault> {
+        Ok(self.right == 0)
+    }
+
+    fn right_ran(&self, _: &Fault) -> Result<bool, Fault> {
+        Ok(self.right > 0)
+    }
+
+    fn left_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        assert_eq!(*error, Fault(7));
+        Ok(())
+    }
+
+    fn left_after(&mut self) -> Result<(), Fault> {
+        self.left_after_move += 1;
+        Ok(())
+    }
+
+    fn right(&mut self) -> Result<(), Fault> {
+        self.right += 1;
+        Err(Fault(7))
+    }
+}
+
+#[test]
+fn a_settled_region_moved_by_a_peer_fault_runs_its_new_completions() {
+    let mut machine = MovedSettledStateMachine::new(MovedSettledContext::default());
+    machine.initialize().unwrap();
+    assert!(machine.is_region(0, &MovedSettledStates::LeftDone));
+    assert!(machine.is_region(1, &MovedSettledStates::RightSpinning));
+    let context = machine.context();
+    assert_eq!(
+        (context.left, context.right, context.left_after_move),
+        (1, 1, 1)
+    );
+}

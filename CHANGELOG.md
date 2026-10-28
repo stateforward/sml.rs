@@ -30,7 +30,10 @@ All notable changes to this project are documented here. This project follows
   progress even when an exception row in a peer region (or in a composite
   child active in a peer region) moved that peer; only a row on the faulting
   region's own path counts as progress, so a moving peer can no longer rerun
-  the faulting completion or loop forever.
+  the faulting completion or loop forever. A settled region is settled only
+  for its current occupancy: when a recovery's moving row leaves it (and
+  re-enters it, or moves it to another state) within the same step, its
+  completions run again.
 - Keep each region's or nested child's completed exit recorded while an
   orthogonal node or composite subtree is torn down, so when a later exit
   fails and an ancestor's `exception<E>` row repeats the teardown, the states

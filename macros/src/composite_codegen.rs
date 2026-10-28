@@ -2053,12 +2053,18 @@ fn generate_multi_code(
         // when that site is the child's or nested in it; a child in a peer
         // region that moves is handled but is no progress (see
         // `recovering_stabilize_body`).
+        // A moving row also leaves the occupancy of every site in the
+        // child's subtree, so their settled marks no longer apply.
         let off_path = settle_sites.as_ref().map(|sites| {
             let path = sites
                 .subtree(reference, &all_child_references, &node_parents)
                 .into_iter()
-                .map(Literal::usize_unsuffixed);
+                .map(Literal::usize_unsuffixed)
+                .collect::<Vec<_>>();
             quote! {
+                if exception_recovery == Some(true) {
+                    #(exited_sites[#path] = true;)*
+                }
                 if exception_recovery.is_some() && !matches!(faulting_site, #(#path)|*) {
                     exception_recovery = Some(false);
                 }
@@ -2445,9 +2451,38 @@ fn generate_multi_code(
 
     // The innermost-first exception walk shared by event dispatch and by
     // stabilize(): active descendants deepest first, then the root table.
+    // A moving row of the scalar root leaves every site's occupancy; the
+    // regions of an orthogonal root record their own paths.
+    let (exited_sites, parent_exception) = match &settle_sites {
+        Some(sites) => {
+            let count = sites.count();
+            let parent_exception = if root_embedded.is_some() {
+                parent_exception
+            } else {
+                quote! {
+                    let root_unhandled = exception_recovery.is_none();
+                    #parent_exception
+                    if root_unhandled && exception_recovery == Some(true) {
+                        exited_sites = [true; #count];
+                    }
+                }
+            };
+            (
+                quote! {
+                    // Sites whose occupancy a moving row left (event dispatch
+                    // has no settled marks to invalidate).
+                    #[allow(unused_mut, unused_variables, unused_assignments)]
+                    let mut exited_sites = [false; #count];
+                },
+                parent_exception,
+            )
+        }
+        None => (TokenStream::new(), parent_exception),
+    };
     let recover_walk = quote! {
         let error_data = &error;
         let mut exception_recovery: Option<bool> = None;
+        #exited_sites
         #(#child_exceptions)*
         #parent_exception
     };
@@ -3138,7 +3173,12 @@ fn generate_multi_code(
 ///   only rows on the faulting site's path (its own region, the nodes it is
 ///   nested in, and scalar ancestors): a peer region whose exception row moves
 ///   that peer handles the fault but is no progress for the faulting site, so
-///   it cannot make that site's completion run again.
+///   it cannot make that site's completion run again. A settled mark belongs
+///   to the occupancy it was set in: the walk records in `exited_sites` every
+///   site under a row that moved (a region's path, a child's subtree, or all
+///   sites for the scalar root), and those marks are cleared before the
+///   faulting site is settled, so a site left and re-entered, or moved by a
+///   peer's fault, runs its completions again in the same call.
 ///
 /// An unhandled fault returns the error.
 #[allow(
@@ -3190,6 +3230,11 @@ pub(crate) fn recovering_stabilize_body(
                 let mut faulting_site: usize = 0;
             },
             quote! {
+                for (settled, exited) in settled_sites.iter_mut().zip(exited_sites) {
+                    if exited {
+                        *settled = false;
+                    }
+                }
                 if moved {
                     origin = None;
                 } else {

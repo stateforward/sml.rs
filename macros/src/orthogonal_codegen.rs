@@ -371,9 +371,19 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         #(#completion_dispatch)*
         handled = progressed;
     };
+    let exited_sites = has_exception_handlers.then(|| {
+        let count = regions.len();
+        quote! {
+            // Sites whose occupancy a moving row left (event dispatch has no
+            // settled marks to invalidate).
+            #[allow(unused_mut, unused_variables)]
+            let mut exited_sites = [false; #count];
+        }
+    });
     let recover_walk = quote! {
         let error_data = &error;
         let mut exception_recovery: Option<bool> = None;
+        #exited_sites
         #exception_dispatch
     };
     let stabilize_body = crate::composite_codegen::recovering_stabilize_body(
@@ -1949,12 +1959,20 @@ fn generate_exception_dispatch(
         // sites of the nodes nested in it); a peer region that moves is
         // handled but is no progress for the faulting completion. Without
         // settle sites any moving region is progress.
-        let region_progress = match region_paths.and_then(|paths| paths.get(index)) {
+        // A row that moves a region also leaves the occupancy of every site
+        // on that region's path, so their settled marks no longer apply.
+        let (region_progress, exit_sites) = match region_paths.and_then(|paths| paths.get(index)) {
             Some(path) => {
-                let sites = path.iter().map(|site| Literal::usize_unsuffixed(*site));
-                quote! { region_moved && matches!(faulting_site, #(#sites)|*) }
+                let sites = path
+                    .iter()
+                    .map(|site| Literal::usize_unsuffixed(*site))
+                    .collect::<Vec<_>>();
+                (
+                    quote! { region_moved && matches!(faulting_site, #(#sites)|*) },
+                    quote! { if region_moved { #(exited_sites[#sites] = true;)* } },
+                )
             }
-            None => quote! { region_moved },
+            None => (quote! { region_moved }, TokenStream::new()),
         };
         region_dispatches.push(quote! {
             {
@@ -1966,6 +1984,7 @@ fn generate_exception_dispatch(
                     _ => {}
                 }
                 if region_handled {
+                    #exit_sites
                     exception_recovery =
                         Some(#region_progress || exception_recovery == Some(true));
                 }
