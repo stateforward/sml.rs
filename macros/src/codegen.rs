@@ -1063,13 +1063,19 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                         }
                                 } else {
                                     quote!{
-                                            self.context.#exit_ident()#entry_exit_await;
-                                            #exit_action
+                                            if self.exit_skip {
+                                                self.exit_skip = false;
+                                            } else {
+                                                self.context.#exit_ident()#entry_exit_await;
+                                                #exit_action
+                                            }
+                                            self.exit_skip = true;
                                             #action_code
                                             #default_output_code
                                             let out_state = #states_type_name::#out_state;
                                             self.context().transition_callback(&self.state, &out_state);
                                             self.state = out_state;
+                                            self.exit_skip = false;
                                             Self::__sml_log_state_change(&mut self.policy, #in_state_string, #out_state_string);
                                             self.context.#entry_ident()#entry_exit_await;
                                             #entry_action
@@ -1371,6 +1377,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state(core::default::Default::default()),
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1387,6 +1394,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state (state_data),
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1402,6 +1410,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state,
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1427,6 +1436,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state(core::default::Default::default()),
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1443,6 +1453,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state(state_data),
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1458,6 +1469,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #state_machine_type_name {
                     core: #core_type_name {
                         state: #states_type_name::#starting_state,
+                        exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1971,6 +1983,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         #state_machine_type_name {
                             core: #core_type_name {
                                 state: #states_type_name::#starting_state(state_data),
+                                exit_skip: false,
                                 context,
                                 policy,
                                 #deferred_init
@@ -1997,6 +2010,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 &mut self,
                 state: #states_type_name <#state_lifetimes>
             ) -> #states_type_name <#state_lifetimes> {
+                self.core.exit_skip = false;
                 core::mem::replace(&mut self.core.state, state)
             }
         }
@@ -2094,6 +2108,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #policy_type_ident: ::sml::Policies,
         {
             state: #states_type_name <#state_lifetimes>,
+            // Set once a transition's exits ran and cleared when it replaces
+            // the state: after a failed action, the next exit of the current
+            // state consumes it instead of running `on_exit` again, so each
+            // entry gets exactly one exit.
+            #[allow(dead_code, reason = "the exit-skip token is only read where the state is exited")]
+            exit_skip: bool,
             context: #context_type_ident,
             policy: <#policy_type_ident as ::sml::Policies>::Parts,
             #deferred_field

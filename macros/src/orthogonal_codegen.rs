@@ -8,7 +8,7 @@ use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use syn::{parse, Type};
@@ -278,6 +278,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             )
         })
         .collect::<parse::Result<Vec<_>>>()?;
+    let has_exception_handlers = machine
+        .transitions
+        .iter()
+        .any(|transition| transition.event.kind == EventKind::Exception);
+
     let completion_dispatch = regions
         .iter()
         .enumerate()
@@ -305,9 +310,16 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &TokenStream::new(),
                 &TokenStream::new(),
                 &quote! { true },
+                has_exception_handlers.then_some(index),
             )
         })
         .collect::<parse::Result<Vec<_>>>()?;
+    // Each region of a flat machine is its own settle site and its own path.
+    let flat_region_paths = has_exception_handlers.then(|| {
+        (0..regions.len())
+            .map(|index| vec![index])
+            .collect::<Vec<_>>()
+    });
     let exception_dispatch = generate_exception_dispatch(
         &regions,
         machine,
@@ -328,12 +340,8 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         },
         &TokenStream::new(),
         &TokenStream::new(),
+        flat_region_paths.as_deref(),
     )?;
-    let has_exception_handlers = machine
-        .transitions
-        .iter()
-        .any(|transition| transition.event.kind == EventKind::Exception);
-
     let initial_entries = regions.iter().enumerate().filter_map(|(index, region)| {
         lifecycle
             .get(&region.initial.to_string())
@@ -356,6 +364,37 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             })
     });
 
+    // stabilize() routes completion faults through the same exception rows as
+    // event dispatch (see `recovering_stabilize_body`).
+    let completion_step = quote! {
+        let mut progressed = false;
+        #(#completion_dispatch)*
+        handled = progressed;
+    };
+    let exited_sites = has_exception_handlers.then(|| {
+        let count = regions.len();
+        quote! {
+            // Sites whose occupancy a moving row left (event dispatch has no
+            // settled marks to invalidate).
+            #[allow(unused_mut, unused_variables)]
+            let mut exited_sites = [false; #count];
+        }
+    });
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_recovery: Option<bool> = None;
+        #exited_sites
+        #exception_dispatch
+    };
+    let stabilize_body = crate::composite_codegen::recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+        Some(regions.len()),
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -376,23 +415,22 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         };
         quote! {
             let dispatch_result = #attempt;
+            // Event dispatch has no settle site: only handledness is read.
+            #[allow(unused_variables)]
+            let faulting_site: usize = usize::MAX;
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #exception_dispatch
-                    if exception_handled {
+                    #recover_walk
+                    if exception_recovery.is_some() {
                         (true, true)
                     } else {
                         return Err(#error_name::GuardFailed(error));
                     }
                 }
                 Err(#error_name::ActionFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #exception_dispatch
-                    if exception_handled {
+                    #recover_walk
+                    if exception_recovery.is_some() {
                         (true, true)
                     } else {
                         return Err(#error_name::ActionFailed(error));
@@ -468,6 +506,8 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             #policy_name: ::sml::Policies,
         {
             states: [#states_name; #region_count],
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            states_exit_skip: [bool; #region_count],
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
@@ -529,6 +569,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.states_exit_skip.fill(false);
             core::mem::replace(&mut self.core.states, states)
         }
 
@@ -710,11 +751,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut progressed = false;
-                    #(#completion_dispatch)*
-                    if !progressed { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #[inline(always)]
@@ -757,6 +794,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.states_exit_skip.fill(false);
                 core::mem::replace(&mut self.states, states)
             }
 
@@ -812,6 +850,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 Self {
                     core: #core_name {
                         states: [#(#initial_states),*],
+                        states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
@@ -848,6 +887,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 Self {
                     core: #core_name {
                         states: [#(#initial_states),*],
+                        states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
@@ -890,6 +930,7 @@ pub(crate) fn generate_embedded(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<EmbeddedOrthogonal> {
     let mut normalized_machine = machine.clone();
     for transition in &mut normalized_machine.transitions {
@@ -981,6 +1022,9 @@ pub(crate) fn generate_embedded(
                 &composite_exit,
                 &composite_entry,
                 &composite_terminal,
+                region_paths
+                    .and_then(|paths| paths.get(index))
+                    .and_then(|path| path.first().copied()),
             )
         })
         .collect::<parse::Result<TokenStream>>()?;
@@ -1004,6 +1048,7 @@ pub(crate) fn generate_embedded(
         &callback,
         &composite_exit,
         &composite_entry,
+        region_paths,
     )?;
     let lifecycle_for = |entry: bool| {
         regions
@@ -1035,8 +1080,45 @@ pub(crate) fn generate_embedded(
                         Some(quote! { #states_name::#state_ident => { #calls } })
                     }
                 });
-                quote! {
+                let hooks = quote! {
                     match &#states_place[#index] { #(#arms,)* _ => {} }
+                };
+                // A region state that is a composite node is entered after
+                // the region state's own entry hook and exited before its
+                // exit hook, as a scalar composite node enters and exits its
+                // active child.
+                let nested = if entry {
+                    &composite_entry
+                } else {
+                    &composite_exit
+                };
+                let region_index =
+                    (!nested.is_empty()).then(|| quote! { let region_index = #index; });
+                let exit_skip = crate::composite_codegen::exit_skip_place(&states_place);
+                if entry {
+                    // Entering a region starts a new occupancy, so its
+                    // exit-skip token is cleared (see `exit_skip_place`).
+                    quote! {
+                        {
+                            #region_index
+                            #exit_skip[#index] = false;
+                            #hooks
+                            #nested
+                        }
+                    }
+                } else {
+                    // A region that exited records it until its next entry,
+                    // so a teardown that a later region's failed exit cut
+                    // short and an ancestor's recovery repeats does not exit
+                    // it again.
+                    quote! {
+                        if !#exit_skip[#index] {
+                            #region_index
+                            #nested
+                            #hooks
+                            #exit_skip[#index] = true;
+                        }
+                    }
                 }
             })
             .collect::<TokenStream>()
@@ -1748,13 +1830,21 @@ fn generate_transition_branch(
                 error_name,
             )
         };
+        // See `exit_skip_place`: one exit per entry when the action fails.
+        let exit_skip = crate::composite_codegen::exit_skip_place(states_place);
         quote! {
-            #exit_composite
-            #exit
+            if #exit_skip[#index] {
+                #exit_skip[#index] = false;
+            } else {
+                #exit_composite
+                #exit
+            }
+            #exit_skip[#index] = true;
             #action_code
             #output_data
             let new_state = #target_expression;
             let old_state = core::mem::replace(&mut #states_place[#index], new_state);
+            #exit_skip[#index] = false;
             let new_state = &#states_place[#index];
             #callback
             #entry
@@ -1789,6 +1879,7 @@ fn generate_exception_dispatch(
     callback: &TokenStream,
     composite_exit: &TokenStream,
     composite_entry: &TokenStream,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<TokenStream> {
     let mut region_dispatches = Vec::new();
     for (index, region) in regions.iter().enumerate() {
@@ -1846,24 +1937,57 @@ fn generate_exception_dispatch(
                         composite_entry,
                         0,
                     )?;
-                    Ok(if typed {
+                    let branch = if typed {
                         quote! { let event_data = error_data; #branch }
                     } else {
                         branch
+                    };
+                    let moves = crate::composite_codegen::exception_row_moves(transition);
+                    Ok(quote! {
+                        if !region_handled {
+                            #branch
+                            if region_handled { region_moved = #moves; }
+                        }
                     })
                 })
                 .collect::<parse::Result<Vec<_>>>()?;
             arms.push(quote! { #state_pattern => { #(#branches)* } });
         }
+        // Each region recovers on its own. Under stabilize() the walk has made
+        // progress only when a row moved a region on the faulting settle
+        // site's path (`region_paths[index]`: the region's own site and the
+        // sites of the nodes nested in it); a peer region that moves is
+        // handled but is no progress for the faulting completion. Without
+        // settle sites any moving region is progress.
+        // A row that moves a region also leaves the occupancy of every site
+        // on that region's path, so their settled marks no longer apply.
+        let (region_progress, exit_sites) = match region_paths.and_then(|paths| paths.get(index)) {
+            Some(path) => {
+                let sites = path
+                    .iter()
+                    .map(|site| Literal::usize_unsuffixed(*site))
+                    .collect::<Vec<_>>();
+                (
+                    quote! { region_moved && matches!(faulting_site, #(#sites)|*) },
+                    quote! { if region_moved { #(exited_sites[#sites] = true;)* } },
+                )
+            }
+            None => (quote! { region_moved }, TokenStream::new()),
+        };
         region_dispatches.push(quote! {
             {
                 let region_index = #index;
                 let mut region_handled = false;
+                let mut region_moved = false;
                 match &mut #states_place[#index] {
                     #(#arms,)*
                     _ => {}
                 }
-                exception_handled |= region_handled;
+                if region_handled {
+                    #exit_sites
+                    exception_recovery =
+                        Some(#region_progress || exception_recovery == Some(true));
+                }
             }
         });
     }
@@ -1890,6 +2014,7 @@ fn generate_completion_dispatch(
     composite_exit: &TokenStream,
     composite_entry: &TokenStream,
     composite_terminal: &TokenStream,
+    settle_site: Option<usize>,
 ) -> parse::Result<TokenStream> {
     let mut anonymous_arms = Vec::new();
     let mut origin_arms = Vec::new();
@@ -1991,24 +2116,35 @@ fn generate_completion_dispatch(
             });
         }
     }
-    Ok(quote! {
-        {
-            let region_index = #index;
-            let mut region_handled = false;
-            if let Some(origin) = origin {
-                match (&mut #states_place[#index], origin) {
-                    #(#origin_arms,)*
-                    _ => {}
-                }
+    let region = quote! {
+        let region_index = #index;
+        let mut region_handled = false;
+        if let Some(origin) = origin {
+            match (&mut #states_place[#index], origin) {
+                #(#origin_arms,)*
+                _ => {}
             }
-            if !region_handled {
-                match &mut #states_place[#index] {
-                    #(#anonymous_arms,)*
-                    _ => {}
-                }
-            }
-            progressed |= region_handled;
         }
+        if !region_handled {
+            match &mut #states_place[#index] {
+                #(#anonymous_arms,)*
+                _ => {}
+            }
+        }
+        progressed |= region_handled;
+    };
+    // With exception rows, a region is a stabilize() settle site: a fault in
+    // its completions that is recovered without progress settles this region
+    // alone, and its peers keep stabilizing (see `recovering_stabilize_body`).
+    Ok(if let Some(site) = settle_site {
+        quote! {
+            if !settled_sites[#site] {
+                faulting_site = #site;
+                #region
+            }
+        }
+    } else {
+        quote! { { #region } }
     })
 }
 

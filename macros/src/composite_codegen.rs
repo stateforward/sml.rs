@@ -5,9 +5,10 @@ use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use syn::{parse, spanned::Spanned, Type};
 
 pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
@@ -457,15 +458,21 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         .transitions
         .iter()
         .any(|transition| transition.in_state.history);
+    // Entering the child starts a new occupancy, so its exit-skip token is
+    // cleared (see `exit_skip_place`).
     let enter_child_current = if child_has_history {
-        child_entry_hook
+        quote! {
+            self.child_state_exit_skip = false;
+            #child_entry_hook
+        }
     } else {
         quote! {
             self.child_state = #child_states_name::#child_initial #child_initial_value;
+            self.child_state_exit_skip = false;
             #child_entry_hook
         }
     };
-    let exit_child_current = current_lifecycle_code(
+    let exit_child_hook = current_lifecycle_code(
         &child_lifecycle,
         false,
         &child_states_name,
@@ -474,6 +481,13 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &error_name,
         &temporary_context_argument,
     );
+    // An exited child records it until its next entry (see `exit_skip_place`).
+    let exit_child_current = quote! {
+        if !self.child_state_exit_skip {
+            #exit_child_hook
+            self.child_state_exit_skip = true;
+        }
+    };
     let child_dispatch = dispatch_code(
         child,
         quote! { self.child_state },
@@ -636,6 +650,31 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         })
         .unwrap_or_default();
 
+    // The innermost-first exception walk shared by event dispatch and by
+    // stabilize(): the active child's exception rows, then the parent's.
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_recovery: Option<bool> = None;
+        if self.child_is_active() { #child_exception }
+        #parent_exception
+    };
+    let completion_step = quote! {
+        if self.child_is_active() {
+            #child_completion
+        }
+        if !handled {
+            #parent_completion
+        }
+    };
+    let stabilize_body = recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+        None,
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -657,22 +696,16 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         };
         let recover_guard = quote! {
-            let error_data = &error;
-            let mut exception_handled = false;
-            if self.child_is_active() { #child_exception }
-            #parent_exception
-            if exception_handled {
+            #recover_walk
+            if exception_recovery.is_some() {
                 (true, true)
             } else {
                 return Err(#error_name::GuardFailed(error));
             }
         };
         let recover_action = quote! {
-            let error_data = &error;
-            let mut exception_handled = false;
-            if self.child_is_active() { #child_exception }
-            #parent_exception
-            if exception_handled {
+            #recover_walk
+            if exception_recovery.is_some() {
                 (true, true)
             } else {
                 return Err(#error_name::ActionFailed(error));
@@ -763,6 +796,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.state_exit_skip = false;
             core::mem::replace(&mut self.core.state, state)
         }
 
@@ -771,6 +805,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
+            self.core.child_state_exit_skip = false;
             core::mem::replace(&mut self.core.child_state, state)
         }
 
@@ -896,6 +931,10 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         {
             state: #parent_states_name,
             child_state: #child_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            state_exit_skip: bool,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            child_state_exit_skip: bool,
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
@@ -1009,16 +1048,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut handled = false;
-                    if self.child_is_active() {
-                        #child_completion
-                    }
-                    if !handled {
-                        #parent_completion
-                    }
-                    if !handled { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #[inline(always)]
@@ -1032,6 +1062,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.state_exit_skip = false;
                 core::mem::replace(&mut self.state, state)
             }
 
@@ -1040,6 +1071,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.child_state_exit_skip = false;
                 core::mem::replace(&mut self.child_state, state)
             }
 
@@ -1141,6 +1173,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                     core: #core_name {
                         state: #parent_states_name::#parent_initial #parent_initial_value,
                         child_state: #child_states_name::#child_initial #child_initial_value,
+                        state_exit_skip: false,
+                        child_state_exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1180,6 +1214,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                     core: #core_name {
                         state: #parent_states_name::#parent_initial #parent_initial_value,
                         child_state: #child_states_name::#child_initial #child_initial_value,
+                        state_exit_skip: false,
+                        child_state_exit_skip: false,
                         context,
                         policy,
                         #deferred_init
@@ -1348,6 +1384,35 @@ fn generate_multi_code(
             .flat_map(|machine| &machine.transitions)
             .any(|transition| !transition.process_events.is_empty());
     let async_queue = is_async_machine && has_queue_actions;
+    let has_exception_handlers = all_machines
+        .iter()
+        .flat_map(|machine| &machine.transitions)
+        .any(|transition| transition.event.kind == EventKind::Exception);
+    // With exception rows and orthogonal regions anywhere in the tree, every
+    // completion block (an orthogonal region, a scalar child, or the scalar
+    // root) is a stabilize() settle site numbered here, so a recovery without
+    // progress settles only the site that faulted and its peer regions keep
+    // stabilizing (see `recovering_stabilize_body`). Without regions the
+    // completion step is not split and such a recovery ends the step.
+    let track_settle_sites = has_exception_handlers
+        && (root_orthogonal
+            || child_machines.iter().any(|child| {
+                child
+                    .transitions
+                    .iter()
+                    .filter(|transition| transition.in_state.start)
+                    .count()
+                    > 1
+            }));
+    let settle_sites = track_settle_sites
+        .then(|| {
+            TreeSettleSites::number(
+                &child_machines,
+                &all_child_references,
+                root_regions.as_deref(),
+            )
+        })
+        .transpose()?;
 
     let fixed_error_types = all_machines
         .iter()
@@ -1540,6 +1605,18 @@ fn generate_multi_code(
                 &all_child_references,
                 &node_parents,
             )?;
+            let region_paths = settle_sites
+                .as_ref()
+                .map(|sites| -> parse::Result<_> {
+                    Ok(sites.region_paths(
+                        sites.node(reference)?,
+                        reference,
+                        &all_child_references,
+                        &node_parents,
+                        &crate::orthogonal_codegen::discover_regions(child)?,
+                    ))
+                })
+                .transpose()?;
             let embedded = tree_embedded_orthogonal(
                 parent_name,
                 node_index,
@@ -1559,6 +1636,7 @@ fn generate_multi_code(
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
+                region_paths.as_deref(),
             )?;
             let region_count = embedded.region_count;
             let variants = &embedded.state_variants;
@@ -1627,8 +1705,16 @@ fn generate_multi_code(
                     }
                 }
             });
-            child_fields.push(quote! { #field: [#child_states_name; #region_count], });
-            child_initializers.push(quote! { #field: [#(#initials),*], });
+            let exit_skip = format_ident!("{}_exit_skip", field);
+            child_fields.push(quote! {
+                #field: [#child_states_name; #region_count],
+                #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+                #exit_skip: [bool; #region_count],
+            });
+            child_initializers.push(quote! {
+                #field: [#(#initials),*],
+                #exit_skip: [false; #region_count],
+            });
             child_callback_methods.push(quote! {
                 fn #callback(
                     &self,
@@ -1840,9 +1926,16 @@ fn generate_multi_code(
                 }
             }
         });
-        child_fields.push(quote! { #field: #child_states_name, });
-        child_initializers
-            .push(quote! { #field: #child_states_name::#child_initial #child_initial_value, });
+        let exit_skip = format_ident!("{}_exit_skip", field);
+        child_fields.push(quote! {
+            #field: #child_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            #exit_skip: bool,
+        });
+        child_initializers.push(quote! {
+            #field: #child_states_name::#child_initial #child_initial_value,
+            #exit_skip: false,
+        });
         child_callback_methods.push(quote! {
             fn #callback(&self, old_state: &#child_states_name, new_state: &#child_states_name) {}
         });
@@ -1881,6 +1974,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.#exit_skip = false;
                 core::mem::replace(&mut self.#field, state)
             }
             fn #visit_method<R>(
@@ -1941,16 +2035,48 @@ fn generate_multi_code(
                 handled |= outer_handled;
             },
         ));
-        child_completions.push((
-            depth,
+        let completion = if let Some(sites) = &settle_sites {
+            let site = sites.node(reference)?.start;
+            quote! {
+                if !handled && #active && !settled_sites[#site] {
+                    faulting_site = #site;
+                    #completion
+                }
+            }
+        } else {
             quote! {
                 if !handled && #active { #completion }
-            },
-        ));
+            }
+        };
+        child_completions.push((depth, completion));
+        // A row of a scalar child moved the faulting settle site's path only
+        // when that site is the child's or nested in it; a child in a peer
+        // region that moves is handled but is no progress (see
+        // `recovering_stabilize_body`).
+        // A moving row also leaves the occupancy of every site in the
+        // child's subtree, so their settled marks no longer apply.
+        let off_path = settle_sites.as_ref().map(|sites| {
+            let path = sites
+                .subtree(reference, &all_child_references, &node_parents)
+                .into_iter()
+                .map(Literal::usize_unsuffixed)
+                .collect::<Vec<_>>();
+            quote! {
+                if exception_recovery == Some(true) {
+                    #(exited_sites[#path] = true;)*
+                }
+                if exception_recovery.is_some() && !matches!(faulting_site, #(#path)|*) {
+                    exception_recovery = Some(false);
+                }
+            }
+        });
         child_exceptions.push((
             depth,
             quote! {
-                if !exception_handled && #active { #exception }
+                if exception_recovery.is_none() && #active {
+                    #exception
+                    #off_path
+                }
             },
         ));
         if node_parents.get(&reference.to_string()) == Some(parent_name) {
@@ -2235,6 +2361,16 @@ fn generate_multi_code(
     let root_child_terminal = quote! {
         match &self.states[region_index] { #(#terminal_arms,)* _ => false }
     };
+    let root_region_paths = match (&settle_sites, &root_regions) {
+        (Some(sites), Some(regions)) => Some(sites.region_paths(
+            sites.root.clone(),
+            parent_name,
+            &all_child_references,
+            &node_parents,
+            regions,
+        )),
+        _ => None,
+    };
     let root_embedded = if root_orthogonal {
         Some(crate::orthogonal_codegen::generate_embedded(
             parent,
@@ -2257,10 +2393,15 @@ fn generate_multi_code(
             &temporary_context_argument,
             has_deferred_events,
             async_queue,
+            root_region_paths.as_deref(),
         )?)
     } else {
         None
     };
+    let parent_completion_site = settle_sites
+        .as_ref()
+        .filter(|_| root_embedded.is_none())
+        .map(|sites| sites.root.start);
     let (parent_completion, parent_exception, parent_initial_entry) =
         root_embedded.as_ref().map_or_else(
             || {
@@ -2308,10 +2449,66 @@ fn generate_multi_code(
             quote! { #(#descendants)* if !handled { #scalar_parent_dispatch } }
         };
 
-    let has_exception_handlers = all_machines
-        .iter()
-        .flat_map(|machine| &machine.transitions)
-        .any(|transition| transition.event.kind == EventKind::Exception);
+    // The innermost-first exception walk shared by event dispatch and by
+    // stabilize(): active descendants deepest first, then the root table.
+    // A moving row of the scalar root leaves every site's occupancy; the
+    // regions of an orthogonal root record their own paths.
+    let (exited_sites, parent_exception) = match &settle_sites {
+        Some(sites) => {
+            let count = sites.count();
+            let parent_exception = if root_embedded.is_some() {
+                parent_exception
+            } else {
+                quote! {
+                    let root_unhandled = exception_recovery.is_none();
+                    #parent_exception
+                    if root_unhandled && exception_recovery == Some(true) {
+                        exited_sites = [true; #count];
+                    }
+                }
+            };
+            (
+                quote! {
+                    // Sites whose occupancy a moving row left (event dispatch
+                    // has no settled marks to invalidate).
+                    #[allow(unused_mut, unused_variables, unused_assignments)]
+                    let mut exited_sites = [false; #count];
+                },
+                parent_exception,
+            )
+        }
+        None => (TokenStream::new(), parent_exception),
+    };
+    let recover_walk = quote! {
+        let error_data = &error;
+        let mut exception_recovery: Option<bool> = None;
+        #exited_sites
+        #(#child_exceptions)*
+        #parent_exception
+    };
+    let parent_completion_step = if let Some(site) = parent_completion_site {
+        quote! {
+            if !handled && !settled_sites[#site] {
+                faulting_site = #site;
+                #parent_completion
+            }
+        }
+    } else {
+        quote! { if !handled { #parent_completion } }
+    };
+    let completion_step = quote! {
+        #(#child_completions)*
+        #parent_completion_step
+    };
+    let stabilize_body = recovering_stabilize_body(
+        has_exception_handlers,
+        is_async_machine,
+        &completion_step,
+        &recover_walk,
+        &error_name,
+        &generated_error,
+        settle_sites.as_ref().map(TreeSettleSites::count),
+    );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
             quote! {
@@ -2332,22 +2529,19 @@ fn generate_multi_code(
         };
         quote! {
             let dispatch_result = #attempt;
+            // Event dispatch has no settle site: only handledness is read.
+            #[allow(unused_variables)]
+            let faulting_site: usize = usize::MAX;
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #(#child_exceptions)*
-                    #parent_exception
-                    if exception_handled { (true, true) }
+                    #recover_walk
+                    if exception_recovery.is_some() { (true, true) }
                     else { return Err(#error_name::GuardFailed(error)); }
                 }
                 Err(#error_name::ActionFailed(error)) => {
-                    let error_data = &error;
-                    let mut exception_handled = false;
-                    #(#child_exceptions)*
-                    #parent_exception
-                    if exception_handled { (true, true) }
+                    #recover_walk
+                    if exception_recovery.is_some() { (true, true) }
                     else { return Err(#error_name::ActionFailed(error)); }
                 }
                 Err(error) => return Err(error),
@@ -2455,14 +2649,28 @@ fn generate_multi_code(
         }
     };
     let root_state_field = if let Some(region_count) = root_region_count {
-        quote! { states: [#parent_states_name; #region_count], }
+        quote! {
+            states: [#parent_states_name; #region_count],
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            states_exit_skip: [bool; #region_count],
+        }
     } else {
-        quote! { state: #parent_states_name, }
+        quote! {
+            state: #parent_states_name,
+            #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
+            state_exit_skip: bool,
+        }
     };
-    let root_state_init = if root_orthogonal {
-        quote! { states: [#(#root_initial_values),*], }
+    let root_state_init = if let Some(region_count) = root_region_count {
+        quote! {
+            states: [#(#root_initial_values),*],
+            states_exit_skip: [false; #region_count],
+        }
     } else {
-        quote! { state: #parent_states_name::#parent_initial #parent_initial_value, }
+        quote! {
+            state: #parent_states_name::#parent_initial #parent_initial_value,
+            state_exit_skip: false,
+        }
     };
     let initialize_method = if let Some(region_count) = root_region_count {
         quote! {
@@ -2491,6 +2699,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.states_exit_skip.fill(false);
                 core::mem::replace(&mut self.states, states)
             }
             fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool { self.states == *expected }
@@ -2506,6 +2715,7 @@ fn generate_multi_code(
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
+                self.state_exit_skip = false;
                 core::mem::replace(&mut self.state, state)
             }
             fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
@@ -2824,12 +3034,7 @@ fn generate_multi_code(
             #initialize_method
 
             #async_keyword fn stabilize(&mut self, #temporary_context_parameter origin: Option<&#events_name>) -> Result<(), #generated_error> {
-                loop {
-                    let mut handled = false;
-                    #(#child_completions)*
-                    if !handled { #parent_completion }
-                    if !handled { return Ok(()); }
-                }
+                #stabilize_body
             }
 
             #root_state_api
@@ -2939,6 +3144,152 @@ fn generate_multi_code(
     })
 }
 
+/// Generates the body of a composite machine's `stabilize()` loop.
+///
+/// Each pass runs the completion step (`completion<E>` and anonymous
+/// `completion<_>` rows, innermost active state first). With exception rows in
+/// the tree, a guard or action fault raised by that step is routed through the
+/// same innermost-to-outermost exception walk as event dispatch, so a fault in
+/// a completion chain cannot leave a child mid-flow. The walk leaves
+/// `exception_recovery` as `None` when no row handled the fault, or as
+/// `Some(moved)` where `moved` says whether the handling row changed the
+/// active state configuration (see `exception_row_moves`).
+///
+/// When the handling row moved to another state, stabilizing continues with
+/// no origin event, exactly as event dispatch calls `stabilize(None)` after
+/// recovery, so a parent `completion<_>` can still run. When the row was
+/// internal or targeted its own source state, the recovery made no progress
+/// and running the same completion again would fault again forever:
+///
+/// - With `settle_sites` as `None` (no orthogonal regions), the recovered
+///   fault ends the run-to-completion step and `stabilize()` returns `Ok(())`.
+/// - With `settle_sites` as `Some(count)`, the completion step is split into
+///   `count` sites (one per orthogonal region), each guarded by
+///   `settled_sites[site]` and recording itself in `faulting_site` before it
+///   runs. Only the site that faulted is settled for the rest of this call;
+///   stabilizing continues with the origin event kept, so every peer region
+///   still runs its pending completions (including `completion<E>` rows for
+///   the origin event) until the whole machine is stable. Here `moved` counts
+///   only rows on the faulting site's path (its own region, the nodes it is
+///   nested in, and scalar ancestors): a peer region whose exception row moves
+///   that peer handles the fault but is no progress for the faulting site, so
+///   it cannot make that site's completion run again. A settled mark belongs
+///   to the occupancy it was set in: the walk records in `exited_sites` every
+///   site under a row that moved (a region's path, a child's subtree, or all
+///   sites for the scalar root), and those marks are cleared before the
+///   faulting site is settled, so a site left and re-entered, or moved by a
+///   peer's fault, runs its completions again in the same call.
+///
+/// An unhandled fault returns the error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stabilize generation keeps all completion and recovery inputs explicit"
+)]
+pub(crate) fn recovering_stabilize_body(
+    has_exception_handlers: bool,
+    is_async_machine: bool,
+    completion_step: &TokenStream,
+    recover_walk: &TokenStream,
+    error_name: &Ident,
+    generated_error: &TokenStream,
+    settle_sites: Option<usize>,
+) -> TokenStream {
+    if !has_exception_handlers {
+        return quote! {
+            loop {
+                let mut handled = false;
+                #completion_step
+                if !handled { return Ok(()); }
+            }
+        };
+    }
+    // An async block adds an await point that holds `&mut self`; use it only
+    // when the completion step itself awaits, so a machine whose completions
+    // are all synchronous keeps a `stabilize` future with no await points.
+    let attempt = if is_async_machine && tokens_contain_await(completion_step.clone()) {
+        quote! {
+            async {
+                let mut handled = false;
+                #completion_step
+                Ok::<bool, #generated_error>(handled)
+            }.await
+        }
+    } else {
+        quote! {
+            (|| -> Result<bool, #generated_error> {
+                let mut handled = false;
+                #completion_step
+                Ok(handled)
+            })()
+        }
+    };
+    let (sites, after_recovery) = if let Some(count) = settle_sites {
+        (
+            quote! {
+                let mut settled_sites = [false; #count];
+                let mut faulting_site: usize = 0;
+            },
+            quote! {
+                for (settled, exited) in settled_sites.iter_mut().zip(exited_sites) {
+                    if exited {
+                        *settled = false;
+                    }
+                }
+                if moved {
+                    origin = None;
+                } else {
+                    settled_sites[faulting_site] = true;
+                }
+            },
+        )
+    } else {
+        (
+            TokenStream::new(),
+            quote! {
+                if !moved { return Ok(()); }
+                origin = None;
+            },
+        )
+    };
+    quote! {
+        let mut origin = origin;
+        #sites
+        loop {
+            let completion_result = #attempt;
+            let handled = match completion_result {
+                Ok(handled) => handled,
+                Err(#error_name::GuardFailed(error)) => {
+                    #recover_walk
+                    let Some(moved) = exception_recovery else {
+                        return Err(#error_name::GuardFailed(error));
+                    };
+                    #after_recovery
+                    true
+                }
+                Err(#error_name::ActionFailed(error)) => {
+                    #recover_walk
+                    let Some(moved) = exception_recovery else {
+                        return Err(#error_name::ActionFailed(error));
+                    };
+                    #after_recovery
+                    true
+                }
+                Err(error) => return Err(error),
+            };
+            if !handled { return Ok(()); }
+        }
+    }
+}
+
+/// Returns whether generated tokens contain an `.await` expression.
+fn tokens_contain_await(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Ident(ident) => ident == "await",
+        proc_macro2::TokenTree::Group(group) => tokens_contain_await(group.stream()),
+        proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
+    })
+}
+
 fn tree_states_name(root: &Ident, node: &Ident) -> Ident {
     let variant = crate::parser::state_ident(&node.to_string(), node.span());
     format_ident!("{}{}States", root, variant)
@@ -2981,6 +3332,7 @@ fn tree_embedded_orthogonal(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
     let node = nodes.get(index).ok_or_else(|| {
         parse::Error::new(
@@ -3055,6 +3407,7 @@ fn tree_embedded_orthogonal(
         temporary_context,
         has_deferred_events,
         async_queue,
+        region_paths,
     )
 }
 
@@ -3079,6 +3432,115 @@ fn tree_root_region(
 
 fn tree_handled_flag(node: &Ident) -> Ident {
     format_ident!("{}_handled", string_morph::to_snake_case(&node.to_string()))
+}
+
+/// The `stabilize()` settle sites of a composite tree with exception rows and
+/// orthogonal regions, numbered in the order the completion step is built:
+/// each child node in declaration order takes one site, or one per region
+/// when it is orthogonal, and the root takes the last ones (one per root
+/// region, or one when the root is scalar).
+struct TreeSettleSites {
+    nodes: HashMap<String, Range<usize>>,
+    root: Range<usize>,
+}
+
+impl TreeSettleSites {
+    fn number(
+        nodes: &[&StateMachine],
+        references: &[Ident],
+        root_regions: Option<&[crate::orthogonal_codegen::Region]>,
+    ) -> parse::Result<Self> {
+        let mut next = 0_usize;
+        let mut ranges = HashMap::new();
+        for (node, reference) in nodes.iter().zip(references) {
+            let starts = node
+                .transitions
+                .iter()
+                .filter(|transition| transition.in_state.start)
+                .count();
+            let count = if starts > 1 {
+                crate::orthogonal_codegen::discover_regions(node)?.len()
+            } else {
+                1
+            };
+            let end = next.saturating_add(count);
+            ranges.insert(reference.to_string(), next..end);
+            next = end;
+        }
+        let count = root_regions.map_or(1, <[_]>::len);
+        Ok(Self {
+            nodes: ranges,
+            root: next..next.saturating_add(count),
+        })
+    }
+
+    fn count(&self) -> usize {
+        self.root.end
+    }
+
+    fn node(&self, reference: &Ident) -> parse::Result<Range<usize>> {
+        self.nodes
+            .get(&reference.to_string())
+            .cloned()
+            .ok_or_else(|| {
+                parse::Error::new(
+                    reference.span(),
+                    "composite tree is missing a generated settle site",
+                )
+            })
+    }
+
+    /// The sites on a node's path: its own and those of every node nested in
+    /// it.
+    fn subtree(
+        &self,
+        node: &Ident,
+        references: &[Ident],
+        parents: &HashMap<String, Ident>,
+    ) -> Vec<usize> {
+        references
+            .iter()
+            .filter(|candidate| *candidate == node || tree_is_descendant(candidate, node, parents))
+            .filter_map(|candidate| self.nodes.get(&candidate.to_string()).cloned())
+            .flatten()
+            .collect()
+    }
+
+    /// The path of each region of the orthogonal `owner` (a child node, or
+    /// the root): the region's own site from `own` first, then the sites of
+    /// every node nested in that region.
+    fn region_paths(
+        &self,
+        own: Range<usize>,
+        owner: &Ident,
+        references: &[Ident],
+        parents: &HashMap<String, Ident>,
+        regions: &[crate::orthogonal_codegen::Region],
+    ) -> Vec<Vec<usize>> {
+        own.enumerate()
+            .map(|(region, site)| {
+                let nested = references
+                    .iter()
+                    .filter(|candidate| {
+                        tree_descendant_region(candidate, owner, parents, regions) == Some(region)
+                    })
+                    .filter_map(|candidate| self.nodes.get(&candidate.to_string()).cloned())
+                    .flatten();
+                core::iter::once(site).chain(nested).collect()
+            })
+            .collect()
+    }
+}
+
+fn tree_is_descendant(node: &Ident, ancestor: &Ident, parents: &HashMap<String, Ident>) -> bool {
+    let mut top = node;
+    while let Some(parent) = parents.get(&top.to_string()) {
+        if parent == ancestor {
+            return true;
+        }
+        top = parent;
+    }
+    false
 }
 
 fn tree_descendant_region(
@@ -3181,6 +3643,7 @@ fn tree_enter_node(
             temporary_context,
             false,
             false,
+            None,
         )?;
         let initials = embedded.initial_values;
         let enter = embedded.enter_current;
@@ -3228,7 +3691,10 @@ fn tree_enter_node(
             .then(|| quote! { (core::default::Default::default()) });
         quote! { self.#field = #states_name::#initial #value; }
     };
-    Ok(quote! { #reset #entry_hook #enter_descendant })
+    // Entering the node starts a new occupancy, so its exit-skip token is
+    // cleared (see `exit_skip_place`).
+    let exit_skip = exit_skip_place(&quote! { self.#field });
+    Ok(quote! { #reset #exit_skip = false; #entry_hook #enter_descendant })
 }
 
 #[allow(
@@ -3312,6 +3778,7 @@ fn tree_exit_node(
             temporary_context,
             false,
             false,
+            None,
         )?;
         return Ok(embedded.exit_current);
     }
@@ -3341,7 +3808,15 @@ fn tree_exit_node(
         error_name,
         temporary_context,
     );
-    Ok(quote! { #exit_descendant #exit_hook })
+    // An exited node records it until its next entry (see `exit_skip_place`).
+    let exit_skip = exit_skip_place(&quote! { self.#field });
+    Ok(quote! {
+        if !#exit_skip {
+            #exit_descendant
+            #exit_hook
+            #exit_skip = true;
+        }
+    })
 }
 
 fn tree_active_condition(
@@ -3915,7 +4390,7 @@ fn dispatch_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -3952,7 +4427,7 @@ fn dispatch_code(
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -3983,7 +4458,7 @@ fn dispatch_code(
         )?;
         let state_pattern =
             if transition.in_state.data_type.is_some() && transition.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4187,13 +4662,20 @@ fn transition_code(
                 error_name,
             )
         };
+        let exit_skip = exit_skip_place(state_place);
         quote! {
-            #composite_exit
-            #exit
+            if #exit_skip {
+                #exit_skip = false;
+            } else {
+                #composite_exit
+                #exit
+            }
+            #exit_skip = true;
             #action_code
             #output_data
             let new_state_value = #target_expression;
             let old_state = core::mem::replace(&mut #state_place, new_state_value);
+            #exit_skip = false;
             let new_state = &#state_place;
             #callback
             #entry
@@ -4204,10 +4686,20 @@ fn transition_code(
             handled = true;
         }
     };
-    Ok(if let Some(guard) = guard {
+    let row = if let Some(guard) = guard {
         quote! { if !handled && #candidate_dispatch && #guard { #body } }
     } else {
         quote! { if !handled && #candidate_dispatch { #body } }
+    };
+    // A data-carrying source state is borrowed per row, not once for the whole
+    // match arm: the borrow then ends inside each row, before that row replaces
+    // the state, so several rows on one trigger can all read the state data.
+    Ok(if state_arg.is_some() {
+        quote! {
+            if let #states_name::#source(state_data) = &#state_place { #row }
+        }
+    } else {
+        row
     })
 }
 
@@ -4278,7 +4770,7 @@ fn exception_code(
         let source = &first.in_state.ident;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4302,25 +4794,72 @@ fn exception_code(
                     async_queue,
                     0,
                 )?;
-                Ok(if transition.event.wildcard {
+                let branch = if transition.event.wildcard {
                     branch
                 } else {
                     quote! { let event_data = error_data; #branch }
+                };
+                let moves = exception_row_moves(transition);
+                Ok(quote! {
+                    if !handled {
+                        #branch
+                        if handled { moved = #moves; }
+                    }
                 })
             })
             .collect::<parse::Result<Vec<_>>>()?;
         arms.push(quote! { #state_pattern => { #(#branches)* } });
     }
     Ok(quote! {
-        if !exception_handled {
+        if exception_recovery.is_none() {
             let mut handled = false;
+            let mut moved = false;
             match &#state_place {
                 #(#arms,)*
                 _ => {}
             }
-            exception_handled = handled;
+            if handled { exception_recovery = Some(moved); }
         }
     })
+}
+
+/// Returns the place of the exit-skip token kept beside a state slot
+/// (`self.state` -> `self.state_exit_skip`, `self.states` ->
+/// `self.states_exit_skip`).
+///
+/// An external transition runs its source's exits before its actions and
+/// replaces the state only after they succeed. It sets this token once those
+/// exits ran and clears it when it replaces the state, so after a failed
+/// action the token says the slot's current state (and its subtree) has
+/// already been exited. The next exit of that slot, by an exception row's
+/// recovery or by an ancestor leaving it, skips the exits instead of running
+/// them again: each entry gets exactly one exit.
+///
+/// An ancestor leaving a subtree (an exit walk) also sets the token of each
+/// nested slot whose exits succeeded and leaves a set token set, so when a
+/// later exit in the same walk fails and a recovery repeats the walk, the
+/// slots that already exited are skipped however often it is repeated.
+///
+/// A token never outlives the occupancy it belongs to: every path that enters
+/// a slot (a transition replacing its state, entering a composite node or an
+/// orthogonal region, history re-entry, the testing state setters) clears it.
+pub(crate) fn exit_skip_place(state_place: &TokenStream) -> TokenStream {
+    let mut tokens = state_place.clone().into_iter().collect::<Vec<_>>();
+    if let Some(proc_macro2::TokenTree::Ident(ident)) = tokens.last_mut() {
+        *ident = format_ident!("{}_exit_skip", ident);
+    }
+    tokens.into_iter().collect()
+}
+
+/// Returns whether an exception row changes the active state configuration
+/// at its level: an external transition to a state other than its source.
+///
+/// An internal row, or a row that targets its own source state, recovers the
+/// fault without progress, so `stabilize()` must not run the completion step
+/// that faulted again (see `recovering_stabilize_body`). Wildcard source rows
+/// are expanded to concrete states by the parser before code generation.
+pub(crate) fn exception_row_moves(transition: &StateTransition) -> bool {
+    !transition.internal_transition && transition.out_state.ident != transition.in_state.ident
 }
 
 #[allow(
@@ -4400,7 +4939,7 @@ fn completion_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };
@@ -4479,7 +5018,7 @@ fn completion_code(
             .collect::<parse::Result<Vec<_>>>()?;
         let state_pattern =
             if first.in_state.data_type.is_some() && first.in_state.composite.is_none() {
-                quote! { #states_name::#source(state_data) }
+                quote! { #states_name::#source(_) }
             } else {
                 quote! { #states_name::#source }
             };

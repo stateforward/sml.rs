@@ -8,6 +8,39 @@ All notable changes to this project are documented here. This project follows
 
 ### Fixed
 
+- Route guard and action faults raised by `completion<E>` and anonymous
+  `completion<_>` rows in composite and orthogonal machines to `exception<E>`
+  rows, innermost active state first, as event dispatch already did; such a
+  fault no longer escapes `process_event` and leaves a child mid-flow.
+- End the run-to-completion step after a completion fault is recovered by an
+  internal or self-targeting `exception<E>` row, instead of rerunning the
+  faulting completion forever in `process_event` or `initialize`; stabilizing
+  continues only when the handling row moves to another state. In a machine
+  with orthogonal regions such a recovery settles only the region that
+  faulted, so peer regions still run their pending completions.
+- Exit a state once per entry in flat, composite, and orthogonal machines
+  when a transition's action fails after its source's `on_exit` already ran
+  and an `exception<E>` row's recovery then leaves that state; the recovery
+  no longer runs the same `on_exit` a second time.
+- Enter and exit the composite child active in an orthogonal region when its
+  orthogonal node or root is entered (including `initialize`) or left, and
+  clear a state's exit-skip token on every entry, so `on_entry` and `on_exit`
+  stay paired across re-entry after a recovered fault.
+- Settle an orthogonal region whose completion fault was recovered without
+  progress even when an exception row in a peer region (or in a composite
+  child active in a peer region) moved that peer; only a row on the faulting
+  region's own path counts as progress, so a moving peer can no longer rerun
+  the faulting completion or loop forever. A settled region is settled only
+  for its current occupancy: when a recovery's moving row leaves it (and
+  re-enters it, or moves it to another state) within the same step, its
+  completions run again.
+- Keep each region's or nested child's completed exit recorded while an
+  orthogonal node or composite subtree is torn down, so when a later exit
+  fails and an ancestor's `exception<E>` row repeats the teardown, the states
+  that already exited are not exited again.
+- Borrow a composite child's state data per row, so several rows on one
+  trigger from a data-carrying state (`Name(T)`) can all read that data, as in
+  a flat table, instead of failing borrow checking (E0502).
 - Keep thread-safety guards in a separate generated storage slot so policy
   logging and event processing use ordinary safe Rust borrowing with no raw
   pointer or unsafe-code path.
