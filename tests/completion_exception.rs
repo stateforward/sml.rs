@@ -824,3 +824,254 @@ fn async_orthogonal_no_progress_recovery_lets_a_peer_region_finish() {
         assert_eq!(context.log, ["right_one", "right_two"]);
     });
 }
+
+// A recovery settles the faulting region unless a row on that region's own
+// path moved: a peer region's exception row that moves the peer is not
+// progress for the faulting completion, so it is not retried.
+
+#[derive(Default)]
+struct PeerFaultContext {
+    spin: SpinContext,
+    peer_faults: u32,
+}
+
+impl PeerFaultContext {
+    fn count_peer_fault(&mut self, error: Fault) {
+        assert_eq!(error, Fault(7));
+        self.peer_faults += 1;
+    }
+}
+
+sml! {
+    PeerMovesOnce {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right idle"_s + event<Spin> = "right one"_s,
+         "right one"_s + exception<Fault> / peer_fault = "right two"_s,
+         "right two"_s + event<Halt> = X,
+    }
+}
+
+impl PeerMovesOnceStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_peer_exception_move_does_not_retry_the_faulting_region() {
+    let mut machine = PeerMovesOnceStateMachine::new(PeerFaultContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(machine.is_region(0, &PeerMovesOnceStates::LeftSpinning));
+    assert!(machine.is_region(1, &PeerMovesOnceStates::RightTwo));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.peer_faults, 1);
+}
+
+sml! {
+    PeerAlternates {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left idle"_s + event<Halt> = X,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right idle"_s + event<Spin> = "right one"_s,
+         "right one"_s + exception<Fault> / peer_fault = "right two"_s,
+         "right two"_s + exception<Fault> / peer_fault = "right one"_s,
+    }
+}
+
+impl PeerAlternatesStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_alternating_peer_exception_rows_terminate() {
+    let mut machine = PeerAlternatesStateMachine::new(PeerFaultContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(machine.is_region(0, &PeerAlternatesStates::LeftSpinning));
+    assert!(machine.is_region(1, &PeerAlternatesStates::RightTwo));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.peer_faults, 1);
+}
+
+sml! {
+    PeerOnlyHandler {
+        *"left idle"_s + event<Spin> = "left spinning"_s,
+         "left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left idle"_s + event<Halt> = X,
+
+        *"right idle"_s + event<Spin> = "right one"_s,
+         "right one"_s + exception<Fault> / peer_fault = "right two"_s,
+         "right two"_s + exception<Fault> / peer_fault = "right one"_s,
+    }
+}
+
+impl PeerOnlyHandlerStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn orthogonal_fault_handled_only_by_a_moving_peer_settles_the_faulting_region() {
+    let mut machine = PeerOnlyHandlerStateMachine::new(PeerFaultContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(machine.is_region(0, &PeerOnlyHandlerStates::LeftSpinning));
+    assert!(machine.is_region(1, &PeerOnlyHandlerStates::RightTwo));
+    let context = machine.context();
+    assert_eq!(context.spin.spins, 1);
+    assert_eq!(context.peer_faults, 1);
+}
+
+sml! {
+    RegionKidFaultKid {
+        *"spinning"_s + completion<_> / spin = X,
+    }
+
+    RegionKidFault {
+        *state<RegionKidFaultKid> + completion<_> = "left done"_s,
+
+        *"right one"_s + exception<Fault> / peer_fault = "right two"_s,
+         "right two"_s + exception<Fault> / peer_fault = "right one"_s,
+    }
+}
+
+impl RegionKidFaultStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn fault_inside_a_region_composite_is_not_retried_after_a_peer_moves() {
+    let mut machine = RegionKidFaultStateMachine::new(PeerFaultContext::default());
+    machine.initialize().unwrap();
+    assert!(machine.is_region(0, &RegionKidFaultStates::RegionKidFaultKid));
+    assert!(machine.is_region(1, &RegionKidFaultStates::RightTwo));
+    let context = machine.context();
+    assert_eq!(context.spin.spins, 1);
+    assert_eq!(context.peer_faults, 1);
+}
+
+sml! {
+    NestedPeerMovesKid {
+        *"left spinning"_s + completion<_> / spin = "left idle"_s,
+         "left spinning"_s + exception<Fault> / spin_fault,
+
+        *"right one"_s + exception<Fault> / peer_fault = "right two"_s,
+         "right two"_s + exception<Fault> / peer_fault = "right one"_s,
+    }
+
+    NestedPeerMoves {
+        *"idle"_s + event<Spin> = state<NestedPeerMovesKid>,
+    }
+}
+
+impl NestedPeerMovesStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn spin_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.spin.count_fault(*error);
+        Ok(())
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn nested_orthogonal_peer_exception_move_does_not_retry_the_faulting_region() {
+    let mut machine = NestedPeerMovesStateMachine::new(PeerFaultContext::default());
+    machine.process_event(Spin).unwrap();
+    assert!(matches!(
+        machine.nested_peer_moves_kid_state(0),
+        Some(NestedPeerMovesNestedPeerMovesKidStates::LeftSpinning)
+    ));
+    assert!(matches!(
+        machine.nested_peer_moves_kid_state(1),
+        Some(NestedPeerMovesNestedPeerMovesKidStates::RightTwo)
+    ));
+    let context = machine.context();
+    assert_eq!((context.spin.spins, context.spin.faults), (1, 1));
+    assert_eq!(context.peer_faults, 1);
+}
+
+sml! {
+    PeerKidMovesKid {
+        *"one"_s + exception<Fault> / peer_fault = "two"_s,
+         "two"_s + exception<Fault> / peer_fault = "one"_s,
+    }
+
+    PeerKidMoves {
+        *"left spinning"_s + completion<_> / spin = "left idle"_s,
+
+        *state<PeerKidMovesKid> + event<Halt> = X,
+    }
+}
+
+impl PeerKidMovesStateMachineContext for PeerFaultContext {
+    fn spin(&mut self) -> Result<(), Fault> {
+        self.spin.count_spin()
+    }
+
+    fn peer_fault(&mut self, error: &Fault) -> Result<(), Fault> {
+        self.count_peer_fault(*error);
+        Ok(())
+    }
+}
+
+#[test]
+fn peer_region_composite_exception_move_does_not_retry_the_faulting_region() {
+    let mut machine = PeerKidMovesStateMachine::new(PeerFaultContext::default());
+    machine.initialize().unwrap();
+    assert!(machine.is_region(0, &PeerKidMovesStates::LeftSpinning));
+    assert!(machine.is_region(1, &PeerKidMovesStates::PeerKidMovesKid));
+    assert!(matches!(
+        machine.peer_kid_moves_kid_state(),
+        PeerKidMovesPeerKidMovesKidStates::Two
+    ));
+    let context = machine.context();
+    assert_eq!(context.spin.spins, 1);
+    assert_eq!(context.peer_faults, 1);
+}

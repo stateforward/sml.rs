@@ -5,9 +5,10 @@ use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use syn::{parse, spanned::Spanned, Type};
 
 pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
@@ -480,11 +481,11 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         &error_name,
         &temporary_context_argument,
     );
+    // An exited child records it until its next entry (see `exit_skip_place`).
     let exit_child_current = quote! {
-        if self.child_state_exit_skip {
-            self.child_state_exit_skip = false;
-        } else {
+        if !self.child_state_exit_skip {
             #exit_child_hook
+            self.child_state_exit_skip = true;
         }
     };
     let child_dispatch = dispatch_code(
@@ -1403,7 +1404,15 @@ fn generate_multi_code(
                     .count()
                     > 1
             }));
-    let mut next_settle_site = 0_usize;
+    let settle_sites = track_settle_sites
+        .then(|| {
+            TreeSettleSites::number(
+                &child_machines,
+                &all_child_references,
+                root_regions.as_deref(),
+            )
+        })
+        .transpose()?;
 
     let fixed_error_types = all_machines
         .iter()
@@ -1596,6 +1605,18 @@ fn generate_multi_code(
                 &all_child_references,
                 &node_parents,
             )?;
+            let region_paths = settle_sites
+                .as_ref()
+                .map(|sites| -> parse::Result<_> {
+                    Ok(sites.region_paths(
+                        sites.node(reference)?,
+                        reference,
+                        &all_child_references,
+                        &node_parents,
+                        &crate::orthogonal_codegen::discover_regions(child)?,
+                    ))
+                })
+                .transpose()?;
             let embedded = tree_embedded_orthogonal(
                 parent_name,
                 node_index,
@@ -1615,12 +1636,9 @@ fn generate_multi_code(
                 &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
-                track_settle_sites.then_some(next_settle_site),
+                region_paths.as_deref(),
             )?;
             let region_count = embedded.region_count;
-            if track_settle_sites {
-                next_settle_site = next_settle_site.saturating_add(region_count);
-            }
             let variants = &embedded.state_variants;
             let initials = &embedded.initial_values;
             let regions = crate::orthogonal_codegen::discover_regions(child)?;
@@ -2017,9 +2035,8 @@ fn generate_multi_code(
                 handled |= outer_handled;
             },
         ));
-        let completion = if track_settle_sites {
-            let site = next_settle_site;
-            next_settle_site = next_settle_site.saturating_add(1);
+        let completion = if let Some(sites) = &settle_sites {
+            let site = sites.node(reference)?.start;
             quote! {
                 if !handled && #active && !settled_sites[#site] {
                     faulting_site = #site;
@@ -2032,10 +2049,28 @@ fn generate_multi_code(
             }
         };
         child_completions.push((depth, completion));
+        // A row of a scalar child moved the faulting settle site's path only
+        // when that site is the child's or nested in it; a child in a peer
+        // region that moves is handled but is no progress (see
+        // `recovering_stabilize_body`).
+        let off_path = settle_sites.as_ref().map(|sites| {
+            let path = sites
+                .subtree(reference, &all_child_references, &node_parents)
+                .into_iter()
+                .map(Literal::usize_unsuffixed);
+            quote! {
+                if exception_recovery.is_some() && !matches!(faulting_site, #(#path)|*) {
+                    exception_recovery = Some(false);
+                }
+            }
+        });
         child_exceptions.push((
             depth,
             quote! {
-                if exception_recovery.is_none() && #active { #exception }
+                if exception_recovery.is_none() && #active {
+                    #exception
+                    #off_path
+                }
             },
         ));
         if node_parents.get(&reference.to_string()) == Some(parent_name) {
@@ -2320,6 +2355,16 @@ fn generate_multi_code(
     let root_child_terminal = quote! {
         match &self.states[region_index] { #(#terminal_arms,)* _ => false }
     };
+    let root_region_paths = match (&settle_sites, &root_regions) {
+        (Some(sites), Some(regions)) => Some(sites.region_paths(
+            sites.root.clone(),
+            parent_name,
+            &all_child_references,
+            &node_parents,
+            regions,
+        )),
+        _ => None,
+    };
     let root_embedded = if root_orthogonal {
         Some(crate::orthogonal_codegen::generate_embedded(
             parent,
@@ -2342,21 +2387,15 @@ fn generate_multi_code(
             &temporary_context_argument,
             has_deferred_events,
             async_queue,
-            track_settle_sites.then_some(next_settle_site),
+            root_region_paths.as_deref(),
         )?)
     } else {
         None
     };
-    let parent_completion_site = if !track_settle_sites {
-        None
-    } else if let Some(embedded) = &root_embedded {
-        next_settle_site = next_settle_site.saturating_add(embedded.region_count);
-        None
-    } else {
-        let site = next_settle_site;
-        next_settle_site = next_settle_site.saturating_add(1);
-        Some(site)
-    };
+    let parent_completion_site = settle_sites
+        .as_ref()
+        .filter(|_| root_embedded.is_none())
+        .map(|sites| sites.root.start);
     let (parent_completion, parent_exception, parent_initial_entry) =
         root_embedded.as_ref().map_or_else(
             || {
@@ -2433,7 +2472,7 @@ fn generate_multi_code(
         &recover_walk,
         &error_name,
         &generated_error,
-        track_settle_sites.then_some(next_settle_site),
+        settle_sites.as_ref().map(TreeSettleSites::count),
     );
     let dispatch_attempt = if has_exception_handlers {
         let attempt = if is_async_machine {
@@ -2455,6 +2494,9 @@ fn generate_multi_code(
         };
         quote! {
             let dispatch_result = #attempt;
+            // Event dispatch has no settle site: only handledness is read.
+            #[allow(unused_variables)]
+            let faulting_site: usize = usize::MAX;
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
@@ -3092,7 +3134,11 @@ fn generate_multi_code(
 ///   runs. Only the site that faulted is settled for the rest of this call;
 ///   stabilizing continues with the origin event kept, so every peer region
 ///   still runs its pending completions (including `completion<E>` rows for
-///   the origin event) until the whole machine is stable.
+///   the origin event) until the whole machine is stable. Here `moved` counts
+///   only rows on the faulting site's path (its own region, the nodes it is
+///   nested in, and scalar ancestors): a peer region whose exception row moves
+///   that peer handles the fault but is no progress for the faulting site, so
+///   it cannot make that site's completion run again.
 ///
 /// An unhandled fault returns the error.
 #[allow(
@@ -3241,7 +3287,7 @@ fn tree_embedded_orthogonal(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
-    settle_site_base: Option<usize>,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
     let node = nodes.get(index).ok_or_else(|| {
         parse::Error::new(
@@ -3316,7 +3362,7 @@ fn tree_embedded_orthogonal(
         temporary_context,
         has_deferred_events,
         async_queue,
-        settle_site_base,
+        region_paths,
     )
 }
 
@@ -3341,6 +3387,115 @@ fn tree_root_region(
 
 fn tree_handled_flag(node: &Ident) -> Ident {
     format_ident!("{}_handled", string_morph::to_snake_case(&node.to_string()))
+}
+
+/// The `stabilize()` settle sites of a composite tree with exception rows and
+/// orthogonal regions, numbered in the order the completion step is built:
+/// each child node in declaration order takes one site, or one per region
+/// when it is orthogonal, and the root takes the last ones (one per root
+/// region, or one when the root is scalar).
+struct TreeSettleSites {
+    nodes: HashMap<String, Range<usize>>,
+    root: Range<usize>,
+}
+
+impl TreeSettleSites {
+    fn number(
+        nodes: &[&StateMachine],
+        references: &[Ident],
+        root_regions: Option<&[crate::orthogonal_codegen::Region]>,
+    ) -> parse::Result<Self> {
+        let mut next = 0_usize;
+        let mut ranges = HashMap::new();
+        for (node, reference) in nodes.iter().zip(references) {
+            let starts = node
+                .transitions
+                .iter()
+                .filter(|transition| transition.in_state.start)
+                .count();
+            let count = if starts > 1 {
+                crate::orthogonal_codegen::discover_regions(node)?.len()
+            } else {
+                1
+            };
+            let end = next.saturating_add(count);
+            ranges.insert(reference.to_string(), next..end);
+            next = end;
+        }
+        let count = root_regions.map_or(1, <[_]>::len);
+        Ok(Self {
+            nodes: ranges,
+            root: next..next.saturating_add(count),
+        })
+    }
+
+    fn count(&self) -> usize {
+        self.root.end
+    }
+
+    fn node(&self, reference: &Ident) -> parse::Result<Range<usize>> {
+        self.nodes
+            .get(&reference.to_string())
+            .cloned()
+            .ok_or_else(|| {
+                parse::Error::new(
+                    reference.span(),
+                    "composite tree is missing a generated settle site",
+                )
+            })
+    }
+
+    /// The sites on a node's path: its own and those of every node nested in
+    /// it.
+    fn subtree(
+        &self,
+        node: &Ident,
+        references: &[Ident],
+        parents: &HashMap<String, Ident>,
+    ) -> Vec<usize> {
+        references
+            .iter()
+            .filter(|candidate| *candidate == node || tree_is_descendant(candidate, node, parents))
+            .filter_map(|candidate| self.nodes.get(&candidate.to_string()).cloned())
+            .flatten()
+            .collect()
+    }
+
+    /// The path of each region of the orthogonal `owner` (a child node, or
+    /// the root): the region's own site from `own` first, then the sites of
+    /// every node nested in that region.
+    fn region_paths(
+        &self,
+        own: Range<usize>,
+        owner: &Ident,
+        references: &[Ident],
+        parents: &HashMap<String, Ident>,
+        regions: &[crate::orthogonal_codegen::Region],
+    ) -> Vec<Vec<usize>> {
+        own.enumerate()
+            .map(|(region, site)| {
+                let nested = references
+                    .iter()
+                    .filter(|candidate| {
+                        tree_descendant_region(candidate, owner, parents, regions) == Some(region)
+                    })
+                    .filter_map(|candidate| self.nodes.get(&candidate.to_string()).cloned())
+                    .flatten();
+                core::iter::once(site).chain(nested).collect()
+            })
+            .collect()
+    }
+}
+
+fn tree_is_descendant(node: &Ident, ancestor: &Ident, parents: &HashMap<String, Ident>) -> bool {
+    let mut top = node;
+    while let Some(parent) = parents.get(&top.to_string()) {
+        if parent == ancestor {
+            return true;
+        }
+        top = parent;
+    }
+    false
 }
 
 fn tree_descendant_region(
@@ -3608,13 +3763,13 @@ fn tree_exit_node(
         error_name,
         temporary_context,
     );
+    // An exited node records it until its next entry (see `exit_skip_place`).
     let exit_skip = exit_skip_place(&quote! { self.#field });
     Ok(quote! {
-        if #exit_skip {
-            #exit_skip = false;
-        } else {
+        if !#exit_skip {
             #exit_descendant
             #exit_hook
+            #exit_skip = true;
         }
     })
 }
@@ -4632,14 +4787,17 @@ fn exception_code(
 /// exits ran and clears it when it replaces the state, so after a failed
 /// action the token says the slot's current state (and its subtree) has
 /// already been exited. The next exit of that slot, by an exception row's
-/// recovery or by an ancestor leaving it, consumes the token instead of
-/// running the exits again: each entry gets exactly one exit.
+/// recovery or by an ancestor leaving it, skips the exits instead of running
+/// them again: each entry gets exactly one exit.
+///
+/// An ancestor leaving a subtree (an exit walk) also sets the token of each
+/// nested slot whose exits succeeded and leaves a set token set, so when a
+/// later exit in the same walk fails and a recovery repeats the walk, the
+/// slots that already exited are skipped however often it is repeated.
 ///
 /// A token never outlives the occupancy it belongs to: every path that enters
 /// a slot (a transition replacing its state, entering a composite node or an
-/// orthogonal region, history re-entry, the testing state setters) clears it,
-/// and every path that leaves a subtree runs or consumes the exits of each
-/// nested slot it leaves.
+/// orthogonal region, history re-entry, the testing state setters) clears it.
 pub(crate) fn exit_skip_place(state_place: &TokenStream) -> TokenStream {
     let mut tokens = state_place.clone().into_iter().collect::<Vec<_>>();
     if let Some(proc_macro2::TokenTree::Ident(ident)) = tokens.last_mut() {

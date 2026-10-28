@@ -567,3 +567,89 @@ fn initializing_an_orthogonal_root_enters_a_nested_initial_child_once() {
     assert!(machine.is_region(0, &RootNestStates::LeftIdle));
     assert_eq!(machine.context().log, ["entry", "exit"]);
 }
+
+// Leaving an orthogonal node exits each region in turn. When a later
+// region's exit fails and an ancestor exception row leaves the node, the
+// regions that already exited are not exited again.
+
+#[derive(Default)]
+struct TeardownContext {
+    log: Vec<&'static str>,
+    exit_failures: u32,
+}
+
+sml! {
+    TeardownNode {
+        *"left a"_s + on_entry<_> / a_entered,
+         "left a"_s + on_exit<_> / a_exited,
+         "left a"_s + event<Halt> = X,
+
+        *"right b"_s + on_entry<_> / b_entered,
+         "right b"_s + on_exit<_> / b_exited,
+         "right b"_s + event<Halt> = X,
+    }
+
+    Teardown {
+        *"idle"_s + event<Go> = state<TeardownNode>,
+         state<TeardownNode> + event<Leave> = "idle"_s,
+         state<TeardownNode> + exception<Fault> / recover = "idle"_s,
+    }
+}
+
+impl TeardownStateMachineContext for TeardownContext {
+    fn a_entered(&mut self) -> Result<(), Fault> {
+        self.log.push("a entry");
+        Ok(())
+    }
+    fn a_exited(&mut self) -> Result<(), Fault> {
+        self.log.push("a exit");
+        Ok(())
+    }
+    fn b_entered(&mut self) -> Result<(), Fault> {
+        self.log.push("b entry");
+        Ok(())
+    }
+    fn b_exited(&mut self) -> Result<(), Fault> {
+        if self.exit_failures > 0 {
+            self.exit_failures -= 1;
+            self.log.push("b exit failed");
+            return Err(Fault);
+        }
+        self.log.push("b exit");
+        Ok(())
+    }
+    fn recover(&mut self, _: &Fault) -> Result<(), Fault> {
+        self.log.push("recover");
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failed_region_exit_recovered_by_an_ancestor_does_not_exit_its_peers_again() {
+    let mut machine = TeardownStateMachine::new(TeardownContext {
+        exit_failures: 1,
+        ..TeardownContext::default()
+    });
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Leave).unwrap();
+    assert!(machine.is(&TeardownStates::Idle));
+    assert_eq!(
+        machine.context().log,
+        [
+            "a entry",
+            "b entry",
+            "a exit",
+            "b exit failed",
+            "b exit",
+            "recover"
+        ]
+    );
+    // The next occupancy pairs each entry with one exit.
+    machine.context_mut().log.clear();
+    machine.process_event(Go { fail: false }).unwrap();
+    machine.process_event(Leave).unwrap();
+    assert_eq!(
+        machine.context().log,
+        ["a entry", "b entry", "a exit", "b exit"]
+    );
+}

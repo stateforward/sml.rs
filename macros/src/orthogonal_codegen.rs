@@ -8,7 +8,7 @@ use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
 use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, StateTransition};
 use crate::parser::AsyncIdent;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use syn::{parse, Type};
@@ -314,6 +314,12 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             )
         })
         .collect::<parse::Result<Vec<_>>>()?;
+    // Each region of a flat machine is its own settle site and its own path.
+    let flat_region_paths = has_exception_handlers.then(|| {
+        (0..regions.len())
+            .map(|index| vec![index])
+            .collect::<Vec<_>>()
+    });
     let exception_dispatch = generate_exception_dispatch(
         &regions,
         machine,
@@ -334,6 +340,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         },
         &TokenStream::new(),
         &TokenStream::new(),
+        flat_region_paths.as_deref(),
     )?;
     let initial_entries = regions.iter().enumerate().filter_map(|(index, region)| {
         lifecycle
@@ -398,6 +405,9 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         };
         quote! {
             let dispatch_result = #attempt;
+            // Event dispatch has no settle site: only handledness is read.
+            #[allow(unused_variables)]
+            let faulting_site: usize = usize::MAX;
             let (handled, exception_recovered) = match dispatch_result {
                 Ok(handled) => (handled, false),
                 Err(#error_name::GuardFailed(error)) => {
@@ -910,7 +920,7 @@ pub(crate) fn generate_embedded(
     temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
-    settle_site_base: Option<usize>,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<EmbeddedOrthogonal> {
     let mut normalized_machine = machine.clone();
     for transition in &mut normalized_machine.transitions {
@@ -1002,7 +1012,9 @@ pub(crate) fn generate_embedded(
                 &composite_exit,
                 &composite_entry,
                 &composite_terminal,
-                settle_site_base.map(|base| base.saturating_add(index)),
+                region_paths
+                    .and_then(|paths| paths.get(index))
+                    .and_then(|path| path.first().copied()),
             )
         })
         .collect::<parse::Result<TokenStream>>()?;
@@ -1026,6 +1038,7 @@ pub(crate) fn generate_embedded(
         &callback,
         &composite_exit,
         &composite_entry,
+        region_paths,
     )?;
     let lifecycle_for = |entry: bool| {
         regions
@@ -1084,13 +1097,16 @@ pub(crate) fn generate_embedded(
                         }
                     }
                 } else {
+                    // A region that exited records it until its next entry,
+                    // so a teardown that a later region's failed exit cut
+                    // short and an ancestor's recovery repeats does not exit
+                    // it again.
                     quote! {
-                        if #exit_skip[#index] {
-                            #exit_skip[#index] = false;
-                        } else {
+                        if !#exit_skip[#index] {
                             #region_index
                             #nested
                             #hooks
+                            #exit_skip[#index] = true;
                         }
                     }
                 }
@@ -1853,6 +1869,7 @@ fn generate_exception_dispatch(
     callback: &TokenStream,
     composite_exit: &TokenStream,
     composite_entry: &TokenStream,
+    region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<TokenStream> {
     let mut region_dispatches = Vec::new();
     for (index, region) in regions.iter().enumerate() {
@@ -1926,8 +1943,19 @@ fn generate_exception_dispatch(
                 .collect::<parse::Result<Vec<_>>>()?;
             arms.push(quote! { #state_pattern => { #(#branches)* } });
         }
-        // Each region recovers on its own; the walk has made progress when any
-        // region's handling row changed that region's state.
+        // Each region recovers on its own. Under stabilize() the walk has made
+        // progress only when a row moved a region on the faulting settle
+        // site's path (`region_paths[index]`: the region's own site and the
+        // sites of the nodes nested in it); a peer region that moves is
+        // handled but is no progress for the faulting completion. Without
+        // settle sites any moving region is progress.
+        let region_progress = match region_paths.and_then(|paths| paths.get(index)) {
+            Some(path) => {
+                let sites = path.iter().map(|site| Literal::usize_unsuffixed(*site));
+                quote! { region_moved && matches!(faulting_site, #(#sites)|*) }
+            }
+            None => quote! { region_moved },
+        };
         region_dispatches.push(quote! {
             {
                 let region_index = #index;
@@ -1939,7 +1967,7 @@ fn generate_exception_dispatch(
                 }
                 if region_handled {
                     exception_recovery =
-                        Some(region_moved || exception_recovery == Some(true));
+                        Some(#region_progress || exception_recovery == Some(true));
                 }
             }
         });

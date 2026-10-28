@@ -26,6 +26,15 @@ All notable changes to this project are documented here. This project follows
   orthogonal node or root is entered (including `initialize`) or left, and
   clear a state's exit-skip token on every entry, so `on_entry` and `on_exit`
   stay paired across re-entry after a recovered fault.
+- Settle an orthogonal region whose completion fault was recovered without
+  progress even when an exception row in a peer region (or in a composite
+  child active in a peer region) moved that peer; only a row on the faulting
+  region's own path counts as progress, so a moving peer can no longer rerun
+  the faulting completion or loop forever.
+- Keep each region's or nested child's completed exit recorded while an
+  orthogonal node or composite subtree is torn down, so when a later exit
+  fails and an ancestor's `exception<E>` row repeats the teardown, the states
+  that already exited are not exited again.
 - Borrow a composite child's state data per row, so several rows on one
   trigger from a data-carrying state (`Name(T)`) can all read that data, as in
   a flat table, instead of failing borrow checking (E0502).
