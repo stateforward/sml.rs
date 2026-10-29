@@ -9,6 +9,12 @@ pub struct StateMachine {
     pub name: Option<Ident>,
     pub states_attr: Vec<Attribute>,
     pub events_attr: Vec<Attribute>,
+    /// `labels_attr:` attributes for the generated leaf-label enum.
+    pub labels_attr: Vec<Attribute>,
+    /// `name: "..."`: the `StateMachine::NAME` constant.
+    pub display_name: Option<syn::LitStr>,
+    /// `outputs: T`: the machine-owned outbox's output type.
+    pub outputs_type: Option<Type>,
     pub entry_exit_async: bool,
     pub fixed_error_type: Option<Type>,
     pub event_generics: Generics,
@@ -23,6 +29,9 @@ impl StateMachine {
             name: None,
             states_attr: Vec::new(),
             events_attr: Vec::new(),
+            labels_attr: Vec::new(),
+            display_name: None,
+            outputs_type: None,
             entry_exit_async: false,
             fixed_error_type: None,
             event_generics: Generics::default(),

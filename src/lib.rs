@@ -68,8 +68,16 @@ extern crate self as sml;
 
 pub use sml_macros::sml;
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 mod policy;
+mod state_machine;
 pub mod utility;
+
+#[cfg(feature = "alloc")]
+pub use state_machine::Outbox;
+pub use state_machine::{Drain, StateMachine};
 
 pub use policy::{
     BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger, NoPolicy,

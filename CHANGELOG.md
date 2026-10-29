@@ -6,6 +6,46 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Add `sml::StateMachine`, a uniform interface implemented by every
+  synchronous flat and composite machine (composite trees included) without a
+  temporary context: `initialize`, `process`, `label`, `context`,
+  `context_mut`, `drain_outputs`, `stop_requested`, and the associated `NAME`,
+  `Events`, `Context`, `Label`, and `Output`. Orthogonal, async-callback, and
+  temporary-context machines, and flat tables whose events carry generic
+  parameters or lifetimes, keep their shape-specific APIs.
+- Generate a fieldless, `Copy` leaf-label enum per machine, reached as
+  `<M as StateMachine>::Label`, naming the active leaf state (the deepest
+  active state of a composite). Leaf names shared by several tables of a tree
+  are qualified by table name (`ChildX`), with a numeric suffix if that name is
+  taken. The new `labels_attr:` option adds attributes such as serde derives.
+- Add the `name: "..."` option for `StateMachine::NAME`, a compile-time
+  constant defaulting to the table name.
+- Add machine-owned action outputs: with `outputs: T`, a table owns an
+  `sml::Outbox<T>` and every action receives `&mut Outbox<T>` first, so
+  actions emit outputs (and `Outbox::stop` requests) instead of performing
+  I/O; owners drain them through `StateMachine::drain_outputs` or the inherent
+  `outbox()`/`outbox_mut()`. `Outbox` needs the new `alloc` feature, which
+  `std` now enables. `outputs` cannot be combined with `temporary_context`.
+- Implement `Machine<Events>` for synchronous composite machines without a
+  temporary context, with `State` set to the parent states enum.
+- Add `sml::Drain`, the iterator `drain_outputs` returns.
+
+### Changed
+
+- Apply a composite parent table's `states_attr` and `events_attr` to the
+  generated parent states and events enums in single-child composites, as
+  composite trees already did; they were silently ignored before. A
+  single-child composite table that named a derive its payload types lack, or
+  a `PartialEq` derive in `states_attr`, now fails to compile.
+- A derived `PartialEq` in `events_attr` replaces the generated variant-only
+  event comparison (issue #21) instead of conflicting with it, so a journaled
+  `Events` value compares by payload. States keep the variant-only comparison.
+- A downstream crate that implemented `sml::Machine` for a generated composite
+  machine itself now conflicts with the generated implementation; remove its
+  own.
+
 ### Fixed
 
 - Route guard and action faults raised by `completion<E>` and anonymous

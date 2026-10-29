@@ -3,8 +3,8 @@ use super::transition::StateTransitions;
 use proc_macro2::{Delimiter, Punct, Spacing, TokenStream, TokenTree};
 use quote::quote;
 use syn::{
-    braced, bracketed, parse, spanned::Spanned, token, Attribute, Generics, Ident, Token, Type,
-    WhereClause,
+    braced, bracketed, parse, spanned::Spanned, token, Attribute, Generics, Ident, LitStr, Token,
+    Type, WhereClause,
 };
 
 /// Rust spelling of an sml.cpp transition table:
@@ -85,10 +85,22 @@ impl parse::Parse for SmlDefinition {
                         options.parse::<Token![:]>()?;
                         machine.events_attr = Attribute::parse_outer(&options)?;
                     }
+                    "labels_attr" => {
+                        options.parse::<Token![:]>()?;
+                        machine.labels_attr = Attribute::parse_outer(&options)?;
+                    }
+                    "name" => {
+                        options.parse::<Token![:]>()?;
+                        machine.display_name = Some(options.parse::<LitStr>()?);
+                    }
+                    "outputs" => {
+                        options.parse::<Token![:]>()?;
+                        machine.outputs_type = Some(options.parse::<Type>()?);
+                    }
                     _ => {
                         return Err(syn::Error::new(
                             option.span(),
-                            "supported sml! options: custom_error, entry_exit_async, temporary_context, states_attr, events_attr",
+                            "supported sml! options: custom_error, entry_exit_async, temporary_context, states_attr, events_attr, labels_attr, name, outputs",
                         ));
                     }
                 }
@@ -310,6 +322,41 @@ mod tests {
         assert!(definition.machine.temporary_context_type.is_some());
         assert_eq!(definition.machine.states_attr.len(), 1);
         assert_eq!(definition.machine.events_attr.len(), 1);
+    }
+
+    #[test]
+    fn parses_state_machine_interface_options() {
+        let definition: SmlDefinition = syn::parse2(quote! {
+            Named[
+                name: "named",
+                outputs: Vec<u8>,
+                labels_attr: #[derive(Clone)] #[derive(Debug)]
+            ] {
+                *Idle + event<Start> = X,
+            }
+        })
+        .unwrap();
+
+        assert_eq!(
+            definition
+                .machine
+                .display_name
+                .as_ref()
+                .map(syn::LitStr::value),
+            Some("named".to_owned())
+        );
+        assert!(definition.machine.outputs_type.is_some());
+        assert_eq!(definition.machine.labels_attr.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_non_string_machine_name() {
+        let result = syn::parse2::<SmlDefinition>(quote! {
+            Named[name: named] {
+                *Idle + event<Start> = X,
+            }
+        });
+        assert!(result.is_err());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::parser::{lifetimes::Lifetimes, transition::EvalAction, AsyncIdent, Pa
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::HashSet;
+use syn::spanned::Spanned as _;
 use syn::visit::Visit;
 use syn::{parse, parse_quote, Type};
 
@@ -590,6 +591,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             quote! {}
         }
     };
+    if let (Some(outputs), Some(_)) = (&sm.outputs_type, &sm.temporary_context_type) {
+        return Err(parse::Error::new(
+            outputs.span(),
+            "`outputs` cannot be combined with `temporary_context`",
+        ));
+    }
+    // With `outputs: T`, every action takes the machine-owned outbox first.
+    let outbox_parameter = sm
+        .outputs_type
+        .as_ref()
+        .map(|outputs| quote! { outbox: &mut ::sml::Outbox<#outputs>, })
+        .unwrap_or_default();
 
     // Keep track of already added actions not to duplicate definitions
     let mut action_set: Vec<syn::Ident> = Vec::new();
@@ -796,7 +809,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                             #[allow(missing_docs)]
                             #[allow(clippy::unused_unit)]
                             #[allow(clippy::unused_async_trait_impl)]
-                            #is_async fn #action #callback_impl_generics (&mut self, #temporary_context #state_data #event_data) -> #return_type #callback_where_clause;
+                            #is_async fn #action #callback_impl_generics (&mut self, #outbox_parameter #temporary_context #state_data #event_data) -> #return_type #callback_where_clause;
                         });
                     }
                 }
@@ -824,7 +837,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         #[allow(clippy::unused_async_trait_impl)]
                         #is_async fn #action #callback_impl_generics(
                             &mut self,
-                            #temporary_context #state_data #event_data
+                            #outbox_parameter #temporary_context #state_data #event_data
                         ) -> Result<(), #custom_error> #callback_where_clause;
                     });
                 }
@@ -839,6 +852,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         None => {
             quote! {}
         }
+    };
+    // Actions receive the outbox ahead of any temporary context; guards
+    // never do.
+    let action_call_prefix = if sm.outputs_type.is_some() {
+        quote! { &mut self.outbox, #temporary_context_call }
+    } else {
+        temporary_context_call.clone()
     };
     let completion_context_call = match &sm.temporary_context_type {
         Some(Type::Reference(reference)) if reference.mutability.is_some() => {
@@ -869,7 +889,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         quote! {}
                     };
                     call.extend(quote! {
-                        self.context.#action_ident(#temporary_context_call)
+                        self.context.#action_ident(#action_call_prefix)
                             #action_await
                             .map_err(#error_type_name::ActionFailed)?;
                         Self::__sml_log_action(&mut self.policy, stringify!(#action_ident), "");
@@ -980,6 +1000,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                 let (is_async_action, action_code) = generate_actions(
                                     action,
                                     &temporary_context_call,
+                                    &action_call_prefix,
                                     action_params,
                                     &error_type_name,
                                     produces_state_data,
@@ -1351,6 +1372,21 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     // create a token stream for creating a new machine.  If the starting state contains data, then
     // add a second argument to pass this initial data
     let starting_state_name = starting_state.to_string();
+    let outbox_init = sm
+        .outputs_type
+        .as_ref()
+        .map(|_| quote! { outbox: ::sml::Outbox::new(), });
+    let outbox_api = sm.outputs_type.as_ref().map(|outputs_ty| {
+        quote! {
+        /// Borrows the machine-owned outbox that actions emit into.
+        #[inline(always)]
+        pub fn outbox(&self) -> &::sml::Outbox<#outputs_ty> { &self.core.outbox }
+
+        /// Mutably borrows the machine-owned outbox, for example to drain it.
+        #[inline(always)]
+        pub fn outbox_mut(&mut self) -> &mut ::sml::Outbox<#outputs_ty> { &mut self.core.outbox }
+        }
+    });
     let deferred_init = has_deferred_events.then(|| {
         quote! { deferred, }
     });
@@ -1369,57 +1405,60 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     };
     let new_sm_code = match sm.state_data.data_types.get(&starting_state_name) {
         Some(st) if type_matches_state(st, &starting_state_name) => quote! {
-            pub fn new(context: #context_type_ident) -> Self
-            where
-                #st: core::default::Default,
-            {
-                #policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state(core::default::Default::default()),
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
+                    pub fn new(context: #context_type_ident) -> Self
+                    where
+                        #st: core::default::Default,
+                    {
+                        #policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state(core::default::Default::default()),
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
 
-        },
+                },
         Some(st) => quote! {
-            pub fn new(context: #context_type_ident, state_data: #st ) -> Self {
-                #policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state (state_data),
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
-        },
+                    pub fn new(context: #context_type_ident, state_data: #st ) -> Self {
+                        #policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state (state_data),
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
+                },
         None => quote! {
-            pub fn new(context: #context_type_ident ) -> Self {
-                #policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state,
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
-        },
+                    pub fn new(context: #context_type_ident ) -> Self {
+                        #policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state,
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
+                },
     };
     let custom_policy_local_init = quote! {
         let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
@@ -1428,57 +1467,60 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     };
     let new_with_policy_code = match sm.state_data.data_types.get(&starting_state_name) {
         Some(st) if type_matches_state(st, &starting_state_name) => quote! {
-            pub fn new_with_policy(context: #context_type_ident, policy: #policy_type_ident) -> Self
-            where
-                #st: core::default::Default,
-            {
-                #custom_policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state(core::default::Default::default()),
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
+                    pub fn new_with_policy(context: #context_type_ident, policy: #policy_type_ident) -> Self
+                    where
+                        #st: core::default::Default,
+                    {
+                        #custom_policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state(core::default::Default::default()),
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
 
-        },
+                },
         Some(st) => quote! {
-            pub fn new_with_policy(context: #context_type_ident, state_data: #st, policy: #policy_type_ident) -> Self {
-                #custom_policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state(state_data),
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
-        },
+                    pub fn new_with_policy(context: #context_type_ident, state_data: #st, policy: #policy_type_ident) -> Self {
+                        #custom_policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state(state_data),
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
+                },
         None => quote! {
-            pub fn new_with_policy(context: #context_type_ident, policy: #policy_type_ident) -> Self {
-                #custom_policy_local_init
-                #state_machine_type_name {
-                    core: #core_type_name {
-                        state: #states_type_name::#starting_state,
-                        exit_skip: false,
-                        context,
-                        policy,
-                        #deferred_init
-                        #pending_init
-                    },
-                    thread_safe,
-                }
-            }
-        },
+                    pub fn new_with_policy(context: #context_type_ident, policy: #policy_type_ident) -> Self {
+                        #custom_policy_local_init
+                        #state_machine_type_name {
+                            core: #core_type_name {
+                                state: #states_type_name::#starting_state,
+                                exit_skip: false,
+                                context,
+                                policy,
+                                #deferred_init
+        #outbox_init
+                                #pending_init
+                            },
+                            thread_safe,
+                        }
+                    }
+                },
     };
 
     let state_lifetimes = &sm.state_data.all_lifetimes;
@@ -1934,6 +1976,108 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     } else {
         quote! {}
     };
+    let label_type_name = format_ident!("__Sml{sm_name}Label", span = sm_name_span);
+    let mut label_states: Vec<_> = sm.states.values().collect();
+    label_states.sort_by_key(|state| state.to_string());
+    let label_variants = label_states.iter().map(|state| quote! { #state });
+    let label_name_arms = label_states
+        .iter()
+        .map(|state| quote! { #label_type_name::#state => stringify!(#state), });
+    let label_arms = label_states
+        .iter()
+        .map(|state| quote! { #states_type_name::#state { .. } => #label_type_name::#state, });
+    let labels_attr = &sm.labels_attr;
+    let label_definition = quote! {
+        /// Fieldless label of the active state, the machine's
+        /// `sml::StateMachine::Label`.
+        #[allow(missing_docs)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #(#labels_attr)*
+        pub enum #label_type_name { #(#label_variants),* }
+
+        impl ::sml::StateName for #label_type_name {
+            #[inline(always)]
+            fn name(&self) -> &'static str { match self { #(#label_name_arms)* } }
+        }
+    };
+    let display_name = sm
+        .display_name
+        .as_ref()
+        .map_or_else(|| quote! { #sm_name }, |name| quote! { #name });
+    let (outputs_type, drain_outputs, stop_requested) = sm.outputs_type.as_ref().map_or_else(
+        || {
+            (
+                quote! { () },
+                quote! { ::sml::Drain::empty() },
+                quote! { false },
+            )
+        },
+        |outputs| {
+            (
+                quote! { #outputs },
+                quote! { self.core.outbox.drain() },
+                quote! { self.core.outbox.stop_requested() },
+            )
+        },
+    );
+    // `StateMachine` names `Events` as an associated type, so a table whose
+    // events carry generic parameters or lifetimes does not implement it.
+    let state_machine_trait_impl = if !is_async_state_machine
+        && sm.temporary_context_type.is_none()
+        && event_generics.params.is_empty()
+    {
+        quote! {
+            #label_definition
+
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+                ::sml::StateMachine
+                for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
+            {
+                const NAME: &'static str = #display_name;
+                type Events = #events_type_name;
+                type Context = #context_type_ident;
+                type Label = #label_type_name;
+                type Output = #outputs_type;
+
+                #[inline]
+                fn initialize(&mut self) -> bool {
+                    self.initialize().is_ok()
+                }
+
+                #[inline]
+                fn process(&mut self, event: #events_type_name) -> bool {
+                    self.process_event(event).is_ok()
+                }
+
+                #[inline]
+                fn label(&self) -> #label_type_name {
+                    match &self.core.state { #(#label_arms)* }
+                }
+
+                #[inline]
+                fn context(&self) -> &#context_type_ident {
+                    &self.core.context
+                }
+
+                #[inline]
+                fn context_mut(&mut self) -> &mut #context_type_ident {
+                    &mut self.core.context
+                }
+
+                #[inline]
+                fn drain_outputs(&mut self) -> ::sml::Drain<'_, #outputs_type> {
+                    #drain_outputs
+                }
+
+                #[inline]
+                fn stop_requested(&self) -> bool {
+                    #stop_requested
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
     let terminated_trait_impl = quote! {
         #[allow(missing_docs)]
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
@@ -1987,6 +2131,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                 context,
                                 policy,
                                 #deferred_init
+#outbox_init
                                 #pending_init
                             },
                             thread_safe,
@@ -2088,10 +2233,38 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         pub fn context_mut(&mut self) -> &mut #context_type_ident {
             &mut self.core.context
         }
+
+        #outbox_api
     };
 
     let states_attr_list = &sm.states_attr;
     let events_attr_list = &sm.events_attr;
+    // A derived `PartialEq` in `events_attr` replaces the variant-only
+    // comparison (issue #21), so journaled payloads compare by value.
+    let events_partial_eq = (!crate::parser::derives(events_attr_list, "PartialEq")).then(|| {
+        quote! {
+            /// Manually define PartialEq for #events_type_name based on variant only to address issue-#21
+            impl #event_impl_generics PartialEq for #events_type_name #event_type_generics
+                #event_where_clause
+            {
+                fn eq(&self, other: &Self) -> bool {
+                    use core::mem::discriminant;
+                    discriminant(self) == discriminant(other)
+                }
+            }
+        }
+    });
+    // `is(...)` relies on the variant-only state comparison, so the states
+    // enum always keeps it.
+    let states_partial_eq = quote! {
+        /// Manually define PartialEq for #states_type_name based on variant only to address issue-#21
+        impl<#state_lifetimes> PartialEq for #states_type_name <#state_lifetimes> {
+            fn eq(&self, other: &Self) -> bool {
+                use core::mem::discriminant;
+                discriminant(self) == discriminant(other)
+            }
+        }
+    };
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
@@ -2102,6 +2275,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             pending: <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::ProcessQueue<#events_type_name #event_type_generics>,
         }
     });
+    let outbox_field = sm
+        .outputs_type
+        .as_ref()
+        .map(|outputs| quote! { outbox: ::sml::Outbox<#outputs>, });
     let core_struct = quote! {
         struct #core_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
         where
@@ -2118,6 +2295,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             policy: <#policy_type_ident as ::sml::Policies>::Parts,
             #deferred_field
             #pending_field
+            #outbox_field
         }
     };
     // Build the states and events output
@@ -2166,13 +2344,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
         #state_name_impl
 
-        /// Manually define PartialEq for #states_type_name based on variant only to address issue-#21
-        impl<#state_lifetimes> PartialEq for #states_type_name <#state_lifetimes> {
-            fn eq(&self, other: &Self) -> bool {
-                use core::mem::discriminant;
-                discriminant(self) == discriminant(other)
-            }
-        }
+        #states_partial_eq
 
         /// List of auto-generated events.
         #[allow(missing_docs)]
@@ -2188,15 +2360,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
         #completion_origin_definition
 
-        /// Manually define PartialEq for #events_type_name based on variant only to address issue-#21
-        impl #event_impl_generics PartialEq for #events_type_name #event_type_generics
-            #event_where_clause
-        {
-            fn eq(&self, other: &Self) -> bool {
-                use core::mem::discriminant;
-                discriminant(self) == discriminant(other)
-            }
-        }
+        #events_partial_eq
 
         /// List of possible errors
         // Error payloads are generic user types and are intentionally only
@@ -2419,6 +2583,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
 
         #machine_trait_impl
+        #state_machine_trait_impl
         #default_constructor_impl
         #testing_state_api
         #terminated_trait_impl
@@ -2440,6 +2605,7 @@ fn type_matches_state(data_type: &Type, state: &str) -> bool {
 fn generate_actions(
     actions: &[AsyncIdent],
     temporary_context_call: &TokenStream,
+    action_call_prefix: &TokenStream,
     g_a_param: &TokenStream,
     error_type_name: &Ident,
     produces_state_data: bool,
@@ -2481,7 +2647,7 @@ fn generate_actions(
             code.extend(quote! {
                     let eval_guard_passed = #guard_expression;
                 if eval_guard_passed {
-                    let _ = self.context.#action_ident(#temporary_context_call #g_a_param)
+                    let _ = self.context.#action_ident(#action_call_prefix #g_a_param)
                         #action_await
                         .map_err(#error_type_name::ActionFailed)?;
                     Self::__sml_log_action(&mut self.policy, stringify!(#action_ident), #event_name);
@@ -2514,7 +2680,7 @@ fn generate_actions(
         };
         code.extend(quote! {
             // ACTION
-            #result self.context.#action_ident(#temporary_context_call #g_a_param) #action_await .map_err(#error_type_name::ActionFailed)?;
+            #result self.context.#action_ident(#action_call_prefix #g_a_param) #action_await .map_err(#error_type_name::ActionFailed)?;
             Self::__sml_log_action(&mut self.policy, stringify!(#action_ident), #event_name);
             self.context.log_action(stringify!(#action_ident));
         });
