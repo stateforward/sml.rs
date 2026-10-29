@@ -27,10 +27,6 @@ trybuild = "1.0"
 [[test]]
 name = "test"
 
-[[example]]
-name = "actor_outputs"
-required-features = ["alloc"]
-
 [profile.release]
 codegen-units = 1
 lto = true
@@ -43,8 +39,7 @@ members = ["macros"]
 
 [features]
 default = []
-alloc = []
-std = ["alloc"]
+std = []
 spin = ["dep:spin"]
 
 graphviz = ["sml-macros/graphviz"]

@@ -3,7 +3,6 @@
 //! Each initial state starts an orthogonal region. Events are borrowed and
 //! broadcast to every region, so one event may advance several regions.
 
-use crate::composite_codegen::CallContext;
 use crate::event_codegen::{add_spec, is_query_event, is_static_type, names_table, EventSpecs};
 use crate::parser::event::EventKind;
 use crate::parser::state_machine::StateMachine;
@@ -12,7 +11,6 @@ use crate::parser::AsyncIdent;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use syn::spanned::Spanned as _;
 use syn::{parse, Type};
 
 pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
@@ -245,40 +243,10 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let temporary_context_call = temporary_context_argument
         .as_ref()
         .map(|argument| quote! { #argument, });
-    if let (Some(outputs), Some(_)) = (&machine.outputs_type, &machine.temporary_context_type) {
-        return Err(parse::Error::new(
-            outputs.span(),
-            "`outputs` cannot be combined with `temporary_context`",
-        ));
-    }
-    let call_context = CallContext {
-        temporary: temporary_context_argument.clone(),
-        outbox: machine.outputs_type.is_some(),
-    };
-    let outbox_field = machine
-        .outputs_type
-        .as_ref()
-        .map(|outputs| quote! { outbox: ::sml::Outbox<#outputs>, });
-    let outbox_init = machine
-        .outputs_type
-        .as_ref()
-        .map(|_| quote! { outbox: ::sml::Outbox::new(), });
-    let outbox_api = machine.outputs_type.as_ref().map(|outputs_ty| {
-        quote! {
-        /// Borrows the machine-owned outbox that actions emit into.
-        #[inline(always)]
-        pub fn outbox(&self) -> &::sml::Outbox<#outputs_ty> { &self.core.outbox }
-
-        /// Mutably borrows the machine-owned outbox, for example to drain it.
-        #[inline(always)]
-        pub fn outbox_mut(&mut self) -> &mut ::sml::Outbox<#outputs_ty> { &mut self.core.outbox }
-        }
-    });
     let (guard_methods, action_methods) = generate_context_methods(
         machine,
         &callback_error,
         machine.temporary_context_type.as_ref(),
-        machine.outputs_type.as_ref(),
     )?;
     let lifecycle = collect_lifecycle(machine);
     let region_dispatch = regions
@@ -293,7 +261,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &events_name,
                 &error_name,
                 &lifecycle,
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
                 &quote! { self.states },
@@ -327,7 +295,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 &events_name,
                 &error_name,
                 &lifecycle,
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
                 &quote! { self.states },
@@ -358,7 +326,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         &states_name,
         &error_name,
         &lifecycle,
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
         &quote! { self.states },
@@ -381,13 +349,16 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             .map(|actions| {
                 if state_types.contains_key(&region.initial.to_string()) {
                     let initial = &region.initial;
-                    let args = action_arguments(&call_context, &[Some(quote! { state_data })]);
+                    let args = callback_arguments(
+                        &temporary_context_argument,
+                        &[Some(quote! { state_data })],
+                    );
                     let calls = action_calls(actions, args, &error_name);
                     quote! {
                         if let #states_name::#initial(state_data) = &self.states[#index] { #calls }
                     }
                 } else {
-                    let args = action_arguments(&call_context, &[]);
+                    let args = callback_arguments(&temporary_context_argument, &[]);
                     action_calls(actions, args, &error_name)
                 }
             })
@@ -540,7 +511,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
-            #outbox_field
             #pending_field
         }
     };
@@ -623,8 +593,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
 
         #[inline(always)]
         pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
-
-        #outbox_api
     };
 
     let states_attr = &machine.states_attr;
@@ -886,7 +854,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -924,7 +891,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -961,7 +927,7 @@ pub(crate) fn generate_embedded(
     composite_exit: TokenStream,
     composite_entry: TokenStream,
     composite_terminal: TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     region_paths: Option<&[Vec<usize>]>,
@@ -1101,14 +1067,14 @@ pub(crate) fn generate_embedded(
                     if state_types.contains_key(state) {
                         let calls = action_calls(
                             actions,
-                            action_arguments(temporary_context, &[Some(quote! { state_data })]),
+                            callback_arguments(temporary_context, &[Some(quote! { state_data })]),
                             error_name,
                         );
                         Some(quote! { #states_name::#state_ident(state_data) => { #calls } })
                     } else {
                         let calls = action_calls(
                             actions,
-                            action_arguments(temporary_context, &[]),
+                            callback_arguments(temporary_context, &[]),
                             error_name,
                         );
                         Some(quote! { #states_name::#state_ident => { #calls } })
@@ -1375,7 +1341,6 @@ fn generate_context_methods(
     machine: &StateMachine,
     error_type: &TokenStream,
     temporary_context_type: Option<&Type>,
-    outputs_type: Option<&Type>,
 ) -> parse::Result<(TokenStream, TokenStream)> {
     let mut guards = BTreeMap::<String, TokenStream>::new();
     let mut actions = BTreeMap::<String, TokenStream>::new();
@@ -1387,14 +1352,6 @@ fn generate_context_methods(
             let state = state_ty.map(|ty| quote! { state_data: &#ty, });
             let event = event_ty.map(|ty| quote! { event: &#ty, });
             quote! { #receiver, #temporary #state #event }
-        };
-        // Actions take the machine-owned outbox first; guards never do.
-        let action_parameters = || {
-            let outbox = outputs_type.map(|ty| quote! { outbox: &mut ::sml::Outbox<#ty>, });
-            let temporary = temporary_context_type.map(|ty| quote! { temporary_context: #ty, });
-            let state = state_ty.map(|ty| quote! { state_data: &#ty, });
-            let event = event_ty.map(|ty| quote! { event: &#ty, });
-            quote! { &mut self, #outbox #temporary #state #event }
         };
         if let Some(expression) = &transition.guard {
             visit_guards(expression, |guard| {
@@ -1416,7 +1373,7 @@ fn generate_context_methods(
         for (index, action) in transition_actions.iter().enumerate() {
             let ident = &action.ident;
             let async_keyword = action.is_async.then(|| quote! { async });
-            let parameters = action_parameters();
+            let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
                 && index.saturating_add(1) == transition_actions.len()
                 && transition.out_state.data_type.is_some();
@@ -1448,7 +1405,7 @@ fn generate_context_methods(
             })?;
             let ident = &eval.action.ident;
             let async_keyword = eval.action.is_async.then(|| quote! { async });
-            let parameters = action_parameters();
+            let parameters = callback_parameters(quote! { &mut self });
             let signature = quote! {
                 #async_keyword fn #ident(#parameters) -> Result<(), #error_type>;
             };
@@ -1512,7 +1469,7 @@ fn generate_region_dispatch(
     events_name: &Ident,
     error_name: &Ident,
     lifecycle: &HashMap<String, Lifecycle>,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     states_place: &TokenStream,
@@ -1678,7 +1635,7 @@ fn generate_transition_branch(
     error_name: &Ident,
     lifecycle: &HashMap<String, Lifecycle>,
     has_event_data: bool,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     states_place: &TokenStream,
@@ -1714,9 +1671,7 @@ fn generate_transition_branch(
         .then(|| quote! { state_data });
     let state_callback_arg = state_arg.clone().unwrap_or_default();
     let event_arg = has_event_data.then(|| quote! { event_data });
-    let callback_args =
-        callback_arguments(temporary_context, &[state_arg.clone(), event_arg.clone()]);
-    let action_args = action_arguments(temporary_context, &[state_arg, event_arg]);
+    let callback_args = callback_arguments(temporary_context, &[state_arg, event_arg]);
     let guard = transition
         .guard
         .as_ref()
@@ -1735,7 +1690,6 @@ fn generate_transition_branch(
         &actions,
         &transition.eval_actions,
         &callback_args,
-        &action_args,
         error_name,
         produces_state,
         &event_name,
@@ -1749,7 +1703,6 @@ fn generate_transition_branch(
         quote! {}
     };
     let temporary_context_call = temporary_context
-        .temporary
         .as_ref()
         .map(|argument| quote! { #argument, });
     let process_code = transition
@@ -1844,7 +1797,11 @@ fn generate_transition_branch(
                     .data_type
                     .is_some()
                     .then(|| state_callback_arg.clone());
-                action_calls(a, action_arguments(temporary_context, &[state]), error_name)
+                action_calls(
+                    a,
+                    callback_arguments(temporary_context, &[state]),
+                    error_name,
+                )
             })
             .unwrap_or_default();
         let entry_actions = lifecycle
@@ -1860,7 +1817,7 @@ fn generate_transition_branch(
         let entry = if transition.out_state.data_type.is_some() {
             let calls = action_calls(
                 &entry_actions,
-                action_arguments(temporary_context, &[Some(quote! { new_state_data })]),
+                callback_arguments(temporary_context, &[Some(quote! { new_state_data })]),
                 error_name,
             );
             quote! {
@@ -1869,7 +1826,7 @@ fn generate_transition_branch(
         } else {
             action_calls(
                 &entry_actions,
-                action_arguments(temporary_context, &[]),
+                callback_arguments(temporary_context, &[]),
                 error_name,
             )
         };
@@ -1915,7 +1872,7 @@ fn generate_exception_dispatch(
     states_name: &Ident,
     error_name: &Ident,
     lifecycle: &HashMap<String, Lifecycle>,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     states_place: &TokenStream,
@@ -2049,7 +2006,7 @@ fn generate_completion_dispatch(
     events_name: &Ident,
     error_name: &Ident,
     lifecycle: &HashMap<String, Lifecycle>,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     states_place: &TokenStream,
@@ -2191,32 +2148,13 @@ fn generate_completion_dispatch(
     })
 }
 
-/// A guard's arguments: the temporary context, then `arguments`.
 fn callback_arguments(
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     arguments: &[Option<TokenStream>],
 ) -> TokenStream {
     let arguments = temporary_context
-        .temporary
         .iter()
         .cloned()
-        .chain(arguments.iter().flatten().cloned())
-        .collect::<Vec<_>>();
-    quote! { #(#arguments),* }
-}
-
-/// An action's arguments: the outbox when the table has `outputs`, the
-/// temporary context, then `arguments`.
-fn action_arguments(
-    temporary_context: &CallContext,
-    arguments: &[Option<TokenStream>],
-) -> TokenStream {
-    let outbox = temporary_context
-        .outbox
-        .then(|| quote! { &mut self.outbox });
-    let arguments = outbox
-        .into_iter()
-        .chain(temporary_context.temporary.iter().cloned())
         .chain(arguments.iter().flatten().cloned())
         .collect::<Vec<_>>();
     quote! { #(#arguments),* }
@@ -2226,7 +2164,6 @@ fn action_sequence(
     actions: &[AsyncIdent],
     eval_actions: &[EvalAction],
     callback_args: &TokenStream,
-    action_args: &TokenStream,
     error_name: &Ident,
     produces_state: bool,
     event_name: &TokenStream,
@@ -2242,7 +2179,7 @@ fn action_sequence(
             output.extend(quote! {
                 let eval_guard_passed = #guard;
                 if eval_guard_passed {
-                    self.context.#action(#action_args)#action_await
+                    self.context.#action(#callback_args)#action_await
                         .map_err(#error_name::ActionFailed)?;
                     Self::__sml_log_action(&mut self.policy, stringify!(#action), #event_name);
                     self.context.log_action(stringify!(#action));
@@ -2263,7 +2200,7 @@ fn action_sequence(
                 quote! { let _ = }
             };
             output.extend(quote! {
-                #binding self.context.#ident(#action_args)#action_await
+                #binding self.context.#ident(#callback_args)#action_await
                     .map_err(#error_name::ActionFailed)?;
                 Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));

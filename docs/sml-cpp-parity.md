@@ -31,7 +31,6 @@ allows it; callback bodies and ownership remain Rust-native.
 | Testing/state override API | Supported | `TestingPolicy` gates `set_current_states` for focused transition tests and restoration; flat machines pass one state and orthogonal machines pass one per region |
 | Visitor/introspection API | Supported | Flat, orthogonal, and composite state queries/visitors operate without allocation |
 | Dispatch policy selection | Supported | `JumpTable`, `BranchStm`, `SwitchStm`, and custom policies can admit events and select same-event candidates while the generated guard/action engine retains semantic control |
-| Uniform machine interface and action outputs | Rust extension | `sml::StateMachine` drives flat and composite machines uniformly (leaf label, `NAME`, context); `outputs: T` gives actions a machine-owned `Outbox<T>`; `tests/state_machine_trait.rs` |
 | Diagram generation | Supported for flat tables | The `graphviz` feature renders `sml_<Machine>.svg` when `dot` is available and otherwise retains DOT under `OUT_DIR` |
 
 ## Performance invariant

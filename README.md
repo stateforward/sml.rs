@@ -29,13 +29,6 @@ The crate has no default features and works on `no_std` targets. Enable
 sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
 ```
 
-Enable `alloc` to use machine-owned action outputs (`outputs: T`); `std`
-enables `alloc`:
-
-```toml
-sml = { package = "stateforward-sml", version = "1.5", features = ["alloc"] }
-```
-
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
 and Cargo target boundaries; the quality gate also builds all package targets
 with warnings denied. The generated machines use ordinary ownership and
@@ -159,48 +152,6 @@ path. Detailed Rust errors remain available from the generated machine's
 inherent `process_event` method. Async callbacks are a separate concern.
 Orthogonal, async-callback, and temporary-context machines retain their
 shape-specific inherent processing APIs.
-
-### Uniform interface, action outputs, and journaling
-
-Synchronous flat and composite machines (composite trees included) also
-implement `sml::StateMachine`, so an owner such as an actor shell can drive any
-of them the same way: `process(event)`, `label()` for the active leaf state as a
-small `Copy` enum, `context()`/`context_mut()`, the compile-time `NAME`, and the
-outputs their actions emitted:
-
-```rust,ignore
-sml! {
-    Door[name: "door", outputs: Command,
-         events_attr: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]] {
-        *Shut + event<Open> / open = Ajar,
-         Ajar + event<Close> / close = X,
-    }
-}
-
-impl DoorStateMachineContext for Door {
-    fn open(&mut self, outbox: &mut Outbox<Command>, event: &Open) -> Result<(), ()> {
-        outbox.emit(Command::Unlock(event.id));
-        Ok(())
-    }
-    fn close(&mut self, outbox: &mut Outbox<Command>, _: &Close) -> Result<(), ()> {
-        outbox.stop();
-        Ok(())
-    }
-}
-
-fn drive<M: sml::StateMachine>(machine: &mut M, event: M::Events) {
-    machine.process(event);
-    for output in machine.drain_outputs() { /* execute it */ }
-    if machine.stop_requested() { /* stop */ }
-}
-```
-
-With `outputs: T` every action takes `&mut sml::Outbox<T>` first; guards never
-do. Deriving serde traits on the generated `Events` enum through `events_attr`
-makes it the journal record directly, and `label()` plus a digest of the
-context the owner serializes forms a replay snapshot. See
-[Machine options, outputs, and journaling](docs/dsl.md#machine-options) and
-`examples/actor_outputs.rs`.
 
 | Shape | Main state API |
 |---|---|

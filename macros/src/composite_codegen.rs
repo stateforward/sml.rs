@@ -7,7 +7,7 @@ use crate::parser::transition::{visit_guards, EvalAction, GuardExpression, State
 use crate::parser::AsyncIdent;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote, ToTokens};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use syn::{parse, spanned::Spanned, Type};
 
@@ -436,31 +436,12 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let temporary_context_call = temporary_context_argument
         .as_ref()
         .map(|argument| quote! { #argument, });
-    let outputs_type = composite_outputs_type(&[parent, child], temporary_context_type)?;
-    let call_context = CallContext {
-        temporary: temporary_context_argument.clone(),
-        outbox: outputs_type.is_some(),
-    };
-    let outbox_field = outputs_type.map(|outputs| quote! { outbox: ::sml::Outbox<#outputs>, });
-    let outbox_init = outputs_type.map(|_| quote! { outbox: ::sml::Outbox::new(), });
-    let outbox_api = outputs_type.map(|outputs_ty| {
-        quote! {
-        /// Borrows the machine-owned outbox that actions emit into.
-        #[inline(always)]
-        pub fn outbox(&self) -> &::sml::Outbox<#outputs_ty> { &self.core.outbox }
-
-        /// Mutably borrows the machine-owned outbox, for example to drain it.
-        #[inline(always)]
-        pub fn outbox_mut(&mut self) -> &mut ::sml::Outbox<#outputs_ty> { &mut self.core.outbox }
-        }
-    });
     let (guards, actions) = context_methods(
         parent,
         child,
         &events,
         &callback_error,
         temporary_context_type,
-        outputs_type,
     )?;
     let parent_lifecycle = collect_lifecycle(parent);
     let child_lifecycle = collect_lifecycle(child);
@@ -471,7 +452,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         quote! { self.child_state },
         &child_state_types,
         &error_name,
-        &call_context,
+        &temporary_context_argument,
     );
     let child_has_history = child
         .transitions
@@ -498,7 +479,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         quote! { self.child_state },
         &child_state_types,
         &error_name,
-        &call_context,
+        &temporary_context_argument,
     );
     // An exited child records it until its next entry (see `exit_skip_place`).
     let exit_child_current = quote! {
@@ -524,7 +505,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -545,7 +526,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -568,7 +549,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -596,7 +577,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -617,7 +598,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -638,7 +619,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 ::sml::StateName::name(new_state),
             );
         },
-        &call_context,
+        &temporary_context_argument,
         has_deferred_events,
         async_queue,
     )?;
@@ -653,14 +634,18 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             if parent_state_types.contains_key(&parent_initial.to_string()) {
                 let calls = action_calls(
                     actions,
-                    action_arguments(&call_context, &[Some(quote! { state_data })]),
+                    callback_arguments(&temporary_context_argument, &[Some(quote! { state_data })]),
                     &error_name,
                 );
                 quote! {
                     if let #parent_states_name::#parent_initial(state_data) = &self.state { #calls }
                 }
             } else {
-                action_calls(actions, action_arguments(&call_context, &[]), &error_name)
+                action_calls(
+                    actions,
+                    callback_arguments(&temporary_context_argument, &[]),
+                    &error_name,
+                )
             }
         })
         .unwrap_or_default();
@@ -790,55 +775,17 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         }
     };
-    // The parent table's `states_attr` and `events_attr` apply to the
-    // generated parent states and events enums, as in a composite tree.
     let parent_states_attr = &parent.states_attr;
     let parent_events_attr = &parent.events_attr;
-    // `is(...)` relies on the variant-only state comparison.
-    let parent_states_partial_eq = quote! {
-        impl PartialEq for #parent_states_name {
-            fn eq(&self, other: &Self) -> bool {
-                core::mem::discriminant(self) == core::mem::discriminant(other)
-            }
-        }
-    };
-    let trait_impls = if is_async_machine || temporary_context_type.is_some() {
-        TokenStream::new()
-    } else {
-        let mut child_node = Some(LabelNode {
-            table: child_reference.clone(),
-            states_name: child_states_name.clone(),
-            place: quote! { self.core.child_state },
-            states: child_states
-                .values()
-                .map(|state| (state.clone(), None))
-                .collect(),
-        });
-        let root = LabelNode {
-            table: parent_name.clone(),
-            states_name: parent_states_name.clone(),
-            place: quote! { self.core.state },
-            states: parent_states
-                .values()
-                .map(|state| {
-                    let child = (*state == child_state_variant)
-                        .then(|| child_node.take())
-                        .flatten();
-                    (state.clone(), child)
-                })
-                .collect(),
-        };
-        composite_trait_impls(
-            parent,
+    let machine_impl = (!is_async_machine && temporary_context_type.is_none()).then(|| {
+        composite_machine_impl(
             &machine_name,
             &context_name,
             &policy_name,
             &events_name,
             &parent_states_name,
-            &root,
-            outputs_type,
-        )?
-    };
+        )
+    });
     let public_api = quote! {
         /// Enters the initial parent and child states and runs anonymous
         /// `completion<_>` transitions until the machine reaches a stable state.
@@ -937,8 +884,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
 
         #[inline(always)]
         pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
-
-        #outbox_api
     };
     Ok(quote! {
         use ::sml::Queue as _;
@@ -959,7 +904,11 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         #[allow(missing_docs)]
         #(#parent_states_attr)*
         pub enum #parent_states_name { #(#parent_state_variants),* }
-        #parent_states_partial_eq
+        impl PartialEq for #parent_states_name {
+            fn eq(&self, other: &Self) -> bool {
+                core::mem::discriminant(self) == core::mem::discriminant(other)
+            }
+        }
 
         #[allow(missing_docs)]
         pub enum #child_states_name { #(#child_state_variants),* }
@@ -972,7 +921,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         #[allow(missing_docs)]
         #(#parent_events_attr)*
         pub enum #events_name { #(#event_variants),* }
-        #trait_impls
+        #machine_impl
         #state_name_impl
         #event_name_impl
         #(#conversions)*
@@ -1003,7 +952,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
-            #outbox_field
             #pending_field
         }
 
@@ -1244,7 +1192,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -1286,7 +1233,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -1590,30 +1536,11 @@ fn generate_multi_code(
             })
         })
         .collect::<parse::Result<Vec<_>>>()?;
-    let outputs_type = composite_outputs_type(&all_machines, temporary_context_type)?;
-    let call_context = CallContext {
-        temporary: temporary_context_argument.clone(),
-        outbox: outputs_type.is_some(),
-    };
-    let outbox_field = outputs_type.map(|outputs| quote! { outbox: ::sml::Outbox<#outputs>, });
-    let outbox_init = outputs_type.map(|_| quote! { outbox: ::sml::Outbox::new(), });
-    let outbox_api = outputs_type.map(|outputs_ty| {
-        quote! {
-        /// Borrows the machine-owned outbox that actions emit into.
-        #[inline(always)]
-        pub fn outbox(&self) -> &::sml::Outbox<#outputs_ty> { &self.core.outbox }
-
-        /// Mutably borrows the machine-owned outbox, for example to drain it.
-        #[inline(always)]
-        pub fn outbox_mut(&mut self) -> &mut ::sml::Outbox<#outputs_ty> { &mut self.core.outbox }
-        }
-    });
     let (guards, actions) = context_methods_many(
         &all_machines,
         &events,
         &callback_error,
         temporary_context_type,
-        outputs_type,
     )?;
 
     let structural_children = child_references
@@ -1720,7 +1647,7 @@ fn generate_multi_code(
                         ::sml::StateName::name(new_state),
                     );
                 },
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
                 region_paths.as_deref(),
@@ -1905,7 +1832,7 @@ fn generate_multi_code(
             &all_child_references,
             &node_parents,
             &error_name,
-            &call_context,
+            &temporary_context_argument,
         )?;
         let enter_nested = tree_enter_children(
             parent_name,
@@ -1916,7 +1843,7 @@ fn generate_multi_code(
             &all_child_references,
             &node_parents,
             &error_name,
-            &call_context,
+            &temporary_context_argument,
         )?;
         let dispatch = dispatch_code(
             child,
@@ -1935,7 +1862,7 @@ fn generate_multi_code(
                     ::sml::StateName::name(new_state),
                 );
             },
-            &call_context,
+            &temporary_context_argument,
             has_deferred_events,
             async_queue,
         )?;
@@ -1966,7 +1893,7 @@ fn generate_multi_code(
                     ::sml::StateName::name(new_state),
                 );
             },
-            &call_context,
+            &temporary_context_argument,
             has_deferred_events,
             async_queue,
         )?;
@@ -1980,7 +1907,7 @@ fn generate_multi_code(
             exit_nested,
             enter_nested,
             quote! { self.context.#callback(&old_state, new_state); },
-            &call_context,
+            &temporary_context_argument,
             has_deferred_events,
             async_queue,
         )?;
@@ -2174,7 +2101,7 @@ fn generate_multi_code(
                 &all_child_references,
                 &node_parents,
                 &error_name,
-                &call_context,
+                &temporary_context_argument,
             )?;
             let exit = tree_exit_node(
                 parent_name,
@@ -2183,7 +2110,7 @@ fn generate_multi_code(
                 &all_child_references,
                 &node_parents,
                 &error_name,
-                &call_context,
+                &temporary_context_argument,
             )?;
             exit_arms.push(quote! { #parent_states_name::#variant => { #exit } });
             entry_arms.push(quote! { #parent_states_name::#variant => { #enter } });
@@ -2356,7 +2283,7 @@ fn generate_multi_code(
                         ::sml::StateName::name(new_state),
                     );
                 },
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
             )
@@ -2384,7 +2311,7 @@ fn generate_multi_code(
                         ::sml::StateName::name(new_state),
                     );
                 },
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
             )
@@ -2410,7 +2337,7 @@ fn generate_multi_code(
                         ::sml::StateName::name(new_state),
                     );
                 },
-                &call_context,
+                &temporary_context_argument,
                 has_deferred_events,
                 async_queue,
             )
@@ -2426,7 +2353,7 @@ fn generate_multi_code(
                 .then(|| quote! { state_data });
             let calls = action_calls(
                 actions,
-                action_arguments(&call_context, &[state]),
+                callback_arguments(&temporary_context_argument, &[state]),
                 &error_name,
             );
             if parent_state_types.contains_key(&parent_initial.to_string()) {
@@ -2477,7 +2404,7 @@ fn generate_multi_code(
             root_exit_children,
             root_enter_children,
             root_child_terminal,
-            &call_context,
+            &temporary_context_argument,
             has_deferred_events,
             async_queue,
             root_region_paths.as_deref(),
@@ -2703,16 +2630,8 @@ fn generate_multi_code(
     );
     let parent_states_attr = &parent.states_attr;
     let parent_events_attr = &parent.events_attr;
-    // `is(...)` relies on the variant-only state comparison.
-    let parent_states_partial_eq = quote! {
-        impl PartialEq for #parent_states_name {
-            fn eq(&self, other: &Self) -> bool {
-                core::mem::discriminant(self) == core::mem::discriminant(other)
-            }
-        }
-    };
-    // A tree with an orthogonal node has several active leaves, so only
-    // scalar trees get the single-leaf `StateMachine` interface.
+    // A tree with an orthogonal node has several active leaves; it keeps
+    // its inherent processing API, as orthogonal machines do.
     let orthogonal_node = child_machines.iter().any(|child| {
         child
             .transitions
@@ -2721,34 +2640,19 @@ fn generate_multi_code(
             .count()
             > 1
     });
-    let trait_impls = if is_async_machine
-        || temporary_context_type.is_some()
-        || root_orthogonal
-        || orthogonal_node
-    {
-        TokenStream::new()
-    } else {
-        let root = tree_label_node(
-            parent_name,
-            parent_name,
-            parent,
-            &parent_states_name,
-            quote! { self.core.state },
-            &child_machines,
-            &all_child_references,
-            &node_parents,
-        );
-        composite_trait_impls(
-            parent,
-            &machine_name,
-            &context_name,
-            &policy_name,
-            &events_name,
-            &parent_states_name,
-            &root,
-            outputs_type,
-        )?
-    };
+    let machine_impl = (!is_async_machine
+        && temporary_context_type.is_none()
+        && !root_orthogonal
+        && !orthogonal_node)
+        .then(|| {
+            composite_machine_impl(
+                &machine_name,
+                &context_name,
+                &policy_name,
+                &events_name,
+                &parent_states_name,
+            )
+        });
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_name>,
@@ -3008,8 +2912,6 @@ fn generate_multi_code(
         pub fn context_mut(&mut self) -> &mut T {
             self.core.context_mut()
         }
-
-        #outbox_api
     };
 
     let core_struct = quote! {
@@ -3023,7 +2925,6 @@ fn generate_multi_code(
             context: T,
             policy: <#policy_name as ::sml::Policies>::Parts,
             #deferred_field
-            #outbox_field
             #pending_field
         }
     };
@@ -3045,14 +2946,18 @@ fn generate_multi_code(
         #[allow(missing_docs)]
         #(#parent_states_attr)*
         pub enum #parent_states_name { #(#parent_state_variants),* }
-        #parent_states_partial_eq
+        impl PartialEq for #parent_states_name {
+            fn eq(&self, other: &Self) -> bool {
+                core::mem::discriminant(self) == core::mem::discriminant(other)
+            }
+        }
         #parent_state_name_impl
-        #trait_impls
         #(#child_enum_definitions)*
 
         #[allow(missing_docs)]
         #(#parent_events_attr)*
         pub enum #events_name { #(#event_variants),* }
+        #machine_impl
         #event_name_impl
         #(#conversions)*
         #event_names_table
@@ -3231,7 +3136,6 @@ fn generate_multi_code(
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -3269,7 +3173,6 @@ fn generate_multi_code(
                         context,
                         policy,
                         #deferred_init
-                        #outbox_init
                         #pending_init
                     },
                     thread_safe,
@@ -3464,7 +3367,7 @@ fn tree_embedded_orthogonal(
     events_name: &Ident,
     error_name: &Ident,
     callback: TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     region_paths: Option<&[Vec<usize>]>,
@@ -3710,7 +3613,7 @@ fn tree_enter_children(
     references: &[Ident],
     parents: &HashMap<String, Ident>,
     error_name: &Ident,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
     let arms = tree_children(owner, references, parents)
         .into_iter()
@@ -3742,7 +3645,7 @@ fn tree_enter_node(
     references: &[Ident],
     parents: &HashMap<String, Ident>,
     error_name: &Ident,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
     let node = nodes.get(index).ok_or_else(|| {
         parse::Error::new(
@@ -3845,7 +3748,7 @@ fn tree_exit_children(
     references: &[Ident],
     parents: &HashMap<String, Ident>,
     error_name: &Ident,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
     let arms = tree_children(owner, references, parents)
         .into_iter()
@@ -3877,7 +3780,7 @@ fn tree_exit_node(
     references: &[Ident],
     parents: &HashMap<String, Ident>,
     error_name: &Ident,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
 ) -> parse::Result<TokenStream> {
     let node = nodes.get(index).ok_or_else(|| {
         parse::Error::new(
@@ -4260,46 +4163,8 @@ fn context_methods(
     events: &BTreeMap<String, EventInfo>,
     error_type: &TokenStream,
     temporary_context_type: Option<&Type>,
-    outputs_type: Option<&Type>,
 ) -> parse::Result<(TokenStream, TokenStream)> {
-    context_methods_many(
-        &[parent, child],
-        events,
-        error_type,
-        temporary_context_type,
-        outputs_type,
-    )
-}
-
-/// The one `outputs` type of a composite tree: every table that declares
-/// one must declare the same type, and it cannot be combined with a
-/// temporary context.
-fn composite_outputs_type<'a>(
-    machines: &[&'a StateMachine],
-    temporary_context_type: Option<&Type>,
-) -> parse::Result<Option<&'a Type>> {
-    let declared = machines
-        .iter()
-        .filter_map(|machine| machine.outputs_type.as_ref())
-        .collect::<Vec<_>>();
-    if let Some(mismatch) = declared
-        .windows(2)
-        .find(|types| types.first() != types.get(1))
-        .and_then(|types| types.get(1))
-    {
-        return Err(parse::Error::new(
-            mismatch.span(),
-            "all tables in a composite tree must use the same `outputs` type",
-        ));
-    }
-    let outputs = declared.first().copied();
-    if let (Some(outputs), Some(_)) = (outputs, temporary_context_type) {
-        return Err(parse::Error::new(
-            outputs.span(),
-            "`outputs` cannot be combined with `temporary_context`",
-        ));
-    }
-    Ok(outputs)
+    context_methods_many(&[parent, child], events, error_type, temporary_context_type)
 }
 
 fn context_methods_many(
@@ -4307,7 +4172,6 @@ fn context_methods_many(
     events: &BTreeMap<String, EventInfo>,
     error_type: &TokenStream,
     temporary_context_type: Option<&Type>,
-    outputs_type: Option<&Type>,
 ) -> parse::Result<(TokenStream, TokenStream)> {
     let mut guards = BTreeMap::new();
     let mut actions = BTreeMap::new();
@@ -4333,14 +4197,6 @@ fn context_methods_many(
             let event = event_ty.map(|ty| quote! { event: &#ty, });
             quote! { #receiver, #temporary #state #event }
         };
-        // Actions take the machine-owned outbox first; guards never do.
-        let action_parameters = || {
-            let outbox = outputs_type.map(|ty| quote! { outbox: &mut ::sml::Outbox<#ty>, });
-            let temporary = temporary_context_type.map(|ty| quote! { temporary_context: #ty, });
-            let state = state_ty.map(|ty| quote! { state_data: &#ty, });
-            let event = event_ty.map(|ty| quote! { event: &#ty, });
-            quote! { &mut self, #outbox #temporary #state #event }
-        };
         if let Some(expression) = &transition.guard {
             visit_guards(expression, |guard| {
                 let ident = &guard.ident;
@@ -4360,7 +4216,7 @@ fn context_methods_many(
         for (index, action) in transition_actions.iter().enumerate() {
             let ident = &action.ident;
             let async_keyword = action.is_async.then(|| quote! { async });
-            let parameters = action_parameters();
+            let parameters = callback_parameters(quote! { &mut self });
             let produces_state = !transition.internal_transition
                 && transition.out_state.composite.is_none()
                 && index.saturating_add(1) == transition_actions.len()
@@ -4393,7 +4249,7 @@ fn context_methods_many(
             })?;
             let ident = &eval.action.ident;
             let async_keyword = eval.action.is_async.then(|| quote! { async });
-            let parameters = action_parameters();
+            let parameters = callback_parameters(quote! { &mut self });
             let signature = quote! {
                 #async_keyword fn #ident(#parameters) -> Result<(), #error_type>;
             };
@@ -4449,7 +4305,7 @@ fn current_lifecycle_code(
     state_place: TokenStream,
     state_types: &BTreeMap<String, Type>,
     error_name: &Ident,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
 ) -> TokenStream {
     let arms = lifecycle.iter().filter_map(|(state, hooks)| {
         let actions = if entry {
@@ -4461,14 +4317,14 @@ fn current_lifecycle_code(
         if state_types.contains_key(&state.to_string()) {
             let calls = action_calls(
                 actions,
-                action_arguments(temporary_context, &[Some(quote! { state_data })]),
+                callback_arguments(temporary_context, &[Some(quote! { state_data })]),
                 error_name,
             );
             Some(quote! { #states_name::#state(state_data) => { #calls } })
         } else {
             let calls = action_calls(
                 actions,
-                action_arguments(temporary_context, &[]),
+                callback_arguments(temporary_context, &[]),
                 error_name,
             );
             Some(quote! { #states_name::#state => { #calls } })
@@ -4514,7 +4370,7 @@ fn dispatch_code(
     composite_exit: TokenStream,
     composite_entry: TokenStream,
     callback: TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
@@ -4670,7 +4526,7 @@ fn transition_code(
     composite_exit: TokenStream,
     composite_entry: TokenStream,
     callback: &TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
     candidate_index: usize,
@@ -4703,9 +4559,7 @@ fn transition_code(
     } else {
         quote! { true }
     };
-    let callback_args =
-        callback_arguments(temporary_context, &[state_arg.clone(), event_arg.clone()]);
-    let action_args = action_arguments(temporary_context, &[state_arg.clone(), event_arg]);
+    let callback_args = callback_arguments(temporary_context, &[state_arg.clone(), event_arg]);
     let guard = transition
         .guard
         .as_ref()
@@ -4725,7 +4579,6 @@ fn transition_code(
         &actions,
         &transition.eval_actions,
         &callback_args,
-        &action_args,
         error_name,
         produces_state,
         &event_name,
@@ -4740,7 +4593,6 @@ fn transition_code(
         quote! {}
     };
     let temporary_context_call = temporary_context
-        .temporary
         .as_ref()
         .map(|argument| quote! { #argument, });
     let process_code = transition
@@ -4815,7 +4667,7 @@ fn transition_code(
             .map(|actions| {
                 action_calls(
                     actions,
-                    action_arguments(temporary_context, core::slice::from_ref(&state_arg)),
+                    callback_arguments(temporary_context, core::slice::from_ref(&state_arg)),
                     error_name,
                 )
             })
@@ -4835,7 +4687,7 @@ fn transition_code(
         let entry = if target_has_data {
             let calls = action_calls(
                 &entry_actions,
-                action_arguments(temporary_context, &[Some(quote! { new_state_data })]),
+                callback_arguments(temporary_context, &[Some(quote! { new_state_data })]),
                 error_name,
             );
             quote! {
@@ -4844,7 +4696,7 @@ fn transition_code(
         } else {
             action_calls(
                 &entry_actions,
-                action_arguments(temporary_context, &[]),
+                callback_arguments(temporary_context, &[]),
                 error_name,
             )
         };
@@ -4923,7 +4775,7 @@ fn exception_code(
     composite_exit: TokenStream,
     composite_entry: TokenStream,
     callback: TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
@@ -5064,7 +4916,7 @@ fn completion_code(
     composite_exit: TokenStream,
     composite_entry: TokenStream,
     callback: TokenStream,
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
@@ -5228,41 +5080,13 @@ fn completion_code(
     })
 }
 
-/// What the generated callback calls pass ahead of their state and event
-/// arguments: the temporary context (guards and actions), and, for a table
-/// with `outputs`, the machine-owned outbox (actions only).
-#[derive(Clone)]
-pub(crate) struct CallContext {
-    pub(crate) temporary: Option<TokenStream>,
-    pub(crate) outbox: bool,
-}
-
-/// A guard's arguments: the temporary context, then `arguments`.
 fn callback_arguments(
-    temporary_context: &CallContext,
+    temporary_context: &Option<TokenStream>,
     arguments: &[Option<TokenStream>],
 ) -> Option<TokenStream> {
     let arguments = temporary_context
-        .temporary
         .iter()
         .cloned()
-        .chain(arguments.iter().flatten().cloned())
-        .collect::<Vec<_>>();
-    (!arguments.is_empty()).then(|| quote! { #(#arguments),* })
-}
-
-/// An action's arguments: the outbox when the table has `outputs`, the
-/// temporary context, then `arguments`.
-fn action_arguments(
-    temporary_context: &CallContext,
-    arguments: &[Option<TokenStream>],
-) -> Option<TokenStream> {
-    let outbox = temporary_context
-        .outbox
-        .then(|| quote! { &mut self.outbox });
-    let arguments = outbox
-        .into_iter()
-        .chain(temporary_context.temporary.iter().cloned())
         .chain(arguments.iter().flatten().cloned())
         .collect::<Vec<_>>();
     (!arguments.is_empty()).then(|| quote! { #(#arguments),* })
@@ -5272,7 +5096,6 @@ fn action_sequence(
     actions: &[AsyncIdent],
     eval_actions: &[EvalAction],
     callback_args: &Option<TokenStream>,
-    action_args: &Option<TokenStream>,
     error_name: &Ident,
     produces_state: bool,
     event_name: &TokenStream,
@@ -5288,7 +5111,7 @@ fn action_sequence(
             output.extend(quote! {
                 let eval_guard_passed = #guard;
                 if eval_guard_passed {
-                    self.context.#action(#action_args)#action_await
+                    self.context.#action(#callback_args)#action_await
                         .map_err(#error_name::ActionFailed)?;
                     Self::__sml_log_action(&mut self.policy, stringify!(#action), #event_name);
                     self.context.log_action(stringify!(#action));
@@ -5309,7 +5132,7 @@ fn action_sequence(
                 quote! { let _ = }
             };
             output.extend(quote! {
-                #binding self.context.#ident(#action_args)#action_await
+                #binding self.context.#ident(#callback_args)#action_await
                     .map_err(#error_name::ActionFailed)?;
                 Self::__sml_log_action(&mut self.policy, stringify!(#ident), #event_name);
                 self.context.log_action(stringify!(#ident));
@@ -5377,258 +5200,16 @@ fn guard_contains_async(guard: &GuardExpression) -> bool {
     }
 }
 
-/// One table of a composite tree as the leaf label sees it: its generated
-/// states enum, where the core keeps its active state, and its states, each
-/// with the child table it hosts, if any.
-pub(crate) struct LabelNode {
-    pub(crate) table: Ident,
-    pub(crate) states_name: Ident,
-    pub(crate) place: TokenStream,
-    pub(crate) states: Vec<(Ident, Option<LabelNode>)>,
-}
-
-impl LabelNode {
-    fn leaves<'a>(&'a self, out: &mut Vec<(&'a Ident, &'a Ident)>) {
-        for (state, child) in &self.states {
-            match child {
-                Some(child) => child.leaves(out),
-                None => out.push((&self.table, state)),
-            }
-        }
-    }
-
-    fn label_expression(
-        &self,
-        label_name: &Ident,
-        variants: &HashMap<(String, String), Ident>,
-    ) -> parse::Result<TokenStream> {
-        let states_name = &self.states_name;
-        let place = &self.place;
-        let arms = self
-            .states
-            .iter()
-            .map(|(state, child)| {
-                let value = match child {
-                    Some(child) => child.label_expression(label_name, variants)?,
-                    None => {
-                        let variant = variants
-                            .get(&(self.table.to_string(), state.to_string()))
-                            .ok_or_else(|| {
-                                parse::Error::new(state.span(), "leaf label is missing a variant")
-                            })?;
-                        quote! { #label_name::#variant }
-                    }
-                };
-                Ok(quote! { #states_name::#state { .. } => #value, })
-            })
-            .collect::<parse::Result<Vec<_>>>()?;
-        Ok(quote! { match &#place { #(#arms)* } })
-    }
-}
-
-/// The label tree of `owner` (the root or a scalar child table) in a
-/// composite tree: each state hosting a direct child table descends into it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the label tree walks the same tree facts as the other tree builders"
-)]
-fn tree_label_node(
-    root: &Ident,
-    owner: &Ident,
-    machine: &StateMachine,
-    states_name: &Ident,
-    place: TokenStream,
-    nodes: &[&StateMachine],
-    references: &[Ident],
-    parents: &HashMap<String, Ident>,
-) -> LabelNode {
-    let children = tree_children(owner, references, parents);
-    let states = collect_states(machine)
-        .into_values()
-        .map(|state| {
-            let child = children.iter().find_map(|(index, reference)| {
-                let variant = crate::parser::state_ident(&reference.to_string(), reference.span());
-                if variant != state {
-                    return None;
-                }
-                let node = nodes.get(*index)?;
-                let field = tree_field(reference);
-                Some(tree_label_node(
-                    root,
-                    reference,
-                    node,
-                    &tree_states_name(root, reference),
-                    quote! { self.core.#field },
-                    nodes,
-                    references,
-                    parents,
-                ))
-            });
-            (state, child)
-        })
-        .collect();
-    LabelNode {
-        table: owner.clone(),
-        states_name: states_name.clone(),
-        place,
-        states,
-    }
-}
-
-/// The fieldless leaf-label enum of a composite tree and the expression that
-/// computes it from the core's state fields. A leaf state name that occurs in
-/// more than one table is qualified by its table name (`JoinX`).
-pub(crate) fn leaf_label(
-    label_name: &Ident,
-    root: &LabelNode,
-    labels_attr: &[syn::Attribute],
-) -> parse::Result<(TokenStream, TokenStream)> {
-    let mut leaves = Vec::new();
-    root.leaves(&mut leaves);
-    let mut counts = HashMap::<String, usize>::new();
-    for (_, state) in &leaves {
-        let count = counts.entry(state.to_string()).or_insert(0);
-        *count = count.saturating_add(1);
-    }
-    let mut variants = HashMap::new();
-    let mut seen = HashSet::new();
-    let mut ordered = Vec::new();
-    // Unique leaf names keep their own name and are reserved first. A name
-    // shared by several tables is qualified by its table; a qualified name
-    // that is still taken gets the first free numeric suffix (`InnerX2`).
-    for (_, state) in &leaves {
-        if counts.get(&state.to_string()).copied().unwrap_or(0) == 1 {
-            seen.insert(state.to_string());
-        }
-    }
-    for (table, state) in &leaves {
-        let variant = if counts.get(&state.to_string()).copied().unwrap_or(0) > 1 {
-            let qualified = format!("{table}{state}");
-            let mut candidate = qualified.clone();
-            let mut suffix = 2_usize;
-            while !seen.insert(candidate.clone()) {
-                candidate = format!("{qualified}{suffix}");
-                suffix = suffix.saturating_add(1);
-            }
-            Ident::new(&candidate, state.span())
-        } else {
-            (*state).clone()
-        };
-        variants.insert((table.to_string(), state.to_string()), variant.clone());
-        ordered.push(variant);
-    }
-    let expression = root.label_expression(label_name, &variants)?;
-    let definition = quote! {
-        /// Fieldless label of the active leaf state, the machine's
-        /// `sml::StateMachine::Label`.
-        #[allow(missing_docs)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #(#labels_attr)*
-        pub enum #label_name { #(#ordered),* }
-
-        impl ::sml::StateName for #label_name {
-            #[inline(always)]
-            fn name(&self) -> &'static str {
-                match self { #(#label_name::#ordered => stringify!(#ordered),)* }
-            }
-        }
-    };
-    Ok((definition, expression))
-}
-
-/// The `sml::StateMachine` and `sml::Machine<Events>` implementations of a
-/// synchronous composite machine without a temporary context.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the trait implementation joins independently derived generator facts"
-)]
-fn composite_trait_impls(
-    parent: &StateMachine,
+/// The `sml::Machine<Events>` implementation of a synchronous composite
+/// machine without a temporary context.
+fn composite_machine_impl(
     machine_name: &Ident,
     context_name: &Ident,
     policy_name: &Ident,
     events_name: &Ident,
     parent_states_name: &Ident,
-    root: &LabelNode,
-    outputs_type: Option<&Type>,
-) -> parse::Result<TokenStream> {
-    let parent_name = parent
-        .name
-        .as_ref()
-        .ok_or_else(|| parse::Error::new(Span::call_site(), "composite parent must be named"))?;
-    let label_name = format_ident!("__Sml{}Label", parent_name);
-    let (label_definition, label_expression) = leaf_label(&label_name, root, &parent.labels_attr)?;
-    let display_name = parent.display_name.as_ref().map_or_else(
-        || {
-            let name = parent_name.to_string();
-            quote! { #name }
-        },
-        |name| quote! { #name },
-    );
-    let (output, drain, stop) = outputs_type.map_or_else(
-        || {
-            (
-                quote! { () },
-                quote! { ::sml::Drain::empty() },
-                quote! { false },
-            )
-        },
-        |outputs| {
-            (
-                quote! { #outputs },
-                quote! { self.core.outbox.drain() },
-                quote! { self.core.outbox.stop_requested() },
-            )
-        },
-    );
-    Ok(quote! {
-        #label_definition
-
-        impl<T: #context_name, #policy_name: ::sml::Policies> ::sml::StateMachine
-            for #machine_name<T, #policy_name>
-        {
-            const NAME: &'static str = #display_name;
-            type Events = #events_name;
-            type Context = T;
-            type Label = #label_name;
-            type Output = #output;
-
-            #[inline]
-            fn initialize(&mut self) -> bool {
-                self.initialize().is_ok()
-            }
-
-            #[inline]
-            fn process(&mut self, event: #events_name) -> bool {
-                self.process_event(event).is_ok()
-            }
-
-            #[inline]
-            fn label(&self) -> #label_name {
-                #label_expression
-            }
-
-            #[inline]
-            fn context(&self) -> &T {
-                &self.core.context
-            }
-
-            #[inline]
-            fn context_mut(&mut self) -> &mut T {
-                &mut self.core.context
-            }
-
-            #[inline]
-            fn drain_outputs(&mut self) -> ::sml::Drain<'_, #output> {
-                #drain
-            }
-
-            #[inline]
-            fn stop_requested(&self) -> bool {
-                #stop
-            }
-        }
-
+) -> TokenStream {
+    quote! {
         impl<T: #context_name, #policy_name: ::sml::Policies> ::sml::Machine<#events_name>
             for #machine_name<T, #policy_name>
         {
@@ -5639,5 +5220,5 @@ fn composite_trait_impls(
                 self.process_event(event).is_ok()
             }
         }
-    })
+    }
 }

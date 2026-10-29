@@ -264,8 +264,8 @@ async-callback, and temporary-context machines retain their shape-specific
 inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
 completion remains separate work.
 
-Generated synchronous composite machines without a temporary context also
-implement `Machine<Events>`, with `State` set to the parent (root) states enum.
+Generated synchronous composite machines without a temporary context or an
+orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
 
 ## Machine options
 
@@ -279,114 +279,13 @@ Options follow the machine name in brackets: `Name[option, option: value] {
 | `temporary_context: T` | Every callback and `process_event` take a call-scoped `T` |
 | `states_attr: #[...]` | Attributes on the generated `States` enum |
 | `events_attr: #[...]` | Attributes on the generated `Events` enum |
-| `labels_attr: #[...]` | Attributes on the generated leaf-label enum (below) |
-| `name: "text"` | The `StateMachine::NAME` constant (default: the table name) |
-| `outputs: T` | A machine-owned `Outbox<T>` that actions emit into (below) |
 
-In a composite tree the root (parent) table's `states_attr`, `events_attr`,
-`labels_attr`, and `name` apply to the generated parent states, events, and
-label. `outputs` may be declared on any table of a tree and applies to every
-table in it: each action of every table takes the outbox. Every table that
-declares `outputs` must name the same type. A derived `PartialEq` in
-`events_attr` replaces the generated variant-only event comparison, so
-journaled payloads compare by value; states keep the variant-only comparison
-that `is(...)` relies on.
-
-## Uniform machine interface
-
-Every synchronous machine with a single active leaf state implements
-`sml::StateMachine`: flat tables and composite trees, without a
-`temporary_context`. (Orthogonal machines and trees with an orthogonal node
-have several active leaves; async machines keep their async inherent API.)
-Flat tables whose events carry their own generic parameters or lifetimes do not
-implement it either, because `Events` is an associated type.
-
-```rust,ignore
-pub trait StateMachine {
-    const NAME: &'static str;
-    type Events;
-    type Context;
-    type Label: Copy + Debug + Eq + Hash + StateName;
-    type Output;
-
-    fn initialize(&mut self) -> bool;
-    fn process(&mut self, event: Self::Events) -> bool;
-    fn label(&self) -> Self::Label;
-    fn context(&self) -> &Self::Context;
-    fn context_mut(&mut self) -> &mut Self::Context;
-    fn drain_outputs(&mut self) -> sml::Drain<'_, Self::Output>;
-    fn stop_requested(&self) -> bool;
-}
-```
-
-`label()` returns a generated fieldless enum (reach it as
-`<M as StateMachine>::Label`) naming the active leaf state: the state of a flat
-table, or the deepest active state of a composite. A leaf name that occurs in
-more than one table of a tree is qualified by its table name, so a parent `X`
-and a child `X` become `ParentX` and `ChildX`. Labels derive `Debug`, `Clone`,
-`Copy`, `PartialEq`, `Eq`, and `Hash`; add more, such as serde's, with
-`labels_attr`. If a qualified name is itself a state name in the tree, the
-qualified label gets the first free numeric suffix (`InnerX2`). The label
-enum's generated type name is not part of the stable API; name it through the
-trait, for example `type DoorLabel = <DoorStateMachine<Door> as
-StateMachine>::Label;`.
-
-## Action outputs
-
-With `outputs: T` (and the crate's `alloc` feature), the machine owns an
-`sml::Outbox<T>` and every action, including lifecycle, completion, exception,
-and `eval` actions, receives `&mut Outbox<T>` as its first parameter after
-`&mut self`. Guards never receive it. Actions emit instead of performing I/O,
-and the owner drains the outputs after the event runs to completion:
-
-```rust,ignore
-sml! {
-    Door[outputs: Command] {
-        *Shut + event<Open> / open = Ajar,
-         Ajar + event<Close> / close = X,
-    }
-}
-
-impl DoorStateMachineContext for Door {
-    fn open(&mut self, outbox: &mut Outbox<Command>, event: &Open) -> Result<(), ()> {
-        outbox.emit(Command::Unlock(event.id));
-        Ok(())
-    }
-
-    fn close(&mut self, outbox: &mut Outbox<Command>, _: &Close) -> Result<(), ()> {
-        outbox.stop();
-        Ok(())
-    }
-}
-
-door.process(Open { id: 1 }.into());
-for command in door.drain_outputs() { /* execute */ }
-if door.stop_requested() { /* stop the actor */ }
-```
-
-`Outbox::stop` asks the owner to stop the machine after the current event; the
-request is sticky for the machine's lifetime. Outputs emitted by an action
-before a later guard or action fails stay in the outbox: when `process` returns
-`false`, the owner decides whether to execute or discard them. Without the
-`alloc` feature a table with `outputs` fails to compile with an unresolved
-`sml::Outbox`. Machines that do not
-implement `StateMachine` (orthogonal, async) reach the same outbox through the
-inherent `outbox()` and `outbox_mut()` methods. `outputs` cannot be combined
-with `temporary_context`.
-
-## Journaling and replay
-
-A journal records each event a machine handled with a snapshot of the machine
-around it, and replay feeds the recorded events into a fresh machine and
-compares snapshots. The generated `Events` enum is the journal record:
-`events_attr: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`
-derives what a journal needs, provided each event payload type derives the same
-traits. A snapshot is `label()` plus the owner's digest of the durable context.
-sml.rs adds nothing for the digest: what is durable, how it serializes, and
-which hash to use are the owner's choices, so the owner hashes its serialized
-context (leaving the outbox out, which the machine owns). Because actions never
-read a clock or a random source except through event data, replaying the same
-events reproduces the same labels and context.
+In a composite (a single child or a tree) the root (parent) table's
+`states_attr` and `events_attr` apply to the generated parent states and events
+enums. In a flat table a derived `PartialEq` in `events_attr` replaces the
+generated variant-only event comparison, so journaled payloads compare by
+value. States keep the variant-only comparison that `is(...)` relies on, so a
+`PartialEq` derive in `states_attr` does not compile.
 
 Action sequences accept `eval [guard] / action` in any position. The nested
 action runs only when its guard expression passes, while surrounding actions

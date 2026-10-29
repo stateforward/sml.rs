@@ -1,5 +1,0 @@
-error: all tables in a composite tree must use the same `outputs` type
- --> tests/compile-fail/composite_outputs_mismatch.rs:8:20
-  |
-8 |     Child[outputs: u16] {
-  |                    ^^^

@@ -1,5 +1,0 @@
-error: `outputs` cannot be combined with `temporary_context`
- --> tests/compile-fail/outputs_with_temporary_context.rs:8:20
-  |
-8 |     Mixed[outputs: u8, temporary_context: &mut u8] {
-  |                    ^^

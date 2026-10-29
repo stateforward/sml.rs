@@ -28,8 +28,6 @@ other public API, and verifies that an unrelated public removal still fails.
 
 - Exact compiler diagnostics and source locations.
 - Private generated identifiers and macro implementation details.
-- The type name of the generated leaf-label enum; name it through the trait as
-  `<M as sml::StateMachine>::Label`. Its variants are covered.
 - Diagram formatting beyond valid DOT/SVG output.
 - Benchmark numbers, which vary by compiler, processor, and operating system.
 - Files under `benchmarks/`, `fuzz/`, `sanitizer/`, and `scripts/` as reusable
