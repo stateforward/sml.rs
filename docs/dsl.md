@@ -287,6 +287,31 @@ generated variant-only event comparison, so journaled payloads compare by
 value. States keep the variant-only comparison that `is(...)` relies on, so a
 `PartialEq` derive in `states_attr` does not compile.
 
+## Journaling and replay
+
+A journal records the input events a machine handled and what each one did;
+replay feeds the inputs into a fresh machine and checks it does the same.
+
+- **Inputs:** the generated `Events` enum is the record. Derive what a journal
+  needs with `events_attr: #[derive(Clone, Debug, PartialEq, Serialize,
+  Deserialize)]`, given payload types that derive the same traits.
+- **What happened:** a `Logger` policy (see [Policies](../README.md#policies))
+  receives every process, guard, action, and state change inside one
+  `process_event`, in order: child-table transitions, completions, `defer` and
+  `process(...)` re-dispatch, and `exception<E>` recovery included. The owner
+  reads it through the public `logger()`/`logger_mut()` after the step. The
+  callbacks pass static names, never payloads, so the trace stays
+  allocation-free; payloads live in the journaled input.
+- **Replay:** process each journaled input in a fresh machine with the same
+  logger and compare its trace with the recorded one. Actions read a clock or
+  random source only through event data, so the same inputs produce the same
+  trace.
+
+The trace does not report an initial state's entry or an action that failed
+(only the `exception<E>` handler that ran). State names are not
+qualified by table, so two tables of a tree with the same state name log the
+same name.
+
 Action sequences accept `eval [guard] / action` in any position. The nested
 action runs only when its guard expression passes, while surrounding actions
 retain their original order. Both the eval guard and action may be `async`.
