@@ -6,6 +6,27 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Implement `Machine<Events>` for synchronous composite machines (a single
+  child or a tree) without a temporary context or an orthogonal node, with
+  `State` set to the parent states enum.
+
+### Changed
+
+- Apply a composite parent table's `states_attr` and `events_attr` to the
+  generated parent states and events enums in single-child composites, as
+  composite trees already did; they were silently ignored before. A
+  single-child composite table that named a derive its payload types lack, or
+  a `PartialEq` derive in `states_attr`, now fails to compile.
+- A derived `PartialEq` in a flat table's `events_attr` replaces the generated
+  variant-only event comparison (issue #21) instead of conflicting with it, so
+  a journaled `Events` value compares by payload. States keep the variant-only
+  comparison.
+- A downstream crate that implemented `sml::Machine` for a generated composite
+  machine itself now conflicts with the generated implementation; remove its
+  own.
+
 ### Fixed
 
 - Route guard and action faults raised by `completion<E>` and anonymous

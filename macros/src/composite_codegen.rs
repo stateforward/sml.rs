@@ -775,6 +775,17 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         }
     };
+    let parent_states_attr = &parent.states_attr;
+    let parent_events_attr = &parent.events_attr;
+    let machine_impl = (!is_async_machine && temporary_context_type.is_none()).then(|| {
+        composite_machine_impl(
+            &machine_name,
+            &context_name,
+            &policy_name,
+            &events_name,
+            &parent_states_name,
+        )
+    });
     let public_api = quote! {
         /// Enters the initial parent and child states and runs anonymous
         /// `completion<_>` transitions until the machine reaches a stable state.
@@ -891,6 +902,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
 
         #[allow(missing_docs)]
+        #(#parent_states_attr)*
         pub enum #parent_states_name { #(#parent_state_variants),* }
         impl PartialEq for #parent_states_name {
             fn eq(&self, other: &Self) -> bool {
@@ -907,7 +919,9 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
 
         #[allow(missing_docs)]
+        #(#parent_events_attr)*
         pub enum #events_name { #(#event_variants),* }
+        #machine_impl
         #state_name_impl
         #event_name_impl
         #(#conversions)*
@@ -2616,6 +2630,29 @@ fn generate_multi_code(
     );
     let parent_states_attr = &parent.states_attr;
     let parent_events_attr = &parent.events_attr;
+    // A tree with an orthogonal node has several active leaves; it keeps
+    // its inherent processing API, as orthogonal machines do.
+    let orthogonal_node = child_machines.iter().any(|child| {
+        child
+            .transitions
+            .iter()
+            .filter(|transition| transition.in_state.start)
+            .count()
+            > 1
+    });
+    let machine_impl = (!is_async_machine
+        && temporary_context_type.is_none()
+        && !root_orthogonal
+        && !orthogonal_node)
+        .then(|| {
+            composite_machine_impl(
+                &machine_name,
+                &context_name,
+                &policy_name,
+                &events_name,
+                &parent_states_name,
+            )
+        });
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_name>,
@@ -2920,6 +2957,7 @@ fn generate_multi_code(
         #[allow(missing_docs)]
         #(#parent_events_attr)*
         pub enum #events_name { #(#event_variants),* }
+        #machine_impl
         #event_name_impl
         #(#conversions)*
         #event_names_table
@@ -5159,5 +5197,28 @@ fn guard_contains_async(guard: &GuardExpression) -> bool {
     }) {
         Ok(()) => contains_async,
         Err(_) => false,
+    }
+}
+
+/// The `sml::Machine<Events>` implementation of a synchronous composite
+/// machine without a temporary context.
+fn composite_machine_impl(
+    machine_name: &Ident,
+    context_name: &Ident,
+    policy_name: &Ident,
+    events_name: &Ident,
+    parent_states_name: &Ident,
+) -> TokenStream {
+    quote! {
+        impl<T: #context_name, #policy_name: ::sml::Policies> ::sml::Machine<#events_name>
+            for #machine_name<T, #policy_name>
+        {
+            type State = #parent_states_name;
+
+            #[inline]
+            fn process_event(&mut self, event: #events_name) -> bool {
+                self.process_event(event).is_ok()
+            }
+        }
     }
 }

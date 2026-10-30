@@ -264,6 +264,54 @@ async-callback, and temporary-context machines retain their shape-specific
 inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
 completion remains separate work.
 
+Generated synchronous composite machines without a temporary context or an
+orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
+
+## Machine options
+
+Options follow the machine name in brackets: `Name[option, option: value] {
+... }`.
+
+| Option | Effect |
+|---|---|
+| `custom_error` | Callbacks return the context's associated `Error` type |
+| `entry_exit_async` | The generated `on_entry_*`/`on_exit_*` hooks are `async` |
+| `temporary_context: T` | Every callback and `process_event` take a call-scoped `T` |
+| `states_attr: #[...]` | Attributes on the generated `States` enum |
+| `events_attr: #[...]` | Attributes on the generated `Events` enum |
+
+In a composite (a single child or a tree) the root (parent) table's
+`states_attr` and `events_attr` apply to the generated parent states and events
+enums. In a flat table a derived `PartialEq` in `events_attr` replaces the
+generated variant-only event comparison, so journaled payloads compare by
+value. States keep the variant-only comparison that `is(...)` relies on, so a
+`PartialEq` derive in `states_attr` does not compile.
+
+## Journaling and replay
+
+A journal records the input events a machine handled and what each one did;
+replay feeds the inputs into a fresh machine and checks it does the same.
+
+- **Inputs:** the generated `Events` enum is the record. Derive what a journal
+  needs with `events_attr: #[derive(Clone, Debug, PartialEq, Serialize,
+  Deserialize)]`, given payload types that derive the same traits.
+- **What happened:** a `Logger` policy (see [Policies](../README.md#policies))
+  receives every process, guard, action, and state change inside one
+  `process_event`, in order: child-table transitions, completions, `defer` and
+  `process(...)` re-dispatch, and `exception<E>` recovery included. The owner
+  reads it through the public `logger()`/`logger_mut()` after the step. The
+  callbacks pass static names, never payloads, so the trace stays
+  allocation-free; payloads live in the journaled input.
+- **Replay:** process each journaled input in a fresh machine with the same
+  logger and compare its trace with the recorded one. Actions read a clock or
+  random source only through event data, so the same inputs produce the same
+  trace.
+
+The trace does not report an initial state's entry or an action that failed
+(only the `exception<E>` handler that ran). State names are not
+qualified by table, so two tables of a tree with the same state name log the
+same name.
+
 Action sequences accept `eval [guard] / action` in any position. The nested
 action runs only when its guard expression passes, while surrounding actions
 retain their original order. Both the eval guard and action may be `async`.

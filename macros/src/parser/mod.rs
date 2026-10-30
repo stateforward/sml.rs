@@ -130,6 +130,29 @@ pub(crate) fn validate_name_collisions(machine: &StateMachine) -> parse::Result<
     validate_machine_names(machine)
 }
 
+/// Returns true when `attrs` holds a `#[derive(...)]` naming `name` (by its
+/// last path segment, so `core::cmp::PartialEq` counts).
+pub(crate) fn derives(attrs: &[Attribute], name: &str) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            let parsed = attr.parse_nested_meta(|meta| {
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == name)
+                {
+                    found = true;
+                }
+                Ok(())
+            });
+            parsed.is_ok() && found
+        })
+}
+
 pub(crate) fn validate_name_collisions_many(machines: &[&StateMachine]) -> parse::Result<()> {
     let mut events = HashMap::new();
     for machine in machines {
@@ -1032,5 +1055,27 @@ impl ParsedStateMachine {
             fixed_error_type: sm.fixed_error_type,
             event_generics: sm.event_generics,
         })
+    }
+}
+
+#[cfg(test)]
+mod derive_tests {
+    use super::derives;
+    use syn::{parse::Parser, Attribute};
+
+    fn attrs(tokens: proc_macro2::TokenStream) -> Vec<Attribute> {
+        Attribute::parse_outer.parse2(tokens).unwrap()
+    }
+
+    #[test]
+    fn finds_a_derived_trait_by_its_last_path_segment() {
+        let list = attrs(quote::quote! {
+            #[doc = "events"]
+            #[derive(Debug, core::cmp::PartialEq)]
+        });
+        assert!(derives(&list, "PartialEq"));
+        assert!(derives(&list, "Debug"));
+        assert!(!derives(&list, "Clone"));
+        assert!(!derives(&[], "PartialEq"));
     }
 }

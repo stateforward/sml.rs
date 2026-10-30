@@ -19,14 +19,14 @@ the default `NoPolicy` path.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.4" }
+sml = { package = "stateforward-sml", version = "1.5" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.4", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
 ```
 
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
@@ -144,14 +144,14 @@ and termination queries. The state API follows the machine shape:
 
 <!-- public event-processing traits from src/lib.rs -->
 
-Synchronous flat machines implement `Machine<E>` with `process_event` and
-`process_event_async`. Both report event acceptance as `bool`, matching the
-`sml.cpp` `co_sm` contract. The latter returns an allocation-free ready future
-after the uncontended inline run-to-completion fast path. Detailed Rust errors
-remain available from the generated machine's inherent `process_event` method.
-Async callbacks are a separate concern. Orthogonal, composite, async-callback,
-and temporary-context machines retain their shape-specific inherent processing
-APIs.
+Synchronous flat and composite machines implement `Machine<E>` with
+`process_event` and `process_event_async`. Both report event acceptance as
+`bool`, matching the `sml.cpp` `co_sm` contract. The latter returns an
+allocation-free ready future after the uncontended inline run-to-completion fast
+path. Detailed Rust errors remain available from the generated machine's
+inherent `process_event` method. Async callbacks are a separate concern.
+Orthogonal, async-callback, and temporary-context machines retain their
+shape-specific inherent processing APIs.
 
 | Shape | Main state API |
 |---|---|

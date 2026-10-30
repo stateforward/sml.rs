@@ -2092,6 +2092,21 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
     let states_attr_list = &sm.states_attr;
     let events_attr_list = &sm.events_attr;
+    // A derived `PartialEq` in `events_attr` replaces the variant-only
+    // comparison (issue #21), so journaled payloads compare by value.
+    let events_partial_eq = (!crate::parser::derives(events_attr_list, "PartialEq")).then(|| {
+        quote! {
+            /// Manually define PartialEq for #events_type_name based on variant only to address issue-#21
+            impl #event_impl_generics PartialEq for #events_type_name #event_type_generics
+                #event_where_clause
+            {
+                fn eq(&self, other: &Self) -> bool {
+                    use core::mem::discriminant;
+                    discriminant(self) == discriminant(other)
+                }
+            }
+        }
+    });
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
@@ -2188,15 +2203,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
         #completion_origin_definition
 
-        /// Manually define PartialEq for #events_type_name based on variant only to address issue-#21
-        impl #event_impl_generics PartialEq for #events_type_name #event_type_generics
-            #event_where_clause
-        {
-            fn eq(&self, other: &Self) -> bool {
-                use core::mem::discriminant;
-                discriminant(self) == discriminant(other)
-            }
-        }
+        #events_partial_eq
 
         /// List of possible errors
         // Error payloads are generic user types and are intentionally only
