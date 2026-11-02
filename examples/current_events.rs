@@ -30,11 +30,13 @@ impl EventVisitor for PrintEvents {
 }
 
 fn print_current_events(machine: &EventsParentStateMachine<Context>) {
-    let state_name = machine.visit_current_state(|state| match state {
-        EventsParentStates::Outside => "Outside",
-        EventsParentStates::EventsChild => "EventsChild",
+    machine.visit_current_states(|state| {
+        let state_name = match state {
+            EventsParentStates::Outside => "Outside",
+            EventsParentStates::EventsChild => "EventsChild",
+        };
+        print!("{state_name}: ");
     });
-    print!("{state_name}: ");
     machine.visit_current_events(&mut PrintEvents);
     println!();
 }

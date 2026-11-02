@@ -4,6 +4,66 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.0 - Unreleased
+
+This is a major release; see the [2.0 migration guide](docs/migrating-to-2.0.md).
+
+### Added
+
+- A `scheduler` policy slot. `Policies` gains a defaulted scheduler type
+  parameter and `sml_policies!` accepts `scheduler: ...`. The default `()`
+  keeps the owned `&mut self` machine. A queued scheduler turns the generated
+  flat, composite, or orthogonal machine itself into a cloneable handle with
+  `process_event_async(&self, event)`, `try_process_event(&self, event)`,
+  `is(...)`, `visit_current_states(visitor)`, and
+  `visit_current_events(visitor)`: the event is queued at call time, dropping
+  the completion does not cancel it, events run FIFO to completion one at a
+  time, and after `X` later events resolve to `false`. Queued schedulers drive
+  synchronous machines without a temporary context.
+- `InlineScheduler` and the bounded `FifoScheduler<N>` (`std`), the
+  `Scheduler`, `Schedule`, `Queued`, `StrictOrdering`, and `SyncMachineStep`
+  contract for owner-written schedulers, and a `Scheduler` associated type
+  plus `into_scheduled_parts` on the sealed `Policy` trait. `FifoScheduler` recovers draining
+  after a panicking step: the next caller drains, waiters for room are woken,
+  and nothing queued is stranded once the machine reaches `X`.
+- `visit_current_states(visitor)` on every generated machine: the visitor
+  runs once per active root state (once per region of an orthogonal root),
+  matching `sml.cpp`.
+- `IsState<M>`, implemented by generated states enums (and orthogonal state
+  arrays) so `is(...)` accepts the root states and any child machine's
+  states: `sm.is(&ChildStates::Idle)` checks inside that child, the Rust form
+  of `sm.is<decltype(sub)>(state)`.
+
+### Changed
+
+- The `PolicyBundle` struct is renamed `Policies`, and the sealed `Policies`
+  trait is renamed `Policy`. The owned machine's API is bounded on
+  `P: Policy<Scheduler = ()>`; generic code over an owned machine's policy
+  adds that bound.
+- `PolicyParts` and `PolicyBundleParts` (now `PoliciesParts`) move to the
+  doc-hidden `sml::__private` macro-support module, which is not public API.
+- `is(...)` is generic over `IsState` instead of taking the root states type
+  only; existing `sm.is(&States::A)` and orthogonal `sm.is(&[a, b])` calls are
+  unchanged.
+- Generated machine cores are doc-hidden public types so the `IsState` bound
+  can name them; their fields and methods stay private.
+
+### Removed
+
+- Generated state getters and per-shape queries: `state()`, `states()`,
+  `state(region)`, `is_region`, `child_state`, `is_child`, `child_is_active`,
+  `visit_current_state`, `visit_child_state`, and the per-child
+  `<child>_state`, `<child>_states`, `is_<child>`, `<child>_is_active`, and
+  `visit_<child>_state` methods. Use `is(...)` and `visit_current_states`.
+- The inherent `is_terminated()` and the `Terminated` implementations on
+  generated machines; use `sm.is(&States::X)` (`sm.is(&[X, X])` for
+  orthogonal machines). The `Terminated` trait remains for schedulers and
+  `utility::Hierarchical`.
+- `context()`, `context_mut()`, `logger()`, `logger_mut()`, `observer()`, and
+  `observer_mut()` on generated machines. Pass a reference or shared handle
+  as the context, use the per-call temporary context, and give loggers and
+  observers a sink the owner keeps.
+
 ## 1.5.0 - 2026-10-31
 
 ### Added

@@ -26,16 +26,16 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    observed: usize,
+    observed: core::cell::Cell<usize>,
 }
 
-impl GenericEventsStateMachineContext for Context {
+impl GenericEventsStateMachineContext for &Context {
     fn observe<T>(&mut self, event: &Message<T>) -> Result<(), ()>
     where
         T: Clone + Debug,
     {
         let _ = format_args!("{:?}", event.0);
-        self.observed += 1;
+        self.observed.set(self.observed.get() + 1);
         Ok(())
     }
 
@@ -49,7 +49,8 @@ impl GenericEventsStateMachineContext for Context {
 }
 
 fn main() {
-    let mut machine = GenericEventsStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut machine = GenericEventsStateMachine::new(&context);
     machine.process_event(Message(7_u32)).unwrap();
     machine
         .process_event(Message(String::from("typed")))
@@ -62,5 +63,5 @@ fn main() {
     machine.process_event(&mut operation).unwrap();
 
     assert_eq!(operation.result.as_deref(), Some("result"));
-    assert_eq!(machine.context().observed, 2);
+    assert_eq!(context.observed.get(), 2);
 }

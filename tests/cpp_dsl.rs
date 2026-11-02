@@ -1,5 +1,14 @@
 use sml::sml;
 
+/// Returns whether the machine's active root state matches `$pattern`.
+macro_rules! in_state {
+    ($machine:expr, $pattern:pat $(if $guard:expr)?) => {{
+        let mut matched = false;
+        $machine.visit_current_states(|state| matched |= matches!(state, $pattern $(if $guard)?));
+        matched
+    }};
+}
+
 pub struct OpenClose;
 pub struct CdDetected;
 pub struct Play;
@@ -29,19 +38,19 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    actions: usize,
+    actions: core::cell::Cell<usize>,
 }
 
 macro_rules! action {
     ($name:ident, $event:ty) => {
         fn $name(&mut self, _event: &$event) -> Result<(), ()> {
-            self.actions += 1;
+            self.actions.set(self.actions.get() + 1);
             Ok(())
         }
     };
 }
 
-impl PlayerStateMachineContext for Context {
+impl PlayerStateMachineContext for &Context {
     action!(open_drawer, OpenClose);
     action!(close_drawer, OpenClose);
     action!(store_cd_info, CdDetected);
@@ -54,25 +63,26 @@ impl PlayerStateMachineContext for Context {
     action!(invalid_play, Play);
 
     fn entered_open(&mut self) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn exited_open(&mut self) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn cpp_shaped_cd_player_table_dispatches() {
-    let mut sm = PlayerStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = PlayerStateMachine::new(&context);
 
     sm.process_event(OpenClose).unwrap();
-    assert!(matches!(sm.state(), PlayerStates::Open));
+    assert!(sm.is(&PlayerStates::Open));
     sm.process_event(Play).unwrap();
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().actions, 4);
+    assert!(sm.is(&PlayerStates::X));
+    assert_eq!(context.actions.get(), 4);
 }
 
 pub struct Ping;
@@ -89,46 +99,47 @@ sml! {
 
 #[derive(Default)]
 struct TransitionContext {
-    entries: usize,
-    exits: usize,
-    actions: usize,
+    entries: core::cell::Cell<usize>,
+    exits: core::cell::Cell<usize>,
+    actions: core::cell::Cell<usize>,
 }
 
-impl TransitionKindsStateMachineContext for TransitionContext {
+impl TransitionKindsStateMachineContext for &TransitionContext {
     fn entered(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 
     fn exited(&mut self) -> Result<(), ()> {
-        self.exits += 1;
+        self.exits.set(self.exits.get() + 1);
         Ok(())
     }
 
     fn internal_action(&mut self, _event: &Ping) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn self_action(&mut self, _event: &Reset) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn cpp_internal_and_self_transition_lifecycle_differs() {
-    let mut sm = TransitionKindsStateMachine::new(TransitionContext::default());
+    let context = TransitionContext::default();
+    let mut sm = TransitionKindsStateMachine::new(&context);
     sm.initialize().unwrap();
 
     sm.process_event(Ping).unwrap();
-    assert_eq!(sm.context().entries, 1);
-    assert_eq!(sm.context().exits, 0);
+    assert_eq!(context.entries.get(), 1);
+    assert_eq!(context.exits.get(), 0);
 
     sm.process_event(Reset).unwrap();
-    assert_eq!(sm.context().entries, 2);
-    assert_eq!(sm.context().exits, 1);
-    assert_eq!(sm.context().actions, 2);
+    assert_eq!(context.entries.get(), 2);
+    assert_eq!(context.exits.get(), 1);
+    assert_eq!(context.actions.get(), 2);
 }
 
 pub struct Ack {
@@ -144,29 +155,30 @@ sml! {
 
 #[derive(Default)]
 struct EventContext {
-    captured: Option<u32>,
-    audits: usize,
+    captured: core::cell::Cell<Option<u32>>,
+    audits: core::cell::Cell<usize>,
 }
 
-impl EventDataStateMachineContext for EventContext {
+impl EventDataStateMachineContext for &EventContext {
     fn is_valid(&self, event: &Ack) -> Result<bool, ()> {
         Ok(event.valid)
     }
 
     fn capture(&mut self, event: &Ack) -> Result<(), ()> {
-        self.captured = Some(event.id);
+        self.captured.set(Some(event.id));
         Ok(())
     }
 
     fn audit(&mut self, _event: &Ack) -> Result<(), ()> {
-        self.audits += 1;
+        self.audits.set(self.audits.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn external_cpp_style_event_types_preserve_payloads() {
-    let mut sm = EventDataStateMachine::new(EventContext::default());
+    let context = EventContext::default();
+    let mut sm = EventDataStateMachine::new(&context);
 
     assert!(sm
         .process_event(Ack {
@@ -180,9 +192,9 @@ fn external_cpp_style_event_types_preserve_payloads() {
     })
     .unwrap();
 
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().captured, Some(42));
-    assert_eq!(sm.context().audits, 1);
+    assert!(sm.is(&EventDataStates::X));
+    assert_eq!(context.captured.get(), Some(42));
+    assert_eq!(context.audits.get(), 1);
 }
 
 sml! {
@@ -193,22 +205,23 @@ sml! {
 
 #[derive(Default)]
 struct AnonymousDslContext {
-    prepared: bool,
+    prepared: core::cell::Cell<bool>,
 }
 
-impl AnonymousStateMachineContext for AnonymousDslContext {
+impl AnonymousStateMachineContext for &AnonymousDslContext {
     fn prepare(&mut self) -> Result<(), ()> {
-        self.prepared = true;
+        self.prepared.set(true);
         Ok(())
     }
 }
 
 #[test]
 fn cpp_anonymous_transition_spelling_initializes() {
-    let mut sm = AnonymousStateMachine::new(AnonymousDslContext::default());
+    let context = AnonymousDslContext::default();
+    let mut sm = AnonymousStateMachine::new(&context);
 
     assert!(matches!(sm.initialize().unwrap(), AnonymousStates::Ready));
-    assert!(sm.context().prepared);
+    assert!(context.prepared.get());
 }
 
 #[derive(Clone)]
@@ -225,24 +238,25 @@ sml! {
 
 #[derive(Default)]
 struct OriginCompletionContext {
-    id: Option<u32>,
+    id: core::cell::Cell<Option<u32>>,
 }
 
-impl OriginCompletionStateMachineContext for OriginCompletionContext {
+impl OriginCompletionStateMachineContext for &OriginCompletionContext {
     fn finish_release(&mut self, event: &Release) -> Result<(), ()> {
-        self.id = Some(event.id);
+        self.id.set(Some(event.id));
         Ok(())
     }
 }
 
 #[test]
 fn cpp_origin_completion_preserves_external_event() {
-    let mut sm = OriginCompletionStateMachine::new(OriginCompletionContext::default());
+    let context = OriginCompletionContext::default();
+    let mut sm = OriginCompletionStateMachine::new(&context);
 
     sm.process_event(Release { id: 7 }).unwrap();
 
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().id, Some(7));
+    assert!(sm.is(&OriginCompletionStates::X));
+    assert_eq!(context.id.get(), Some(7));
 }
 
 pub struct Build;
@@ -256,12 +270,12 @@ sml! {
 
 #[derive(Default)]
 struct DataActionSequenceContext {
-    recorded: bool,
+    recorded: core::cell::Cell<bool>,
 }
 
-impl DataActionSequenceStateMachineContext for DataActionSequenceContext {
+impl DataActionSequenceStateMachineContext for &DataActionSequenceContext {
     fn record_build(&mut self, _event: &Build) -> Result<(), ()> {
-        self.recorded = true;
+        self.recorded.set(true);
         Ok(())
     }
 
@@ -272,12 +286,13 @@ impl DataActionSequenceStateMachineContext for DataActionSequenceContext {
 
 #[test]
 fn only_final_action_constructs_output_state_data() {
-    let mut sm = DataActionSequenceStateMachine::new(DataActionSequenceContext::default());
+    let context = DataActionSequenceContext::default();
+    let mut sm = DataActionSequenceStateMachine::new(&context);
 
     sm.process_event(Build).unwrap();
 
-    assert!(matches!(sm.state(), DataActionSequenceStates::Ready(42)));
-    assert!(sm.context().recorded);
+    assert!(in_state!(sm, DataActionSequenceStates::Ready(42)));
+    assert!(context.recorded.get());
 }
 
 sml! {
@@ -289,22 +304,23 @@ sml! {
 
 #[derive(Default)]
 struct NamedEventContext {
-    entries: usize,
+    entries: core::cell::Cell<usize>,
 }
-impl NamedEventStateMachineContext for NamedEventContext {
+impl NamedEventStateMachineContext for &NamedEventContext {
     fn named_entered(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn cpp_named_event_literal_is_accepted() {
-    let mut sm = NamedEventStateMachine::new(NamedEventContext::default());
+    let context = NamedEventContext::default();
+    let mut sm = NamedEventStateMachine::new(&context);
     sm.initialize().unwrap();
-    assert_eq!(sm.context().entries, 1);
+    assert_eq!(context.entries.get(), 1);
     assert!(sm.is(&NamedEventStates::Idle));
     sm.process_event(NamedEventEvents::Connected).unwrap();
     assert!(sm.is(&NamedEventStates::X));
-    assert!(sm.is_terminated());
+    assert!(sm.is(&NamedEventStates::X));
 }

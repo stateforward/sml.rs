@@ -1,5 +1,14 @@
 use sml::sml;
 
+/// Returns whether the machine's active root state matches `$pattern`.
+macro_rules! in_state {
+    ($machine:expr, $pattern:pat $(if $guard:expr)?) => {{
+        let mut matched = false;
+        $machine.visit_current_states(|state| matched |= matches!(state, $pattern $(if $guard)?));
+        matched
+    }};
+}
+
 #[derive(Default)]
 pub struct Disconnected;
 
@@ -34,9 +43,9 @@ fn state_type_infers_payload_and_defaults_the_initial_value() {
     let mut sm = TypedStateDslStateMachine::new(Context);
     sm.process_event(Connect { id: 42 }).unwrap();
 
-    assert!(matches!(sm.state(), TypedStateDslStates::Connected(data) if data.id == 42));
+    assert!(in_state!(sm, TypedStateDslStates::Connected(data) if data.id == 42));
     sm.process_event(Disconnect).unwrap();
-    assert!(sm.is_terminated());
+    assert!(sm.is(&TypedStateDslStates::X));
 }
 
 #[derive(Default)]
@@ -58,5 +67,5 @@ impl DefaultTypedTargetStateMachineContext for DefaultContext {}
 fn target_type_without_action_is_default_constructed() {
     let mut sm = DefaultTypedTargetStateMachine::new(DefaultContext);
     sm.process_event(TurnOn).unwrap();
-    assert!(matches!(sm.state(), DefaultTypedTargetStates::On(_)));
+    assert!(in_state!(sm, DefaultTypedTargetStates::On(_)));
 }

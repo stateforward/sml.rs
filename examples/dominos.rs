@@ -74,5 +74,5 @@ fn main() {
     }
 
     // All the dominos fell!
-    assert!(matches!(sm.state(), &States::D5));
+    assert!(sm.is(&States::D5));
 }

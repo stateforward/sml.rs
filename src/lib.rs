@@ -69,14 +69,27 @@ extern crate self as sml;
 pub use sml_macros::sml;
 
 mod policy;
+mod scheduler;
 pub mod utility;
 
 pub use policy::{
     BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger, NoPolicy,
-    Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts, ProcessQueue, Queue,
-    QueuePolicy, RawMutex, StateName, SwitchStm, Testing, TestingAccess, TestingPolicy, ThreadSafe,
-    ThreadSafety,
+    Observer, Policies, Policy, ProcessQueue, Queue, QueuePolicy, RawMutex, StateName, SwitchStm,
+    Testing, TestingAccess, TestingPolicy, ThreadSafe, ThreadSafety,
 };
+
+/// Macro support for generated machines.
+///
+/// This module is not public API and is exempt from semantic versioning:
+/// generated code names these items, and their shape may change in any
+/// release.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::policy::{PoliciesParts, PolicyParts};
+}
+#[cfg(feature = "std")]
+pub use scheduler::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineScheduler};
+pub use scheduler::{Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};
 
 /// Marker and name access for a static typed event payload.
 ///
@@ -120,6 +133,18 @@ pub trait Machine<E> {
     fn process_event_async(&mut self, event: E) -> impl core::future::Future<Output = bool> {
         core::future::ready(self.process_event(event))
     }
+}
+
+/// A state value that a generated machine's `is(...)` can test.
+///
+/// Generated code implements this for the root states enum and for each child
+/// machine's states enum (or the state array of an orthogonal root or child),
+/// with `M` the machine's hidden core type. `sm.is(&ChildStates::Idle)` thus
+/// checks inside that child, the Rust form of `sml.cpp`'s
+/// `sm.is<decltype(sub)>(state)`.
+pub trait IsState<M: ?Sized> {
+    /// Returns whether `machine` is currently in this state.
+    fn is_state(&self, machine: &M) -> bool;
 }
 
 /// Reports whether a state machine has reached its terminal state.

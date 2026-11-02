@@ -1,3 +1,5 @@
+mod support;
+
 use sml::sml;
 
 pub struct Run;
@@ -13,29 +15,30 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    recovered: bool,
+    recovered: core::cell::Cell<bool>,
 }
 
-impl ExceptionDslStateMachineContext for Context {
+impl ExceptionDslStateMachineContext for &Context {
     fn fail_action(&mut self, _event: &Run) -> Result<(), ()> {
         Err(())
     }
 
     fn recover(&mut self) -> Result<(), ()> {
-        self.recovered = true;
+        self.recovered.set(true);
         Ok(())
     }
 }
 
 #[test]
 fn wildcard_exception_transition_handles_action_result_error() {
-    let mut sm = ExceptionDslStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = ExceptionDslStateMachine::new(&context);
     sm.process_event(Run).unwrap();
 
     assert!(sm.is(&ExceptionDslStates::Recovered));
-    assert!(sm.context().recovered);
+    assert!(context.recovered.get());
     sm.process_event(Finish).unwrap();
-    assert!(sm.is_terminated());
+    assert!(sm.is(&ExceptionDslStates::X));
 }
 
 pub struct AsyncRun;
@@ -49,10 +52,10 @@ sml! {
 
 #[derive(Default)]
 struct AsyncContext {
-    recovered: bool,
+    recovered: support::SyncCell<bool>,
 }
 
-impl AsyncExceptionDslStateMachineContext for AsyncContext {
+impl AsyncExceptionDslStateMachineContext for &AsyncContext {
     async fn fail_guard(&self, _event: &AsyncRun) -> Result<bool, ()> {
         core::future::ready(()).await;
         Err(())
@@ -60,7 +63,7 @@ impl AsyncExceptionDslStateMachineContext for AsyncContext {
 
     async fn async_recover(&mut self) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.recovered = true;
+        self.recovered.set(true);
         Ok(())
     }
 }
@@ -68,10 +71,11 @@ impl AsyncExceptionDslStateMachineContext for AsyncContext {
 #[test]
 fn async_exception_transition_handles_guard_result_error() {
     smol::block_on(async {
-        let mut sm = AsyncExceptionDslStateMachine::new(AsyncContext::default());
+        let context = AsyncContext::default();
+        let mut sm = AsyncExceptionDslStateMachine::new(&context);
         sm.process_event(AsyncRun).await.unwrap();
         assert!(sm.is(&AsyncExceptionDslStates::Recovered));
-        assert!(sm.context().recovered);
+        assert!(context.recovered.get());
     });
 }
 
@@ -91,25 +95,26 @@ sml! {
 
 #[derive(Default)]
 struct TypedContext {
-    code: Option<u32>,
+    code: core::cell::Cell<Option<u32>>,
 }
 
-impl TypedExceptionDslStateMachineContext for TypedContext {
+impl TypedExceptionDslStateMachineContext for &TypedContext {
     fn typed_fail(&mut self, _event: &TypedRun) -> Result<(), Failure> {
         Err(Failure { code: 42 })
     }
 
     fn capture_failure(&mut self, error: &Failure) -> Result<(), Failure> {
-        self.code = Some(error.code);
+        self.code.set(Some(error.code));
         Ok(())
     }
 }
 
 #[test]
 fn typed_exception_infers_and_injects_callback_error() {
-    let mut sm = TypedExceptionDslStateMachine::new(TypedContext::default());
+    let context = TypedContext::default();
+    let mut sm = TypedExceptionDslStateMachine::new(&context);
     sm.process_event(TypedRun).unwrap();
 
     assert!(sm.is(&TypedExceptionDslStates::Recovered));
-    assert_eq!(sm.context().code, Some(42));
+    assert_eq!(context.code.get(), Some(42));
 }

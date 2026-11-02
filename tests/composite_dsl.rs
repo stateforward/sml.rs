@@ -1,4 +1,15 @@
+mod support;
+
 use sml::sml;
+
+/// Returns whether the machine's active root state matches `$pattern`.
+macro_rules! in_state {
+    ($machine:expr, $pattern:pat $(if $guard:expr)?) => {{
+        let mut matched = false;
+        $machine.visit_current_states(|state| matched |= matches!(state, $pattern $(if $guard)?));
+        matched
+    }};
+}
 
 pub struct RootBroadcast;
 
@@ -15,42 +26,53 @@ sml! {
 
 #[derive(Default)]
 struct OrthogonalRootContext {
-    child_events: usize,
-    sibling_events: usize,
-    completions: usize,
+    child_events: core::cell::Cell<usize>,
+    sibling_events: core::cell::Cell<usize>,
+    completions: core::cell::Cell<usize>,
 }
 
-impl BroadcastCompositeRootStateMachineContext for OrthogonalRootContext {
+impl BroadcastCompositeRootStateMachineContext for &OrthogonalRootContext {
     fn child_broadcast(&mut self, _event: &RootBroadcast) -> Result<(), ()> {
-        self.child_events += 1;
+        self.child_events.set(self.child_events.get() + 1);
         Ok(())
     }
 
     fn sibling_broadcast(&mut self, _event: &RootBroadcast) -> Result<(), ()> {
-        self.sibling_events += 1;
+        self.sibling_events.set(self.sibling_events.get() + 1);
         Ok(())
     }
 
     fn child_region_completed(&mut self) -> Result<(), ()> {
-        self.completions += 1;
+        self.completions.set(self.completions.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn orthogonal_root_broadcasts_after_child_first_dispatch_per_region() {
-    let mut sm = BroadcastCompositeRootStateMachine::new(OrthogonalRootContext::default());
+    let context = OrthogonalRootContext::default();
+    let mut sm = BroadcastCompositeRootStateMachine::new(&context);
     sm.initialize().unwrap();
 
-    assert!(sm.root_region_child_is_active());
+    assert!(sm.is(&[
+        BroadcastCompositeRootStates::RootRegionChild,
+        BroadcastCompositeRootStates::Parallel,
+    ]));
     sm.process_event(RootBroadcast).unwrap();
 
-    assert!(sm.is_terminated());
-    assert!(sm.is_region(0, &BroadcastCompositeRootStates::X));
-    assert!(sm.is_region(1, &BroadcastCompositeRootStates::X));
-    assert_eq!(sm.context().child_events, 1);
-    assert_eq!(sm.context().sibling_events, 1);
-    assert_eq!(sm.context().completions, 1);
+    assert!(sm.is(&[
+        BroadcastCompositeRootStates::X,
+        BroadcastCompositeRootStates::X,
+    ]));
+    let mut regions = 0;
+    sm.visit_current_states(|state| {
+        assert!(matches!(state, BroadcastCompositeRootStates::X));
+        regions += 1;
+    });
+    assert_eq!(regions, 2);
+    assert_eq!(context.child_events.get(), 1);
+    assert_eq!(context.sibling_events.get(), 1);
+    assert_eq!(context.completions.get(), 1);
 }
 
 pub struct NestedRegionEvent;
@@ -73,40 +95,47 @@ sml! {
 
 #[derive(Default)]
 struct NestedRegionContext {
-    leaf_completions: usize,
-    root_completions: usize,
-    incorrect_parent_dispatches: usize,
+    leaf_completions: core::cell::Cell<usize>,
+    root_completions: core::cell::Cell<usize>,
+    incorrect_parent_dispatches: core::cell::Cell<usize>,
 }
 
-impl ScalarRootWithNestedOrthogonalStateMachineContext for NestedRegionContext {
+impl ScalarRootWithNestedOrthogonalStateMachineContext for &NestedRegionContext {
     fn nested_leaf_completed(&mut self) -> Result<(), ()> {
-        self.leaf_completions += 1;
+        self.leaf_completions.set(self.leaf_completions.get() + 1);
         Ok(())
     }
 
     fn nested_regions_completed(&mut self) -> Result<(), ()> {
-        self.root_completions += 1;
+        self.root_completions.set(self.root_completions.get() + 1);
         Ok(())
     }
 
     fn parent_region_should_not_handle(&mut self, _: &NestedRegionEvent) -> Result<(), ()> {
-        self.incorrect_parent_dispatches += 1;
+        self.incorrect_parent_dispatches
+            .set(self.incorrect_parent_dispatches.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn embedded_orthogonal_nodes_can_own_composite_children() {
-    let mut sm = ScalarRootWithNestedOrthogonalStateMachine::new(NestedRegionContext::default());
+    let context = NestedRegionContext::default();
+    let mut sm = ScalarRootWithNestedOrthogonalStateMachine::new(&context);
     sm.initialize().unwrap();
-    assert!(sm.nested_region_leaf_is_active());
+    assert!(sm.is(&ScalarRootWithNestedOrthogonalStates::OrthogonalOwnerWithChild));
+    assert!(sm.is(&[
+        ScalarRootWithNestedOrthogonalOrthogonalOwnerWithChildStates::NestedRegionLeaf,
+        ScalarRootWithNestedOrthogonalOrthogonalOwnerWithChildStates::Sibling,
+    ]));
+    assert!(sm.is(&ScalarRootWithNestedOrthogonalNestedRegionLeafStates::Leaf));
 
     sm.process_event(NestedRegionEvent).unwrap();
 
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().leaf_completions, 1);
-    assert_eq!(sm.context().root_completions, 1);
-    assert_eq!(sm.context().incorrect_parent_dispatches, 0);
+    assert!(sm.is(&ScalarRootWithNestedOrthogonalStates::X));
+    assert_eq!(context.leaf_completions.get(), 1);
+    assert_eq!(context.root_completions.get(), 1);
+    assert_eq!(context.incorrect_parent_dispatches.get(), 0);
 }
 
 pub struct E1;
@@ -142,116 +171,121 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    actions: usize,
-    entries: usize,
-    exits: usize,
-    unexpected: usize,
+    actions: core::cell::Cell<usize>,
+    entries: core::cell::Cell<usize>,
+    exits: core::cell::Cell<usize>,
+    unexpected: core::cell::Cell<usize>,
 }
 
-impl CompositeStateMachineContext for Context {
+impl CompositeStateMachineContext for &Context {
     fn in_child(&mut self, _event: &E3) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn finish_child(&mut self, _event: &E4) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn enter_child(&mut self, _event: &E2) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn exit_child(&mut self, _event: &E5) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn child_unexpected(&mut self, _event: &Reset) -> Result<(), ()> {
-        self.unexpected += 1;
+        self.unexpected.set(self.unexpected.get() + 1);
         Ok(())
     }
 
     fn parent_unexpected(&mut self, _event: &Unknown) -> Result<(), ()> {
-        self.unexpected += 1;
+        self.unexpected.set(self.unexpected.get() + 1);
         Ok(())
     }
 
     fn parent_initial_entry(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 
     fn parent_child_entry(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 
     fn parent_child_exit(&mut self) -> Result<(), ()> {
-        self.exits += 1;
+        self.exits.set(self.exits.get() + 1);
         Ok(())
     }
 
     fn child_s1_entry(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 
     fn child_s1_exit(&mut self) -> Result<(), ()> {
-        self.exits += 1;
+        self.exits.set(self.exits.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn state_sub_routes_child_first_and_preserves_child_state() {
-    let mut sm = CompositeStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = CompositeStateMachine::new(&context);
 
     assert!(sm.is(&CompositeStates::Idle));
-    assert!(sm.is_child(&CompositeSubStates::Idle));
-    assert!(sm.visit_current_state(|state| state == &CompositeStates::Idle));
-    assert!(sm.visit_child_state(|state| state == &CompositeSubStates::Idle));
+    assert!(sm.is(&CompositeSubStates::Idle));
+    let mut visited = 0;
+    sm.visit_current_states(|state| {
+        assert!(state == &CompositeStates::Idle);
+        visited += 1;
+    });
+    assert_eq!(visited, 1);
     sm.initialize().unwrap();
-    assert_eq!(sm.context().entries, 1);
+    assert_eq!(context.entries.get(), 1);
 
     sm.process_event(E1).unwrap();
     sm.process_event(E2).unwrap();
     assert!(sm.is(&CompositeStates::Sub));
-    assert!(sm.child_is_active());
-    assert_eq!(sm.context().entries, 2);
+    assert!(sm.is(&CompositeStates::Sub));
+    assert_eq!(context.entries.get(), 2);
 
     sm.process_event(Reset).unwrap();
     sm.process_event(Unknown).unwrap();
-    assert_eq!(sm.context().unexpected, 2);
+    assert_eq!(context.unexpected.get(), 2);
 
     sm.process_event(E3).unwrap();
-    assert!(sm.is_child(&CompositeSubStates::S1));
-    assert_eq!(sm.context().entries, 3);
+    assert!(sm.is(&CompositeSubStates::S1));
+    assert_eq!(context.entries.get(), 3);
 
     // E5 bubbles to the parent and deactivates the child without resetting it.
     sm.process_event(E5).unwrap();
     assert!(sm.is(&CompositeStates::Outside));
-    assert_eq!(sm.context().exits, 2);
-    assert!(sm.is_child(&CompositeSubStates::S1));
+    assert_eq!(context.exits.get(), 2);
+    assert!(sm.is(&CompositeSubStates::S1));
 
     // Re-entering state<Sub> restores the retained shallow history.
     sm.process_event(E2).unwrap();
-    assert!(sm.child_is_active());
-    assert!(sm.is_child(&CompositeSubStates::S1));
-    assert_eq!(sm.context().entries, 5);
+    assert!(sm.is(&CompositeStates::Sub));
+    assert!(sm.is(&CompositeSubStates::S1));
+    assert_eq!(context.entries.get(), 5);
 
     sm.process_event(E4).unwrap();
-    assert!(sm.is_child(&CompositeSubStates::X));
-    assert_eq!(sm.context().exits, 3);
+    assert!(sm.is(&CompositeSubStates::X));
+    assert_eq!(context.exits.get(), 3);
 
     // The child does not handle E5, so it bubbles to the parent table.
     sm.process_event(E5).unwrap();
     sm.process_event(E6).unwrap();
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().actions, 6);
-    assert_eq!(sm.context().exits, 4);
+    assert!(sm.is(&CompositeStates::X));
+    assert_eq!(context.actions.get(), 6);
+    assert_eq!(context.exits.get(), 4);
 }
 
 pub struct AsyncEnter;
@@ -270,10 +304,10 @@ sml! {
 
 #[derive(Default)]
 struct AsyncContext {
-    actions: usize,
+    actions: support::SyncCell<usize>,
 }
 
-impl AsyncParentStateMachineContext for AsyncContext {
+impl AsyncParentStateMachineContext for &AsyncContext {
     async fn child_ready(&self, _event: &AsyncChildEvent) -> Result<bool, ()> {
         core::future::ready(()).await;
         Ok(true)
@@ -281,19 +315,19 @@ impl AsyncParentStateMachineContext for AsyncContext {
 
     async fn async_child(&mut self, _event: &AsyncChildEvent) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     async fn async_enter(&mut self, _event: &AsyncEnter) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     async fn parent_completed(&mut self) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 }
@@ -301,14 +335,15 @@ impl AsyncParentStateMachineContext for AsyncContext {
 #[test]
 fn async_composite_callbacks_are_awaited_child_first() {
     smol::block_on(async {
-        let mut sm = AsyncParentStateMachine::new(AsyncContext::default());
+        let context = AsyncContext::default();
+        let mut sm = AsyncParentStateMachine::new(&context);
         sm.process_event(AsyncEnter).await.unwrap();
-        assert!(!sm.is_terminated());
+        assert!(!sm.is(&AsyncParentStates::X));
         sm.process_event(AsyncChildEvent).await.unwrap();
 
-        assert!(sm.is_child(&AsyncParentAsyncSubStates::X));
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().actions, 3);
+        assert!(sm.is(&AsyncParentAsyncSubStates::X));
+        assert!(sm.is(&AsyncParentStates::X));
+        assert_eq!(context.actions.get(), 3);
     });
 }
 
@@ -335,11 +370,11 @@ fn child_without_h_marker_resets_when_reentered() {
     let mut sm = NonHistoryParentStateMachine::new(NonHistoryContext);
     sm.process_event(NhEnter).unwrap();
     sm.process_event(NhAdvance).unwrap();
-    assert!(sm.is_child(&NonHistoryParentNonHistorySubStates::Advanced));
+    assert!(sm.is(&NonHistoryParentNonHistorySubStates::Advanced));
 
     sm.process_event(NhLeave).unwrap();
     sm.process_event(NhEnter).unwrap();
-    assert!(sm.is_child(&NonHistoryParentNonHistorySubStates::Idle));
+    assert!(sm.is(&NonHistoryParentNonHistorySubStates::Idle));
 }
 
 pub struct OriginEnter;
@@ -361,30 +396,31 @@ sml! {
 
 #[derive(Default)]
 struct OriginContext {
-    ids: [u32; 2],
+    ids: core::cell::RefCell<[u32; 2]>,
 }
 
-impl OriginParentStateMachineContext for OriginContext {
+impl OriginParentStateMachineContext for &OriginContext {
     fn capture_child_origin(&mut self, event: &CompositeOrigin) -> Result<(), ()> {
-        self.ids[0] = event.id;
+        self.ids.borrow_mut()[0] = event.id;
         Ok(())
     }
 
     fn capture_parent_origin(&mut self, event: &CompositeOrigin) -> Result<(), ()> {
-        self.ids[1] = event.id;
+        self.ids.borrow_mut()[1] = event.id;
         Ok(())
     }
 }
 
 #[test]
 fn composite_completion_preserves_origin_across_child_and_parent() {
-    let mut sm = OriginParentStateMachine::new(OriginContext::default());
+    let context = OriginContext::default();
+    let mut sm = OriginParentStateMachine::new(&context);
     sm.process_event(OriginEnter).unwrap();
     sm.process_event(CompositeOrigin { id: 77 }).unwrap();
 
-    assert!(sm.is_child(&OriginParentOriginSubStates::X));
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().ids, [77, 77]);
+    assert!(sm.is(&OriginParentOriginSubStates::X));
+    assert!(sm.is(&OriginParentStates::X));
+    assert_eq!(*context.ids.borrow(), [77, 77]);
 }
 
 pub struct CompositeFailureEvent;
@@ -421,7 +457,7 @@ fn composite_callbacks_preserve_custom_error_types() {
         machine.process_event(CompositeFailureEvent),
         Err(FailureParentError::ActionFailed(CompositeFailure::Child))
     ));
-    assert!(machine.child_is_active());
+    assert!(machine.is(&FailureParentStates::FailureChild));
 }
 
 #[derive(Default)]
@@ -455,10 +491,10 @@ sml! {
 
 #[derive(Default)]
 struct PayloadCompositeContext {
-    observations: Vec<u32>,
+    observations: core::cell::RefCell<Vec<u32>>,
 }
 
-impl PayloadParentStateMachineContext for PayloadCompositeContext {
+impl PayloadParentStateMachineContext for &PayloadCompositeContext {
     fn make_parent_ready(
         &mut self,
         state: &ParentIdle,
@@ -468,7 +504,7 @@ impl PayloadParentStateMachineContext for PayloadCompositeContext {
     }
 
     fn entered_child_idle(&mut self, state: &ChildIdle) -> Result<(), ()> {
-        self.observations.push(state.0);
+        self.observations.borrow_mut().push(state.0);
         Ok(())
     }
 
@@ -485,35 +521,38 @@ impl PayloadParentStateMachineContext for PayloadCompositeContext {
     }
 
     fn entered_parent_done(&mut self, state: &ParentDone) -> Result<(), ()> {
-        self.observations.push(state.0 + 1);
+        self.observations.borrow_mut().push(state.0 + 1);
         Ok(())
     }
 }
 
 #[test]
 fn composite_parent_and_child_store_and_inject_state_payloads() {
-    let mut machine = PayloadParentStateMachine::new(PayloadCompositeContext::default());
-    assert!(matches!(
-        machine.state(),
+    let context = PayloadCompositeContext::default();
+    let mut machine = PayloadParentStateMachine::new(&context);
+    assert!(in_state!(
+        machine,
         PayloadParentStates::ParentIdle(ParentIdle(0))
     ));
     machine.process_event(PreparePayload).unwrap();
-    assert!(matches!(
-        machine.state(),
+    assert!(in_state!(
+        machine,
         PayloadParentStates::ParentReady(ParentReady(10))
     ));
     machine.process_event(EnterPayloadChild).unwrap();
     machine.process_event(FillPayloadChild).unwrap();
-    assert!(matches!(
-        machine.child_state(),
-        PayloadParentPayloadChildStates::ChildLoaded(ChildLoaded(20))
-    ));
+    // `is` ignores payloads; `child_can_finish` checks the loaded payload.
+    assert!(
+        machine.is(&PayloadParentPayloadChildStates::ChildLoaded(ChildLoaded(
+            20
+        )))
+    );
     machine.process_event(FinishPayloadChild).unwrap();
-    assert!(matches!(
-        machine.state(),
+    assert!(in_state!(
+        machine,
         PayloadParentStates::ParentDone(ParentDone(0))
     ));
-    assert_eq!(machine.context().observations, [0, 1]);
+    assert_eq!(*context.observations.borrow(), [0, 1]);
 }
 
 pub struct AsyncCompositeBuild;
@@ -523,7 +562,7 @@ pub struct AsyncCompositeData(u8);
 sml! {
     AsyncPayloadChild {
         *"idle"_s + event<AsyncCompositeBuild> / async build_async_data = state<AsyncCompositeData>,
-         state<AsyncCompositeData> + event<AsyncCompositeFinish> = X,
+         state<AsyncCompositeData> + event<AsyncCompositeFinish> [built_nine] = X,
     }
 
     AsyncPayloadParent {
@@ -541,6 +580,10 @@ impl AsyncPayloadParentStateMachineContext for AsyncPayloadCompositeContext {
         smol::future::yield_now().await;
         Ok(AsyncCompositeData(9))
     }
+
+    fn built_nine(&self, state: &AsyncCompositeData, _: &AsyncCompositeFinish) -> Result<bool, ()> {
+        Ok(state.0 == 9)
+    }
 }
 
 #[test]
@@ -548,12 +591,11 @@ fn async_composite_actions_can_produce_child_state_payloads() {
     smol::block_on(async {
         let mut machine = AsyncPayloadParentStateMachine::new(AsyncPayloadCompositeContext);
         machine.process_event(AsyncCompositeBuild).await.unwrap();
-        assert!(matches!(
-            machine.child_state(),
-            AsyncPayloadParentAsyncPayloadChildStates::AsyncCompositeData(AsyncCompositeData(9))
+        assert!(machine.is(
+            &AsyncPayloadParentAsyncPayloadChildStates::AsyncCompositeData(AsyncCompositeData(9))
         ));
         machine.process_event(AsyncCompositeFinish).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&AsyncPayloadParentStates::X));
     });
 }
 
@@ -613,7 +655,7 @@ fn composite_callbacks_reborrow_mutable_temporary_context() {
         .process_event(&mut temporary, AdvanceTemporaryChild)
         .unwrap();
     assert_eq!(temporary, 15);
-    assert!(machine.is_terminated());
+    assert!(machine.is(&TemporaryParentStates::X));
 }
 
 pub struct EnterEvalChild;
@@ -632,12 +674,12 @@ sml! {
 
 #[derive(Default)]
 struct CompositeEvalContext {
-    calls: Vec<&'static str>,
+    calls: support::SyncRefCell<Vec<&'static str>>,
 }
 
-impl EvalParentStateMachineContext for CompositeEvalContext {
+impl EvalParentStateMachineContext for &CompositeEvalContext {
     fn child_before_eval(&mut self, _: &RunChildEval) -> Result<(), ()> {
-        self.calls.push("child before");
+        self.calls.borrow_mut().push("child before");
         Ok(())
     }
 
@@ -648,12 +690,12 @@ impl EvalParentStateMachineContext for CompositeEvalContext {
 
     async fn child_conditional_eval(&mut self, _: &RunChildEval) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.calls.push("child conditional");
+        self.calls.borrow_mut().push("child conditional");
         Ok(())
     }
 
     fn parent_before_eval(&mut self) -> Result<(), ()> {
-        self.calls.push("parent before");
+        self.calls.borrow_mut().push("parent before");
         Ok(())
     }
 
@@ -662,7 +704,7 @@ impl EvalParentStateMachineContext for CompositeEvalContext {
     }
 
     fn parent_conditional_eval(&mut self) -> Result<(), ()> {
-        self.calls.push("parent conditional");
+        self.calls.borrow_mut().push("parent conditional");
         Ok(())
     }
 }
@@ -670,11 +712,12 @@ impl EvalParentStateMachineContext for CompositeEvalContext {
 #[test]
 fn composite_eval_preserves_child_parent_order_and_async_callbacks() {
     smol::block_on(async {
-        let mut machine = EvalParentStateMachine::new(CompositeEvalContext::default());
+        let context = CompositeEvalContext::default();
+        let mut machine = EvalParentStateMachine::new(&context);
         machine.process_event(EnterEvalChild).await.unwrap();
         machine.process_event(RunChildEval).await.unwrap();
         assert_eq!(
-            machine.context().calls,
+            *context.calls.borrow(),
             [
                 "child before",
                 "child conditional",
@@ -682,7 +725,7 @@ fn composite_eval_preserves_child_parent_order_and_async_callbacks() {
                 "parent conditional"
             ]
         );
-        assert!(machine.is_terminated());
+        assert!(machine.is(&EvalParentStates::X));
     });
 }
 
@@ -723,16 +766,16 @@ impl DeferParentStateMachineContext for CompositeQueueContext {}
 fn composite_process_dispatches_after_installing_the_child_target() {
     let mut machine = ProcessParentStateMachine::new(CompositeQueueContext);
     machine.process_event(CompositeQueueStart).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&ProcessParentStates::X));
 }
 
 #[test]
 fn composite_defer_retries_owned_child_events_after_state_change() {
     let mut machine = DeferParentStateMachine::new(CompositeQueueContext);
     machine.process_event(CompositeQueueDeferred).unwrap();
-    assert!(machine.child_is_active());
+    assert!(machine.is(&DeferParentStates::DeferChild));
     machine.process_event(CompositeQueueUnlock).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&DeferParentStates::X));
 }
 
 pub struct AsyncCompositeQueueStart;
@@ -788,7 +831,7 @@ fn async_composite_process_uses_iterative_child_first_dispatch() {
             .process_event(AsyncCompositeQueueStart)
             .await
             .unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&AsyncProcessParentStates::X));
     });
 }
 
@@ -804,7 +847,7 @@ fn async_composite_defer_retries_after_awaited_child_state_change() {
             .process_event(AsyncCompositeQueueUnlock)
             .await
             .unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&AsyncDeferParentStates::X));
     });
 }
 
@@ -825,10 +868,10 @@ sml! {
 
 #[derive(Default)]
 struct CompositeExceptionContext {
-    code: Option<u32>,
+    code: support::SyncCell<Option<u32>>,
 }
 
-impl ExceptionParentStateMachineContext for CompositeExceptionContext {
+impl ExceptionParentStateMachineContext for &CompositeExceptionContext {
     async fn fail_in_child(&mut self, _: &FailInChild) -> Result<(), CompositeExceptionFailure> {
         core::future::ready(()).await;
         Err(CompositeExceptionFailure(17))
@@ -839,7 +882,7 @@ impl ExceptionParentStateMachineContext for CompositeExceptionContext {
         error: &CompositeExceptionFailure,
     ) -> Result<(), CompositeExceptionFailure> {
         core::future::ready(()).await;
-        self.code = Some(error.0);
+        self.code.set(Some(error.0));
         Ok(())
     }
 }
@@ -847,10 +890,11 @@ impl ExceptionParentStateMachineContext for CompositeExceptionContext {
 #[test]
 fn composite_typed_exceptions_route_child_first_and_complete_parent() {
     smol::block_on(async {
-        let mut machine = ExceptionParentStateMachine::new(CompositeExceptionContext::default());
+        let context = CompositeExceptionContext::default();
+        let mut machine = ExceptionParentStateMachine::new(&context);
         machine.process_event(FailInChild).await.unwrap();
-        assert!(machine.is_terminated());
-        assert_eq!(machine.context().code, Some(17));
+        assert!(machine.is(&ExceptionParentStates::X));
+        assert_eq!(context.code.get(), Some(17));
     });
 }
 
@@ -869,10 +913,10 @@ sml! {
 
 #[derive(Default)]
 struct ParentExceptionContext {
-    recovered: bool,
+    recovered: support::SyncCell<bool>,
 }
 
-impl ExceptionFallbackParentStateMachineContext for ParentExceptionContext {
+impl ExceptionFallbackParentStateMachineContext for &ParentExceptionContext {
     type Error = CompositeExceptionFailure;
 
     async fn fail_in_parent(&mut self, _: &FailInParent) -> Result<(), Self::Error> {
@@ -881,7 +925,7 @@ impl ExceptionFallbackParentStateMachineContext for ParentExceptionContext {
     }
 
     fn recover_parent_exception(&mut self) -> Result<(), Self::Error> {
-        self.recovered = true;
+        self.recovered.set(true);
         Ok(())
     }
 }
@@ -889,11 +933,11 @@ impl ExceptionFallbackParentStateMachineContext for ParentExceptionContext {
 #[test]
 fn composite_wildcard_exceptions_bubble_to_parent_when_child_has_no_handler() {
     smol::block_on(async {
-        let mut machine =
-            ExceptionFallbackParentStateMachine::new(ParentExceptionContext::default());
+        let context = ParentExceptionContext::default();
+        let mut machine = ExceptionFallbackParentStateMachine::new(&context);
         machine.process_event(FailInParent).await.unwrap();
-        assert!(machine.is_terminated());
-        assert!(machine.context().recovered);
+        assert!(machine.is(&ExceptionFallbackParentStates::X));
+        assert!(context.recovered.get());
     });
 }
 
@@ -927,15 +971,15 @@ fn multiple_direct_children_route_and_complete_independently() {
     let mut machine = MultipleChildrenStateMachine::new(MultipleChildrenContext);
     machine.process_event(EnterMultiA).unwrap();
     assert!(machine.is(&MultipleChildrenStates::MultiA));
-    assert!(machine.is_multi_a(&MultipleChildrenMultiAStates::Idle));
+    assert!(machine.is(&MultipleChildrenMultiAStates::Idle));
     machine.process_event(AdvanceMultiA).unwrap();
     assert!(machine.is(&MultipleChildrenStates::Between));
 
     machine.process_event(EnterMultiB).unwrap();
     assert!(machine.is(&MultipleChildrenStates::MultiB));
-    assert!(machine.is_multi_b(&MultipleChildrenMultiBStates::Idle));
+    assert!(machine.is(&MultipleChildrenMultiBStates::Idle));
     machine.process_event(AdvanceMultiB).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&MultipleChildrenStates::X));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -976,10 +1020,10 @@ sml! {
 
 #[derive(Default)]
 struct MultipleFeaturesContext {
-    failure: Option<u8>,
+    failure: support::SyncCell<Option<u8>>,
 }
 
-impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
+impl MultipleFeaturesStateMachineContext for &MultipleFeaturesContext {
     async fn build_feature_a(
         &mut self,
         temporary: &mut usize,
@@ -1005,7 +1049,7 @@ impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
         error: &MultiFailure,
     ) -> Result<(), MultiFailure> {
         *temporary += 32;
-        self.failure = Some(error.0);
+        self.failure.set(Some(error.0));
         Ok(())
     }
 
@@ -1045,7 +1089,8 @@ impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
 #[test]
 fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
     smol::block_on(async {
-        let mut machine = MultipleFeaturesStateMachine::new(MultipleFeaturesContext::default());
+        let context = MultipleFeaturesContext::default();
+        let mut machine = MultipleFeaturesStateMachine::new(&context);
         let mut temporary = 0;
         machine
             .process_event(&mut temporary, EnterFeatureA)
@@ -1055,10 +1100,11 @@ fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
             .process_event(&mut temporary, BuildFeatureA)
             .await
             .unwrap();
-        assert!(matches!(
-            machine.feature_a_state(),
-            MultipleFeaturesFeatureAStates::FeatureAData(FeatureAData(7))
-        ));
+        assert!(
+            machine.is(&MultipleFeaturesFeatureAStates::FeatureAData(FeatureAData(
+                7
+            )))
+        );
         machine
             .process_event(&mut temporary, FinishFeatureA)
             .await
@@ -1075,7 +1121,7 @@ fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
             .process_event(&mut temporary, UnlockFeatureB)
             .await
             .unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&MultipleFeaturesStates::X));
         assert_eq!(temporary, 31);
     });
 }
@@ -1083,7 +1129,8 @@ fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
 #[test]
 fn multiple_children_route_typed_exceptions_in_the_active_child() {
     smol::block_on(async {
-        let mut machine = MultipleFeaturesStateMachine::new(MultipleFeaturesContext::default());
+        let context = MultipleFeaturesContext::default();
+        let mut machine = MultipleFeaturesStateMachine::new(&context);
         let mut temporary = 0;
         machine
             .process_event(&mut temporary, EnterFeatureA)
@@ -1094,7 +1141,7 @@ fn multiple_children_route_typed_exceptions_in_the_active_child() {
             .await
             .unwrap();
         assert!(machine.is(&MultipleFeaturesStates::Between));
-        assert_eq!(machine.context().failure, Some(9));
+        assert_eq!(context.failure.get(), Some(9));
         assert_eq!(temporary, 32);
     });
 }
@@ -1120,38 +1167,39 @@ sml! {
 
 #[derive(Default)]
 struct DeepContext {
-    entries: Vec<&'static str>,
+    entries: core::cell::RefCell<Vec<&'static str>>,
 }
 
-impl DeepRootStateMachineContext for DeepContext {
+impl DeepRootStateMachineContext for &DeepContext {
     fn enter_deep_root(&mut self) -> Result<(), ()> {
-        self.entries.push("root");
+        self.entries.borrow_mut().push("root");
         Ok(())
     }
 
     fn enter_deep_middle(&mut self) -> Result<(), ()> {
-        self.entries.push("middle");
+        self.entries.borrow_mut().push("middle");
         Ok(())
     }
 
     fn enter_deep_leaf(&mut self) -> Result<(), ()> {
-        self.entries.push("leaf");
+        self.entries.borrow_mut().push("leaf");
         Ok(())
     }
 }
 
 #[test]
 fn recursive_grandchildren_dispatch_deepest_first_and_complete_to_root() {
-    let mut machine = DeepRootStateMachine::new(DeepContext::default());
+    let context = DeepContext::default();
+    let mut machine = DeepRootStateMachine::new(&context);
     machine.initialize().unwrap();
-    assert!(machine.deep_middle_is_active());
-    assert!(machine.deep_leaf_is_active());
-    assert_eq!(machine.context().entries, ["root", "middle", "leaf"]);
+    assert!(machine.is(&DeepRootStates::DeepMiddle));
+    assert!(machine.is(&DeepRootDeepMiddleStates::DeepLeaf));
+    assert_eq!(*context.entries.borrow(), ["root", "middle", "leaf"]);
 
     machine.process_event(DeepAdvance).unwrap();
-    assert!(machine.is_terminated());
-    assert!(machine.is_deep_middle(&DeepRootDeepMiddleStates::X));
-    assert!(machine.is_deep_leaf(&DeepRootDeepLeafStates::X));
+    assert!(machine.is(&DeepRootStates::X));
+    assert!(machine.is(&DeepRootDeepMiddleStates::X));
+    assert!(machine.is(&DeepRootDeepLeafStates::X));
 }
 
 pub struct EnterNestedOrthogonal;
@@ -1175,17 +1223,17 @@ sml! {
 
 #[derive(Default)]
 struct NestedOrthogonalContext {
-    entered: bool,
+    entered: support::SyncCell<bool>,
 }
 
-impl OrthogonalCompositeRootStateMachineContext for NestedOrthogonalContext {
+impl OrthogonalCompositeRootStateMachineContext for &NestedOrthogonalContext {
     async fn make_nested_left(&mut self, _: &EnterNestedOrthogonal) -> Result<NestedLeftData, ()> {
         core::future::ready(()).await;
         Ok(NestedLeftData(5))
     }
 
     fn entered_nested_left(&mut self, state: &NestedLeftData) -> Result<(), ()> {
-        self.entered = state.0 == 5;
+        self.entered.set(state.0 == 5);
         Ok(())
     }
 }
@@ -1193,16 +1241,16 @@ impl OrthogonalCompositeRootStateMachineContext for NestedOrthogonalContext {
 #[test]
 fn composite_nodes_can_own_native_orthogonal_regions() {
     smol::block_on(async {
-        let mut machine =
-            OrthogonalCompositeRootStateMachine::new(NestedOrthogonalContext::default());
+        let context = NestedOrthogonalContext::default();
+        let mut machine = OrthogonalCompositeRootStateMachine::new(&context);
         machine.process_event(EnterNestedOrthogonal).await.unwrap();
-        assert!(matches!(
-            machine.nested_orthogonal_state(0),
-            Some(OrthogonalCompositeRootNestedOrthogonalStates::NestedLeftData(NestedLeftData(5)))
-        ));
-        assert!(machine.context().entered);
+        assert!(machine.is(&[
+            OrthogonalCompositeRootNestedOrthogonalStates::NestedLeftData(NestedLeftData(5)),
+            OrthogonalCompositeRootNestedOrthogonalStates::RightReady,
+        ]));
+        assert!(context.entered.get());
         machine.process_event(FinishNestedOrthogonal).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&OrthogonalCompositeRootStates::X));
     });
 }
 
@@ -1230,7 +1278,8 @@ impl DeepOrthogonalRootStateMachineContext for DeepOrthogonalContext {}
 fn orthogonal_region_groups_can_be_recursive_grandchildren() {
     let mut machine = DeepOrthogonalRootStateMachine::new(DeepOrthogonalContext);
     machine.initialize().unwrap();
-    assert!(machine.deep_orthogonal_leaf_is_active());
+    assert!(machine.is(&DeepOrthogonalRootStates::DeepOrthogonalMiddle));
+    assert!(machine.is(&DeepOrthogonalRootDeepOrthogonalMiddleStates::DeepOrthogonalLeaf));
     machine.process_event(DeepOrthogonalAdvance).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&DeepOrthogonalRootStates::X));
 }

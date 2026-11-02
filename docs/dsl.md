@@ -192,9 +192,9 @@ sml! {
 ```
 
 Each event is borrowed and broadcast to every active region, so `E2` can move
-both regions during one call. Orthogonal machines expose `states()`,
-`state(region)`, `is(&[...])`, and `is_region(region, &state)`, and are
-terminated only when every region is `X`. Specific and wildcard unexpected
+both regions during one call. Orthogonal machines answer `is(&[...])` with one
+state per region, and `visit_current_states` visits each region's state in
+order; they are terminated only when every region is `X` (`is(&[X, X])`). Specific and wildcard unexpected
 handlers are resolved independently per region. Anonymous rows stabilize every
 region during `initialize()` and again after each handled broadcast. Prefixing
 any orthogonal guard or action with `async` generates an async broadcast and
@@ -243,9 +243,45 @@ Call `initialize()` once after construction to run initial entry behavior and
 anonymous-transition stabilization. Normal event processing automatically
 stabilizes subsequent anonymous and completion transitions.
 
-`state()` borrows the generated state enum, while `is(&States::Idle)` performs
-the payload-insensitive state identity check corresponding to `sm.is("idle"_s)`
-in C++.
+`is(&States::Idle)` performs the payload-insensitive state identity check
+corresponding to `sm.is("idle"_s)` in C++, and `visit_current_states(visitor)`
+calls the visitor once with the active state, as `sml.cpp`'s
+`visit_current_states` does; a payload is read there or in a callback.
+`is(&States::X)` is the terminal check. Machines have no state, context, or
+policy getters: the caller owns what it hands the machine, so a context that
+the caller reads afterwards is passed by reference, with `Cell`/`RefCell`
+fields when the caller reads them between events:
+
+```rust
+use core::cell::Cell;
+use sml::sml;
+
+pub struct Tick;
+
+sml! {
+    Counter {
+        *"idle"_s + event<Tick> / count = "idle"_s,
+    }
+}
+
+#[derive(Default)]
+struct Context {
+    ticks: Cell<u32>,
+}
+
+impl CounterStateMachineContext for &Context {
+    fn count(&mut self, _: &Tick) -> Result<(), ()> {
+        self.ticks.set(self.ticks.get() + 1);
+        Ok(())
+    }
+}
+
+let context = Context::default();
+let mut sm = CounterStateMachine::new(&context);
+sm.process_event(Tick).unwrap();
+assert_eq!(context.ticks.get(), 1);
+assert!(sm.is(&CounterStates::Idle));
+```
 
 Prefix a callback with `async` in a guard or action position to generate an
 async machine, for example `[async ready] / async send`. Rust futures provide
@@ -261,8 +297,17 @@ uncontended inline RTC fast path. This is independent of async guards and
 actions. Generic callers pass the generated event enum; inherent methods also
 accept external event types that convert into that enum. Orthogonal, composite,
 async-callback, and temporary-context machines retain their shape-specific
-inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
-completion remains separate work.
+inherent processing APIs.
+
+A `scheduler` policy slot turns a synchronous machine without a temporary
+context into a cloneable handle whose `process_event_async(&self, event)`
+queues the event at call time (or, when a bounded queue is full, on the first
+poll that finds room) and resolves to its acceptance once it has run to
+completion: the `sml.cpp` `co_sm` behavior, chosen per machine through its
+policy rather than a wrapper type. A scheduled machine offers
+`process_event_async`, `try_process_event`, `Clone`, and the read-only queries
+`is(...)`, `visit_current_states(visitor)`, and `visit_current_events(visitor)`,
+which take the machine's lock.
 
 Generated synchronous composite machines without a temporary context or an
 orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
@@ -298,8 +343,9 @@ replay feeds the inputs into a fresh machine and checks it does the same.
 - **What happened:** a `Logger` policy (see [Policies](../README.md#policies))
   receives every process, guard, action, and state change inside one
   `process_event`, in order: child-table transitions, completions, `defer` and
-  `process(...)` re-dispatch, and `exception<E>` recovery included. The owner
-  reads it through the public `logger()`/`logger_mut()` after the step. The
+  `process(...)` re-dispatch, and `exception<E>` recovery included. The logger
+  records into a sink the owner also holds (the machine keeps its policies
+  private), so the owner reads the trace there after the step. The
   callbacks pass static names, never payloads, so the trace stays
   allocation-free; payloads live in the journaled input.
 - **Replay:** process each journaled input in a fresh machine with the same
@@ -360,8 +406,11 @@ The generated parent owns both state values and one unified context. While
 parent only when the child has no matching transition. Leaving and re-entering
 the child resets it to its initial state by default. Mark the child's initial
 state as `*"idle"_s(H)` to retain shallow history across re-entry, exactly as
-in `sml.cpp`. `child_state()`, `is_child(...)`, and
-`child_is_active()` expose typed composite queries. Parent and child lifecycle
+in `sml.cpp`. `is` accepts the child's states enum too, so
+`sm.is(&ParentSubStates::Idle)` checks inside the child (the Rust spelling of
+`sm.is<decltype(sub)>(state)`), while `sm.is(&ParentStates::Sub)` tells
+whether the child is active. The child query also answers while the child is
+inactive, from the state it retains. Parent and child lifecycle
 rows and unexpected handlers participate in the same child-first ordering.
 Sync or async guards/actions are supported. A parent anonymous transition from
 `state<Sub>` becomes eligible only after the child reaches `X`, matching

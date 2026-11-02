@@ -1,6 +1,6 @@
 extern crate sml;
 
-use sml::{sml, PolicyBundle, Testing};
+use sml::{sml, Policies, Testing};
 
 #[derive(Default)]
 struct ProductionTestingMarker;
@@ -24,7 +24,7 @@ impl StrictStateOverrideStateMachineContext for Context {}
 struct Tick;
 
 fn main() {
-    let policy = PolicyBundle::<(), (), sml::JumpTable, (), ProductionTestingMarker>::default();
+    let policy = Policies::<(), (), sml::JumpTable, (), ProductionTestingMarker>::default();
     let mut machine = StrictStateOverrideStateMachine::new_with_policy(Context, policy);
     machine.set_current_states(StrictStateOverrideStates::Ready);
 }

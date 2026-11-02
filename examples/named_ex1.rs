@@ -21,7 +21,7 @@ impl LinearStateMachineContext for Context {}
 
 fn main() {
     let mut sm = LinearStateMachine::new(Context);
-    assert!(matches!(sm.state(), &LinearStates::State1));
+    assert!(sm.is(&LinearStates::State1));
 
     let r = sm.process_event(LinearEvents::Event1);
     assert!(matches!(r, Ok(&LinearStates::State2)));
@@ -32,9 +32,9 @@ fn main() {
     // Now all events will not give any change of state
     let r = sm.process_event(LinearEvents::Event1);
     assert!(matches!(r, Err(LinearError::InvalidEvent)));
-    assert!(matches!(sm.state(), &LinearStates::State3));
+    assert!(sm.is(&LinearStates::State3));
 
     let r = sm.process_event(LinearEvents::Event2);
     assert!(matches!(r, Err(LinearError::InvalidEvent)));
-    assert!(matches!(sm.state(), &LinearStates::State3));
+    assert!(sm.is(&LinearStates::State3));
 }

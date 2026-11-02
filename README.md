@@ -19,14 +19,14 @@ the default `NoPolicy` path.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.5" }
+sml = { package = "stateforward-sml", version = "2.0" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "2.0", features = ["graphviz"] }
 ```
 
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
@@ -58,35 +58,44 @@ sml! {
     }
 }
 
+// The caller owns the dependencies, as in sml.cpp: the machine holds a
+// shared reference, so the count stays readable while the machine runs.
 #[derive(Default)]
 struct Context {
-    actions: usize,
+    actions: core::cell::Cell<usize>,
 }
 
-impl PlayerStateMachineContext for Context {
+impl Context {
+    fn count(&self) {
+        self.actions.set(self.actions.get() + 1);
+    }
+}
+
+impl PlayerStateMachineContext for &Context {
     fn open_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn close_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn start_playback(&mut self, _: &Play) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn stop_playback(&mut self, _: &Stop) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 }
 
 fn main() -> Result<(), PlayerError> {
-    let mut player = PlayerStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut player = PlayerStateMachine::new(&context);
 
     assert!(player.is(&PlayerStates::Empty));
     player.process_event(OpenClose)?;
@@ -95,8 +104,8 @@ fn main() -> Result<(), PlayerError> {
     player.process_event(Play)?;
     player.process_event(Stop)?;
 
-    assert!(player.is_terminated());
-    assert_eq!(player.context().actions, 4);
+    assert!(player.is(&PlayerStates::X));
+    assert_eq!(context.actions.get(), 4);
     Ok(())
 }
 ```
@@ -139,8 +148,12 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 <!-- public methods emitted by the flat, orthogonal, and composite generators -->
 
-All generated machines provide construction, context access, event processing,
-and termination queries. The state API follows the machine shape:
+All generated machines provide construction, event processing, and the
+`sml.cpp` queries `is(...)`, `visit_current_states(visitor)`, and
+`visit_current_events(visitor)`. There are no state, context, or policy
+getters: like `sml.cpp`, the caller owns the dependencies it hands the machine
+(a reference or shared handle as the context, a logger that records into a
+sink the caller keeps) and asks the machine only which state it is in.
 
 <!-- public event-processing traits from src/lib.rs -->
 
@@ -153,11 +166,21 @@ inherent `process_event` method. Async callbacks are a separate concern.
 Orthogonal, async-callback, and temporary-context machines retain their
 shape-specific inherent processing APIs.
 
-| Shape | Main state API |
-|---|---|
-| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Orthogonal | `states()`, `state(region)`, `is_region(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Composite | Parent state methods plus typed child state, active, setter, visitor, and `set_current_states(...)` with `TestingPolicy` |
+| Shape | `is(...)` accepts | `visit_current_states` visits | With `TestingPolicy` |
+|---|---|---|---|
+| Flat | `&States` | the active state, once | `set_current_states(state)` |
+| Orthogonal | `&[States; N]` | each region's state, in region order | `set_current_states([...])` |
+| Composite | `&ParentStates` (or `&[ParentStates; N]` for an orthogonal root), and any child machine's states enum (or its region array), checked inside that child | each active root state | `set_current_states(...)`, `set_child_state(...)` or `set_<child>_state(...)` |
+
+`is` compares variants and ignores payloads, matching `sml.cpp`'s
+`sm.is(state)`; `sm.is(&ChildStates::Idle)` is the Rust spelling of
+`sm.is<decltype(sub)>(state)`. A child query reports the child's current
+state, or the state it retains while inactive; combine it with
+`sm.is(&ParentStates::Child)` to require that the child is active. The terminal
+check is `sm.is(&States::X)`. A
+child machine may appear only once in a composite tree; the generator already
+rejects a second owner or an overlapping region, so a child states enum names
+exactly one place in the tree.
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
@@ -202,7 +225,7 @@ payload state returns that payload value instead.
 Generated machines take an optional policy bundle:
 
 ```rust
-use sml::{sml, sml_policies, Logger, PolicyBundle, TestingPolicy};
+use sml::{sml, sml_policies, Logger, Policies, TestingPolicy};
 
 struct Trace;
 impl Logger for Trace {}
@@ -237,7 +260,11 @@ The policy hooks correspond to the four `sml.cpp` logger callbacks:
 `log_guard`. Generated events and states implement `EventName` and `StateName`,
 so adapters can use stable static variant names without serializing machine
 state. `Observer` receives the same callbacks and is useful for tracing or
-OpenTelemetry adapters without adding a telemetry dependency to sml.rs.
+OpenTelemetry adapters without adding a telemetry dependency to sml.rs. The
+machine keeps its policy slots private, so a logger or observer that the owner
+wants to read records into a sink it shares with the owner (for example an
+`Rc<RefCell<...>>` or a channel), as an `sml.cpp` logger writes to its own
+output.
 
 `JumpTable` is the default dispatch strategy; `BranchStm` and `SwitchStm` are
 available as parity names. A custom `Dispatch` policy can accept or reject an
@@ -257,20 +284,73 @@ production `NoPolicy` machines do not expose that state mutation method. The
 capability marker is sealed, so a custom production policy cannot opt itself
 into state mutation. Flat machines pass one state; orthogonal machines pass
 one state per region.
-`PolicyBundle` also selects the defer and process queue factories, allowing a
+`Policies` also selects the defer and process queue factories, allowing a
 bounded ring or another user-owned allocation-free container to implement
 `Queue<E>`.
 
-`Policies` and `PolicyParts` are sealed implementation traits. This is
-intentional: custom slot implementations remain supported, while the generated
-machine retains ownership of policy storage and keeps the thread-safety guard
-separate from the mutable transition engine. Use `PolicyBundle` or
-`sml_policies!` to compose policies; do not implement those integration traits
-directly.
+`Policy` is a sealed implementation trait; its `Scheduler` associated type
+names the scheduler slot, and the owned machine's API is bounded on
+`P: Policy<Scheduler = ()>`. This is intentional: custom slot implementations
+remain supported, while the generated machine retains ownership of policy
+storage and keeps the thread-safety guard separate from the mutable transition
+engine. Use the `Policies` struct or `sml_policies!` to compose policies; do
+not implement the integration trait directly. The policy-storage plumbing
+that generated code uses lives in `sml::__private`, which is macro support and
+not public API.
 
-These policies are for the machine's owner to configure and query its own
-machine. They are not a general introspection or control channel and must not
+These policies are for the machine's owner to configure its own machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
+
+### Schedulers
+
+The `scheduler` slot decides who runs a machine's events. The default `()`
+keeps the owned `&mut self` machine above. A queued scheduler turns the
+generated machine type itself into a cloneable handle that many tasks can call
+through `&self`:
+
+```rust,ignore
+use sml::{sml_policies, FifoScheduler};
+
+sml_policies!(Shared { scheduler: FifoScheduler<1024> });
+
+let machine = MyStateMachine::new_with_policy(context, Shared::default());
+let handle = machine.clone();
+std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
+let accepted: bool = machine.process_event_async(Stop).await;
+assert!(machine.is(&MyStates::X));
+```
+
+`process_event_async` queues the event before it returns and resolves to its
+acceptance once the event has run to completion, including the machine's own
+`process`/`defer` queues and completion transitions. Dropping the completion
+does not cancel a queued event. The exception is a full bounded queue
+(`FifoScheduler<N>`): the completion then holds the event and queues it on the
+first poll that finds room, so dropping it before then discards the event.
+`try_process_event` returns `QueueFull` instead of waiting. Events run in FIFO
+order, one at a time, which is `sml.cpp`'s `strict_ordering_scheduler_contract`
+(`StrictOrdering`). Once the machine reaches `X`, queued and later events
+resolve to `false`. A queued machine runs its initial entry when constructed,
+as `sml.cpp` does.
+
+| Scheduler | Feature | Runs an event |
+|---|---|---|
+| `InlineScheduler` | `std` | In the caller, under the machine's lock, before `process_event_async` returns |
+| `FifoScheduler<N>` | `std` | `sml.cpp`'s draining model: a caller that finds the machine idle runs its event and drains what others queued meanwhile; a caller that finds it busy, including a re-entrant action, only queues. `N` bounds the queue (power of two) |
+
+Queued schedulers drive synchronous machines without a temporary context;
+async-callback and temporary-context machines keep the owned API. Besides
+`process_event_async`, `try_process_event`, and `Clone`, a scheduled handle
+answers the same read-only queries as an owned machine, `is(...)`,
+`visit_current_states(visitor)`, and `visit_current_events(visitor)`. They take
+the machine's lock, so they wait for a running event and must not be called
+from the machine's own callbacks.
+
+sml.rs ships no async-runtime scheduler, as `sml.cpp` ships none: like
+`InlineScheduler` and `FifoScheduler`, a scheduler for a runtime implements
+`Scheduler` (the storage it keeps the machine in and read access to it),
+`Schedule` (placing the machine there and running its initial entry), `Queued`
+(queuing an event and returning its completion), and `StrictOrdering`, driving
+the machine through `SyncMachineStep`.
 
 ## State and event data
 
@@ -399,10 +479,11 @@ the 25 programs under `../sml.cpp/example` in
 - [Capability parity matrix](docs/sml-cpp-parity.md)
 - [Example-by-example translation audit](docs/sml-cpp-examples.md)
 - [Migrating from 0.8 to 1.0](docs/migrating-to-1.0.md)
-- [1.x stability policy](docs/stability.md)
+- [Migrating from 1.x to 2.0](docs/migrating-to-2.0.md)
+- [Stability policy](docs/stability.md)
 
 Rust-specific mappings, including trait methods instead of inline lambdas,
-context fields instead of type-based dependency injection, `Result` instead of
+caller-owned context references instead of type-based dependency injection, `Result` instead of
 thrown values, and policy-selectable dispatch lowering, are documented and tested
 there.
 
@@ -461,8 +542,8 @@ clang++ -std=c++20 -O3 -DNDEBUG -march=native \
 In 21 alternating runs, Rust completed the async RTC workload in a 2.543 ms
 median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
 405.3% higher throughput. This measures the uncontended ready path only.
-Scheduler queueing and suspended RTC completion require a separate benchmark
-when that adapter is implemented.
+Queued scheduler policies (see [Schedulers](#schedulers)) are not covered by
+this measurement.
 
 Reproduce both comparisons, including alternating order, raw samples, platform,
 and toolchain capture, with:
