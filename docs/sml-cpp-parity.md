@@ -11,7 +11,7 @@ allows it; callback bodies and ownership remain Rust-native.
 | Entry and exit hooks | Supported | Sync and async hooks generated per state |
 | Initial entry lifecycle | Supported | Generated `initialize` enters the active initial state before stabilization |
 | Async processing | Supported | Async guards, actions, and entry/exit hooks |
-| Coroutine state-machine wrapper | Policy | The `scheduler` policy slot gives the generated machine `co_sm`'s queued `process_event_async`: `InlineScheduler`, `FifoScheduler<N>` (the draining `fifo_scheduler` model), and `TokioScheduler`, all under `StrictOrdering` (`strict_ordering_scheduler_contract`). No wrapper type; queued schedulers drive synchronous machines |
+| Coroutine state-machine wrapper | Policy | The `scheduler` policy slot gives the generated machine `co_sm`'s queued `process_event_async`: `InlineScheduler` and `FifoScheduler<N>` (the draining `fifo_scheduler` model), both under `StrictOrdering` (`strict_ordering_scheduler_contract`). No wrapper type; queued schedulers drive synchronous machines |
 | Event and state data | Supported in all generators | Owned/borrowed events and inferred `state<T>` payloads in flat, orthogonal, parent, and child storage, including default initialization, lifecycle injection, completion, and sync/async producing actions |
 | Internal and self transitions | Supported | `tests/cpp_dsl.rs` verifies that internal transitions skip lifecycle hooks while explicit self-transitions run them |
 | Wildcard and multi-state input patterns | Supported | `tests/test.rs` covers runtime behavior and `tests/compile-fail` covers ordering and pattern errors |

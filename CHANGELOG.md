@@ -15,7 +15,9 @@ step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
 ### Added
 
 - A `scheduler` policy slot (`Scheduler`, `Schedule`, `Queued`,
-  `StrictOrdering`, `SyncMachineStep`). The default `()` keeps the owned
+  `StrictOrdering`, `SyncMachineStep`), runtime-agnostic like `sml.cpp`'s
+  scheduler contract: a scheduler for an async runtime implements these
+  traits outside sml.rs. The default `()` keeps the owned
   `&mut self` machine. With a queued scheduler the generated machine is a
   cloneable handle: `process_event_async(&self, event)` queues the event at
   call time and resolves to its acceptance once it has run to completion, and
@@ -34,14 +36,6 @@ step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
   re-entrant action, only queue. When the queue is full,
   `process_event_async` waits for room before queuing; dropping that
   completion first discards the event.
-- `TokioScheduler` (`tokio` feature): a dedicated task owns the machine and
-  runs queued events; callers only queue, and no lock is held across `.await`.
-- `TokioScope`: machines placed in a scope keep their own tasks and FIFO
-  queues while the scope caps how many step at once, in FIFO-fair order. A
-  machine that owns a scope (`TokioScheduler::owning`) ends it when it reaches
-  `X` or is itself ended; ending a scope ends every machine in it, resolving
-  their queued and later callers to `false`, and cascades through nested
-  owners.
 - A `step_hook` policy slot (`StepHook`, `Step`) and the `Emit` context trait:
   `before_step` sees each input event; once the event has run to completion
   the generated step drains what the step emitted from the context and hands

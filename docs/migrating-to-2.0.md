@@ -108,13 +108,13 @@ where
 
 ```rust,ignore
 sml::sml_policies!(Shared {
-    scheduler: sml::TokioScheduler,
+    scheduler: sml::FifoScheduler<1024>,
     step_hook: Journal,
 });
 
 let machine = MyStateMachine::new_with_policy(context, Shared::default());
 let handle = machine.clone();
-tokio::spawn(async move { handle.process_event_async(Start).await });
+std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
 ```
 
 A scheduled machine's only operations are `process_event_async`,
@@ -122,5 +122,6 @@ A scheduled machine's only operations are `process_event_async`,
 `process_event_async` is called; the completion resolves to its acceptance
 once it has run to completion, and dropping it does not cancel the event. A
 queued machine runs its initial entry when constructed. `FifoScheduler<N>` and
-`InlineScheduler` need the `std` feature; `TokioScheduler` and `TokioScope`
-need `tokio`. See the README's Schedulers section for scopes.
+`InlineScheduler` need the `std` feature. sml.rs ships no async-runtime
+scheduler; the README's Schedulers section describes the traits one
+implements.

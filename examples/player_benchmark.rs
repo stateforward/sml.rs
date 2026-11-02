@@ -208,10 +208,6 @@ sml_policies!(InlinePolicies {
 });
 #[cfg(feature = "std")]
 sml_policies!(FifoPolicies { scheduler: FifoScheduler<1024> });
-#[cfg(feature = "tokio")]
-sml_policies!(TokioPolicies {
-    scheduler: sml::TokioScheduler
-});
 
 // Awaits each event's completion before sending the next through a
 // scheduled machine, so the rate includes the scheduler's per-event cost.
@@ -271,16 +267,6 @@ fn run_scheduled(mode: &str) -> bool {
                 FifoPolicies::default()
             ));
         }),
-        #[cfg(feature = "tokio")]
-        "tokio" => tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap_or_else(|error| panic!("tokio runtime: {}", error))
-            .block_on(async {
-                scheduled_run!(PlayerStateMachine::new_with_policy(
-                    Context,
-                    TokioPolicies::default()
-                ));
-            }),
         _ => return false,
     }
     report(mode, start);

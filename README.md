@@ -291,13 +291,13 @@ keeps the owned machine above. A queued scheduler turns the generated machine
 into a cloneable handle that many tasks can call through `&self`:
 
 ```rust
-use sml::{sml_policies, TokioScheduler};
+use sml::{sml_policies, FifoScheduler};
 
-sml_policies!(Shared { scheduler: TokioScheduler });
+sml_policies!(Shared { scheduler: FifoScheduler<1024> });
 
 let machine = MyStateMachine::new_with_policy(context, Shared::default());
 let handle = machine.clone();
-tokio::spawn(async move { handle.process_event_async(Start).await });
+std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
 let accepted: bool = machine.process_event_async(Stop).await;
 ```
 
@@ -315,48 +315,19 @@ as `sml.cpp` does.
 |---|---|---|
 | `InlineScheduler` | `std` | In the caller, under the machine's lock, before `process_event_async` returns |
 | `FifoScheduler<N>` | `std` | `sml.cpp`'s draining model: a caller that finds the machine idle runs its event and drains what others queued meanwhile; a caller that finds it busy, including a re-entrant action, only queues. `N` bounds the queue (power of two) |
-| `TokioScheduler` | `tokio` | On a dedicated task that owns the machine; callers only queue, and no lock is held across `.await` |
 
 Queued schedulers drive synchronous machines without a temporary context. A
 scheduled machine is a handle whose only operations are `process_event_async`,
 `try_process_event`, and `Clone`.
 
-#### Scopes
-
-`TokioScope` groups machines under one owner, and scopes nest the way the
-machines do (host → projects → each project's machines):
-
-```rust
-use sml::{sml_policies, TokioScheduler, TokioScope};
-
-sml_policies!(Shared { scheduler: TokioScheduler });
-
-let projects = TokioScope::new(8); // at most 8 project machines step at once
-let host = HostStateMachine::new_with_policy(
-    host_context,
-    Shared::default().with_scheduler(TokioScheduler::default().owning(projects.clone())),
-);
-let children = TokioScope::new(4);
-let project = ProjectStateMachine::new_with_policy(
-    project_context,
-    Shared::default().with_scheduler(projects.scheduler().owning(children.clone())),
-);
-let child = ChildStateMachine::new_with_policy(
-    child_context,
-    Shared::default().with_scheduler(children.scheduler()),
-);
-```
-
-Each machine in a scope keeps its own task and FIFO queue, so one machine's
-slow step never delays a sibling's queue. The scope caps how many of its
-machines run a step at once; waiting steps get a slot in FIFO order, so a busy
-machine cannot starve the others, and each scope's cap is independent of every
-other scope's. When a scope's owner reaches `X`, or is itself ended by its own
-scope, the scope ends: every machine in it stops, its queued and later callers
-resolve to `false`, and each machine that owns a scope ends that scope in turn.
-A machine placed in an ended scope never starts. `TokioScope::end` ends a scope
-explicitly. Scopes are Tokio-only: `InlineScheduler` and `FifoScheduler` run
-steps in their callers and have no task to end.
+sml.rs ships no async-runtime scheduler, as `sml.cpp` ships none: like
+`InlineScheduler` and `FifoScheduler`, a scheduler for a runtime implements
+`Scheduler` (the storage it keeps the machine in), `Schedule` (placing the
+machine there and running its initial entry), `Queued` (queuing an event and
+returning its completion), and `StrictOrdering`, driving the machine through
+`SyncMachineStep`. A task-per-machine scheduler, for instance, keeps a channel
+in its cell, spawns a task that owns the machine in `cell`, and sends a boxed
+`FnOnce(&mut M) -> bool` per event from `submit`.
 
 ### Step hooks
 
@@ -586,13 +557,12 @@ median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
 ### Scheduler policies
 
 The same workload runs through each scheduler policy; every caller awaits its
-event's completion before sending the next. `inline`, `fifo`, and `tokio`
-modes of `player_benchmark` measure 11 million events:
+event's completion before sending the next. The `inline` and `fifo` modes of
+`player_benchmark` measure 11 million events:
 
 ```bash
-cargo run --release --features tokio --example player_benchmark -- inline
-cargo run --release --features tokio --example player_benchmark -- fifo
-cargo run --release --features tokio --example player_benchmark -- tokio
+cargo run --release --features std --example player_benchmark -- inline
+cargo run --release --features std --example player_benchmark -- fifo
 ```
 
 [`benchmarks/scheduler_compare`](benchmarks/scheduler_compare) runs the
@@ -610,21 +580,14 @@ Medians of 7 runs of 1.1 million events on an Apple M3 Max with Rust 1.98
 
 | Path | ns/event |
 |---|---:|
-| Owned machine, `Machine::process_event_async` (no scheduler) | 2.0 |
+| Owned machine, `Machine::process_event_async` (no scheduler) | 1.9 |
 | `InlineScheduler` | 5.0 |
-| `FifoScheduler<1024>` | 17.6 |
-| `TokioScheduler`, current-thread runtime | 155.4 |
-| `TokioScheduler`, 2 workers, caller is a task | 150.0 |
-| `TokioScheduler`, 2 workers, 11 events queued then awaited | 81.0 |
-| hsm.rs `dispatch`, current-thread runtime | 258.1 |
-| hsm.rs `dispatch`, 2 workers, caller is a task | 251.1 |
+| `FifoScheduler<1024>` | 15.9 |
+| hsm.rs `dispatch`, current-thread runtime | 263.7 |
+| hsm.rs `dispatch`, 2 workers, caller is a task | 258.8 |
 
-A `TokioScheduler` event pays one channel send, one task wake-up, and one
-oneshot reply; queuing several events before awaiting them amortizes the
-wake-ups. hsm.rs runs the event in the dispatching caller, so it has no
-hand-off, but each transition still costs more than the hand-off. A caller
-blocked in `Runtime::block_on` on a multi-thread runtime, rather than running
-as a task, pays a cross-thread wake-up per event (several microseconds).
+Both sml.rs schedulers run the event in the calling thread, like hsm.rs's
+`dispatch`; the difference is the per-event cost of the queue and dispatch.
 
 Reproduce both comparisons, including alternating order, raw samples, platform,
 and toolchain capture, with:

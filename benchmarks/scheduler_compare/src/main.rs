@@ -3,11 +3,11 @@
 //!
 //! Each round sends the 11-event sequence of `examples/player_benchmark.rs`;
 //! every caller awaits its event's completion before sending the next, which
-//! is the latency an owner sees per event. `tokio-burst` queues a round's 11
-//! events before awaiting them, which is the throughput a busy machine sees.
+//! is the latency an owner sees per event. hsm.rs needs a Tokio runtime;
+//! sml.rs's schedulers do not.
 
 use hsm::{define, effect, initial, on, state, target, transition};
-use sml::{sml, sml_policies, FifoScheduler, InlineScheduler, Machine, TokioScheduler};
+use sml::{sml, sml_policies, FifoScheduler, InlineScheduler, Machine};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -74,7 +74,6 @@ impl PlayerStateMachineContext for Context {
 
 sml_policies!(Inline { scheduler: InlineScheduler });
 sml_policies!(Fifo { scheduler: FifoScheduler<1024> });
-sml_policies!(Tokio { scheduler: TokioScheduler });
 
 fn round() -> [PlayerEvents; EVENTS] {
     [
@@ -135,29 +134,6 @@ async fn fifo() -> usize {
     for _ in 0..ROUNDS {
         for event in round() {
             accepted += usize::from(machine.process_event_async(event).await);
-        }
-    }
-    accepted
-}
-
-async fn tokio_task() -> usize {
-    let machine = PlayerStateMachine::new_with_policy(Context, Tokio::default());
-    let mut accepted = 0;
-    for _ in 0..ROUNDS {
-        for event in round() {
-            accepted += usize::from(machine.process_event_async(event).await);
-        }
-    }
-    accepted
-}
-
-async fn tokio_burst() -> usize {
-    let machine = PlayerStateMachine::new_with_policy(Context, Tokio::default());
-    let mut accepted = 0;
-    for _ in 0..ROUNDS {
-        let completions = round().map(|event| machine.process_event_async(event));
-        for completion in completions {
-            accepted += usize::from(completion.await);
         }
     }
     accepted
@@ -271,13 +247,6 @@ fn main() {
     let spawned = |runtime: tokio::runtime::Runtime, work: fn() -> Pin<Box<dyn Future<Output = usize> + Send>>| {
         runtime.block_on(async move { tokio::spawn(work()).await.unwrap_or(0) })
     };
-    if wanted("tokio") {
-        measure("TokioScheduler 1-thread", || current().block_on(tokio_task()));
-        measure("TokioScheduler 2-worker", || spawned(multi(), || Box::pin(tokio_task())));
-    }
-    if wanted("tokio-burst") {
-        measure("TokioScheduler burst", || spawned(multi(), || Box::pin(tokio_burst())));
-    }
     if wanted("hsm") {
         measure("hsm.rs dispatch 1-thread", || current().block_on(hsm_dispatch()));
         measure("hsm.rs dispatch 2-worker", || spawned(multi(), || Box::pin(hsm_dispatch())));
