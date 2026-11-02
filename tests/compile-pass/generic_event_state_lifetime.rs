@@ -28,5 +28,5 @@ impl SharedStateLifetimeStateMachineContext for Context {
 fn main() {
     let value = 7_u32;
     let mut machine = SharedStateLifetimeStateMachine::new(Context, "ready");
-    assert!(machine.process_event(BorrowedEvent(&value)).unwrap());
+    machine.process_event(BorrowedEvent(&value)).unwrap();
 }

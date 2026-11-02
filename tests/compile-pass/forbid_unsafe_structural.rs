@@ -34,8 +34,8 @@ impl SafeOrthogonalStateMachineContext for OrthogonalContext {}
 
 fn main() {
     let mut composite = SafeCompositeParentStateMachine::new(CompositeContext);
-    assert!(composite.process_event(EnterChild).unwrap());
+    composite.process_event(EnterChild).unwrap();
 
     let mut orthogonal = SafeOrthogonalStateMachine::new(OrthogonalContext);
-    assert!(orthogonal.process_event(LeftDone).unwrap());
+    orthogonal.process_event(LeftDone).unwrap();
 }

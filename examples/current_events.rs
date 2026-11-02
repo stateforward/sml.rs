@@ -1,10 +1,6 @@
 //! Visit the event payload types that have transitions from the active state.
-//!
-//! `visit_current_state` and `visit_current_events` are inspection APIs, which
-//! generated machines expose only under `TestingPolicy`; use them in tests and
-//! tooling, not to drive production logic.
 
-use sml::{sml, sml_policies, Event, EventVisitor};
+use sml::{sml, Event, EventVisitor};
 
 pub struct Begin;
 pub struct ChildWork;
@@ -23,10 +19,6 @@ sml! {
 
 struct Context;
 
-sml_policies!(Testing {
-    testing: sml::TestingPolicy
-});
-
 impl EventsParentStateMachineContext for Context {}
 
 struct PrintEvents;
@@ -37,7 +29,7 @@ impl EventVisitor for PrintEvents {
     }
 }
 
-fn print_current_events(machine: &EventsParentStateMachine<Context, Testing>) {
+fn print_current_events(machine: &EventsParentStateMachine<Context>) {
     let state_name = machine.visit_current_state(|state| match state {
         EventsParentStates::Outside => "Outside",
         EventsParentStates::EventsChild => "EventsChild",
@@ -48,7 +40,7 @@ fn print_current_events(machine: &EventsParentStateMachine<Context, Testing>) {
 }
 
 fn main() {
-    let mut machine = EventsParentStateMachine::new_with_policy(Context, Testing::default());
+    let mut machine = EventsParentStateMachine::new(Context);
     print_current_events(&machine);
 
     machine.process_event(Begin).unwrap();

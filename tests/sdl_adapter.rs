@@ -1,10 +1,6 @@
 use sml::sml;
 use sml::utility::DispatchTable;
 
-sml::sml_policies!(Testing {
-    testing: sml::TestingPolicy
-});
-
 const SDL_KEYUP: usize = 1;
 const SDL_MOUSEBUTTONUP: usize = 2;
 const SDL_QUIT: usize = 3;
@@ -70,36 +66,36 @@ impl Sdl2StateMachineContext for Context {
     }
 }
 
-type Handler = fn(&mut Sdl2StateMachine<Context, Testing>, &SdlEvent) -> bool;
+type Handler = fn(&mut Sdl2StateMachine<Context>, &SdlEvent) -> bool;
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn key_up(machine: &mut Sdl2StateMachine<Context, Testing>, event: &SdlEvent) -> bool {
-    matches!(machine.process_event(KeyUp(*event)), Ok(true))
+fn key_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+    machine.process_event(KeyUp(*event)).is_ok()
 }
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn mouse_button_up(machine: &mut Sdl2StateMachine<Context, Testing>, event: &SdlEvent) -> bool {
-    matches!(machine.process_event(MouseButtonUp(*event)), Ok(true))
+fn mouse_button_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+    machine.process_event(MouseButtonUp(*event)).is_ok()
 }
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn quit(machine: &mut Sdl2StateMachine<Context, Testing>, event: &SdlEvent) -> bool {
-    matches!(machine.process_event(Quit(*event)), Ok(true))
+fn quit(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+    machine.process_event(Quit(*event)).is_ok()
 }
 
 #[test]
 fn sdl_runtime_ids_dispatch_into_native_orthogonal_regions() {
     let handlers: [Handler; 3] = [key_up, mouse_button_up, quit];
-    let mut machine = Sdl2StateMachine::new_with_policy(Context::default(), Testing::default());
+    let mut machine = Sdl2StateMachine::new(Context::default());
     machine.initialize().unwrap();
     let mut dispatch = DispatchTable::new(&mut machine, SDL_KEYUP, &handlers);
 

@@ -1,8 +1,4 @@
-use sml::{sml, sml_policies};
-
-sml_policies!(Testing {
-    testing: sml::TestingPolicy,
-});
+use sml::sml;
 
 pub struct RootBroadcast;
 
@@ -43,14 +39,11 @@ impl BroadcastCompositeRootStateMachineContext for OrthogonalRootContext {
 
 #[test]
 fn orthogonal_root_broadcasts_after_child_first_dispatch_per_region() {
-    let mut sm = BroadcastCompositeRootStateMachine::new_with_policy(
-        OrthogonalRootContext::default(),
-        Testing::default(),
-    );
+    let mut sm = BroadcastCompositeRootStateMachine::new(OrthogonalRootContext::default());
     sm.initialize().unwrap();
 
     assert!(sm.root_region_child_is_active());
-    assert_eq!(sm.process_event(RootBroadcast), Ok(true));
+    sm.process_event(RootBroadcast).unwrap();
 
     assert!(sm.is_terminated());
     assert!(sm.is_region(0, &BroadcastCompositeRootStates::X));
@@ -104,14 +97,11 @@ impl ScalarRootWithNestedOrthogonalStateMachineContext for NestedRegionContext {
 
 #[test]
 fn embedded_orthogonal_nodes_can_own_composite_children() {
-    let mut sm = ScalarRootWithNestedOrthogonalStateMachine::new_with_policy(
-        NestedRegionContext::default(),
-        Testing::default(),
-    );
+    let mut sm = ScalarRootWithNestedOrthogonalStateMachine::new(NestedRegionContext::default());
     sm.initialize().unwrap();
     assert!(sm.nested_region_leaf_is_active());
 
-    assert_eq!(sm.process_event(NestedRegionEvent), Ok(true));
+    sm.process_event(NestedRegionEvent).unwrap();
 
     assert!(sm.is_terminated());
     assert_eq!(sm.context().leaf_completions, 1);
@@ -217,7 +207,7 @@ impl CompositeStateMachineContext for Context {
 
 #[test]
 fn state_sub_routes_child_first_and_preserves_child_state() {
-    let mut sm = CompositeStateMachine::new_with_policy(Context::default(), Testing::default());
+    let mut sm = CompositeStateMachine::new(Context::default());
 
     assert!(sm.is(&CompositeStates::Idle));
     assert!(sm.is_child(&CompositeSubStates::Idle));
@@ -226,39 +216,39 @@ fn state_sub_routes_child_first_and_preserves_child_state() {
     sm.initialize().unwrap();
     assert_eq!(sm.context().entries, 1);
 
-    assert_eq!(sm.process_event(E1), Ok(true));
-    assert_eq!(sm.process_event(E2), Ok(true));
+    sm.process_event(E1).unwrap();
+    sm.process_event(E2).unwrap();
     assert!(sm.is(&CompositeStates::Sub));
     assert!(sm.child_is_active());
     assert_eq!(sm.context().entries, 2);
 
-    assert_eq!(sm.process_event(Reset), Ok(true));
-    assert_eq!(sm.process_event(Unknown), Ok(true));
+    sm.process_event(Reset).unwrap();
+    sm.process_event(Unknown).unwrap();
     assert_eq!(sm.context().unexpected, 2);
 
-    assert_eq!(sm.process_event(E3), Ok(true));
+    sm.process_event(E3).unwrap();
     assert!(sm.is_child(&CompositeSubStates::S1));
     assert_eq!(sm.context().entries, 3);
 
     // E5 bubbles to the parent and deactivates the child without resetting it.
-    assert_eq!(sm.process_event(E5), Ok(true));
+    sm.process_event(E5).unwrap();
     assert!(sm.is(&CompositeStates::Outside));
     assert_eq!(sm.context().exits, 2);
     assert!(sm.is_child(&CompositeSubStates::S1));
 
     // Re-entering state<Sub> restores the retained shallow history.
-    assert_eq!(sm.process_event(E2), Ok(true));
+    sm.process_event(E2).unwrap();
     assert!(sm.child_is_active());
     assert!(sm.is_child(&CompositeSubStates::S1));
     assert_eq!(sm.context().entries, 5);
 
-    assert_eq!(sm.process_event(E4), Ok(true));
+    sm.process_event(E4).unwrap();
     assert!(sm.is_child(&CompositeSubStates::X));
     assert_eq!(sm.context().exits, 3);
 
     // The child does not handle E5, so it bubbles to the parent table.
-    assert_eq!(sm.process_event(E5), Ok(true));
-    assert_eq!(sm.process_event(E6), Ok(true));
+    sm.process_event(E5).unwrap();
+    sm.process_event(E6).unwrap();
     assert!(sm.is_terminated());
     assert_eq!(sm.context().actions, 6);
     assert_eq!(sm.context().exits, 4);
@@ -311,11 +301,10 @@ impl AsyncParentStateMachineContext for AsyncContext {
 #[test]
 fn async_composite_callbacks_are_awaited_child_first() {
     smol::block_on(async {
-        let mut sm =
-            AsyncParentStateMachine::new_with_policy(AsyncContext::default(), Testing::default());
-        assert_eq!(sm.process_event(AsyncEnter).await, Ok(true));
+        let mut sm = AsyncParentStateMachine::new(AsyncContext::default());
+        sm.process_event(AsyncEnter).await.unwrap();
         assert!(!sm.is_terminated());
-        assert_eq!(sm.process_event(AsyncChildEvent).await, Ok(true));
+        sm.process_event(AsyncChildEvent).await.unwrap();
 
         assert!(sm.is_child(&AsyncParentAsyncSubStates::X));
         assert!(sm.is_terminated());
@@ -343,14 +332,13 @@ impl NonHistoryParentStateMachineContext for NonHistoryContext {}
 
 #[test]
 fn child_without_h_marker_resets_when_reentered() {
-    let mut sm =
-        NonHistoryParentStateMachine::new_with_policy(NonHistoryContext, Testing::default());
-    assert_eq!(sm.process_event(NhEnter), Ok(true));
-    assert_eq!(sm.process_event(NhAdvance), Ok(true));
+    let mut sm = NonHistoryParentStateMachine::new(NonHistoryContext);
+    sm.process_event(NhEnter).unwrap();
+    sm.process_event(NhAdvance).unwrap();
     assert!(sm.is_child(&NonHistoryParentNonHistorySubStates::Advanced));
 
-    assert_eq!(sm.process_event(NhLeave), Ok(true));
-    assert_eq!(sm.process_event(NhEnter), Ok(true));
+    sm.process_event(NhLeave).unwrap();
+    sm.process_event(NhEnter).unwrap();
     assert!(sm.is_child(&NonHistoryParentNonHistorySubStates::Idle));
 }
 
@@ -390,10 +378,9 @@ impl OriginParentStateMachineContext for OriginContext {
 
 #[test]
 fn composite_completion_preserves_origin_across_child_and_parent() {
-    let mut sm =
-        OriginParentStateMachine::new_with_policy(OriginContext::default(), Testing::default());
-    assert_eq!(sm.process_event(OriginEnter), Ok(true));
-    assert_eq!(sm.process_event(CompositeOrigin { id: 77 }), Ok(true));
+    let mut sm = OriginParentStateMachine::new(OriginContext::default());
+    sm.process_event(OriginEnter).unwrap();
+    sm.process_event(CompositeOrigin { id: 77 }).unwrap();
 
     assert!(sm.is_child(&OriginParentOriginSubStates::X));
     assert!(sm.is_terminated());
@@ -429,8 +416,7 @@ impl FailureParentStateMachineContext for FailureContext {
 
 #[test]
 fn composite_callbacks_preserve_custom_error_types() {
-    let mut machine =
-        FailureParentStateMachine::new_with_policy(FailureContext, Testing::default());
+    let mut machine = FailureParentStateMachine::new(FailureContext);
     assert!(matches!(
         machine.process_event(CompositeFailureEvent),
         Err(FailureParentError::ActionFailed(CompositeFailure::Child))
@@ -506,26 +492,23 @@ impl PayloadParentStateMachineContext for PayloadCompositeContext {
 
 #[test]
 fn composite_parent_and_child_store_and_inject_state_payloads() {
-    let mut machine = PayloadParentStateMachine::new_with_policy(
-        PayloadCompositeContext::default(),
-        Testing::default(),
-    );
+    let mut machine = PayloadParentStateMachine::new(PayloadCompositeContext::default());
     assert!(matches!(
         machine.state(),
         PayloadParentStates::ParentIdle(ParentIdle(0))
     ));
-    assert_eq!(machine.process_event(PreparePayload), Ok(true));
+    machine.process_event(PreparePayload).unwrap();
     assert!(matches!(
         machine.state(),
         PayloadParentStates::ParentReady(ParentReady(10))
     ));
-    assert_eq!(machine.process_event(EnterPayloadChild), Ok(true));
-    assert_eq!(machine.process_event(FillPayloadChild), Ok(true));
+    machine.process_event(EnterPayloadChild).unwrap();
+    machine.process_event(FillPayloadChild).unwrap();
     assert!(matches!(
         machine.child_state(),
         PayloadParentPayloadChildStates::ChildLoaded(ChildLoaded(20))
     ));
-    assert_eq!(machine.process_event(FinishPayloadChild), Ok(true));
+    machine.process_event(FinishPayloadChild).unwrap();
     assert!(matches!(
         machine.state(),
         PayloadParentStates::ParentDone(ParentDone(0))
@@ -563,16 +546,13 @@ impl AsyncPayloadParentStateMachineContext for AsyncPayloadCompositeContext {
 #[test]
 fn async_composite_actions_can_produce_child_state_payloads() {
     smol::block_on(async {
-        let mut machine = AsyncPayloadParentStateMachine::new_with_policy(
-            AsyncPayloadCompositeContext,
-            Testing::default(),
-        );
-        assert_eq!(machine.process_event(AsyncCompositeBuild).await, Ok(true));
+        let mut machine = AsyncPayloadParentStateMachine::new(AsyncPayloadCompositeContext);
+        machine.process_event(AsyncCompositeBuild).await.unwrap();
         assert!(matches!(
             machine.child_state(),
             AsyncPayloadParentAsyncPayloadChildStates::AsyncCompositeData(AsyncCompositeData(9))
         ));
-        assert_eq!(machine.process_event(AsyncCompositeFinish).await, Ok(true));
+        machine.process_event(AsyncCompositeFinish).await.unwrap();
         assert!(machine.is_terminated());
     });
 }
@@ -623,18 +603,15 @@ impl TemporaryParentStateMachineContext for TemporaryCompositeContext {
 
 #[test]
 fn composite_callbacks_reborrow_mutable_temporary_context() {
-    let mut machine =
-        TemporaryParentStateMachine::new_with_policy(TemporaryCompositeContext, Testing::default());
+    let mut machine = TemporaryParentStateMachine::new(TemporaryCompositeContext);
     let mut temporary = 0;
     machine.initialize(&mut temporary).unwrap();
-    assert_eq!(
-        machine.process_event(&mut temporary, EnterTemporaryChild),
-        Ok(true)
-    );
-    assert_eq!(
-        machine.process_event(&mut temporary, AdvanceTemporaryChild),
-        Ok(true)
-    );
+    machine
+        .process_event(&mut temporary, EnterTemporaryChild)
+        .unwrap();
+    machine
+        .process_event(&mut temporary, AdvanceTemporaryChild)
+        .unwrap();
     assert_eq!(temporary, 15);
     assert!(machine.is_terminated());
 }
@@ -693,12 +670,9 @@ impl EvalParentStateMachineContext for CompositeEvalContext {
 #[test]
 fn composite_eval_preserves_child_parent_order_and_async_callbacks() {
     smol::block_on(async {
-        let mut machine = EvalParentStateMachine::new_with_policy(
-            CompositeEvalContext::default(),
-            Testing::default(),
-        );
-        assert_eq!(machine.process_event(EnterEvalChild).await, Ok(true));
-        assert_eq!(machine.process_event(RunChildEval).await, Ok(true));
+        let mut machine = EvalParentStateMachine::new(CompositeEvalContext::default());
+        machine.process_event(EnterEvalChild).await.unwrap();
+        machine.process_event(RunChildEval).await.unwrap();
         assert_eq!(
             machine.context().calls,
             [
@@ -747,19 +721,17 @@ impl DeferParentStateMachineContext for CompositeQueueContext {}
 
 #[test]
 fn composite_process_dispatches_after_installing_the_child_target() {
-    let mut machine =
-        ProcessParentStateMachine::new_with_policy(CompositeQueueContext, Testing::default());
-    assert_eq!(machine.process_event(CompositeQueueStart), Ok(true));
+    let mut machine = ProcessParentStateMachine::new(CompositeQueueContext);
+    machine.process_event(CompositeQueueStart).unwrap();
     assert!(machine.is_terminated());
 }
 
 #[test]
 fn composite_defer_retries_owned_child_events_after_state_change() {
-    let mut machine =
-        DeferParentStateMachine::new_with_policy(CompositeQueueContext, Testing::default());
-    assert_eq!(machine.process_event(CompositeQueueDeferred), Ok(true));
+    let mut machine = DeferParentStateMachine::new(CompositeQueueContext);
+    machine.process_event(CompositeQueueDeferred).unwrap();
     assert!(machine.child_is_active());
-    assert_eq!(machine.process_event(CompositeQueueUnlock), Ok(true));
+    machine.process_event(CompositeQueueUnlock).unwrap();
     assert!(machine.is_terminated());
 }
 
@@ -811,14 +783,11 @@ impl AsyncDeferParentStateMachineContext for AsyncCompositeQueueContext {
 #[test]
 fn async_composite_process_uses_iterative_child_first_dispatch() {
     smol::block_on(async {
-        let mut machine = AsyncProcessParentStateMachine::new_with_policy(
-            AsyncCompositeQueueContext,
-            Testing::default(),
-        );
-        assert_eq!(
-            machine.process_event(AsyncCompositeQueueStart).await,
-            Ok(true)
-        );
+        let mut machine = AsyncProcessParentStateMachine::new(AsyncCompositeQueueContext);
+        machine
+            .process_event(AsyncCompositeQueueStart)
+            .await
+            .unwrap();
         assert!(machine.is_terminated());
     });
 }
@@ -826,18 +795,15 @@ fn async_composite_process_uses_iterative_child_first_dispatch() {
 #[test]
 fn async_composite_defer_retries_after_awaited_child_state_change() {
     smol::block_on(async {
-        let mut machine = AsyncDeferParentStateMachine::new_with_policy(
-            AsyncCompositeQueueContext,
-            Testing::default(),
-        );
-        assert_eq!(
-            machine.process_event(AsyncCompositeQueueDeferred).await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine.process_event(AsyncCompositeQueueUnlock).await,
-            Ok(true)
-        );
+        let mut machine = AsyncDeferParentStateMachine::new(AsyncCompositeQueueContext);
+        machine
+            .process_event(AsyncCompositeQueueDeferred)
+            .await
+            .unwrap();
+        machine
+            .process_event(AsyncCompositeQueueUnlock)
+            .await
+            .unwrap();
         assert!(machine.is_terminated());
     });
 }
@@ -881,11 +847,8 @@ impl ExceptionParentStateMachineContext for CompositeExceptionContext {
 #[test]
 fn composite_typed_exceptions_route_child_first_and_complete_parent() {
     smol::block_on(async {
-        let mut machine = ExceptionParentStateMachine::new_with_policy(
-            CompositeExceptionContext::default(),
-            Testing::default(),
-        );
-        assert_eq!(machine.process_event(FailInChild).await, Ok(true));
+        let mut machine = ExceptionParentStateMachine::new(CompositeExceptionContext::default());
+        machine.process_event(FailInChild).await.unwrap();
         assert!(machine.is_terminated());
         assert_eq!(machine.context().code, Some(17));
     });
@@ -926,11 +889,9 @@ impl ExceptionFallbackParentStateMachineContext for ParentExceptionContext {
 #[test]
 fn composite_wildcard_exceptions_bubble_to_parent_when_child_has_no_handler() {
     smol::block_on(async {
-        let mut machine = ExceptionFallbackParentStateMachine::new_with_policy(
-            ParentExceptionContext::default(),
-            Testing::default(),
-        );
-        assert_eq!(machine.process_event(FailInParent).await, Ok(true));
+        let mut machine =
+            ExceptionFallbackParentStateMachine::new(ParentExceptionContext::default());
+        machine.process_event(FailInParent).await.unwrap();
         assert!(machine.is_terminated());
         assert!(machine.context().recovered);
     });
@@ -963,18 +924,17 @@ impl MultipleChildrenStateMachineContext for MultipleChildrenContext {}
 
 #[test]
 fn multiple_direct_children_route_and_complete_independently() {
-    let mut machine =
-        MultipleChildrenStateMachine::new_with_policy(MultipleChildrenContext, Testing::default());
-    assert_eq!(machine.process_event(EnterMultiA), Ok(true));
+    let mut machine = MultipleChildrenStateMachine::new(MultipleChildrenContext);
+    machine.process_event(EnterMultiA).unwrap();
     assert!(machine.is(&MultipleChildrenStates::MultiA));
     assert!(machine.is_multi_a(&MultipleChildrenMultiAStates::Idle));
-    assert_eq!(machine.process_event(AdvanceMultiA), Ok(true));
+    machine.process_event(AdvanceMultiA).unwrap();
     assert!(machine.is(&MultipleChildrenStates::Between));
 
-    assert_eq!(machine.process_event(EnterMultiB), Ok(true));
+    machine.process_event(EnterMultiB).unwrap();
     assert!(machine.is(&MultipleChildrenStates::MultiB));
     assert!(machine.is_multi_b(&MultipleChildrenMultiBStates::Idle));
-    assert_eq!(machine.process_event(AdvanceMultiB), Ok(true));
+    machine.process_event(AdvanceMultiB).unwrap();
     assert!(machine.is_terminated());
 }
 
@@ -1085,41 +1045,36 @@ impl MultipleFeaturesStateMachineContext for MultipleFeaturesContext {
 #[test]
 fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
     smol::block_on(async {
-        let mut machine = MultipleFeaturesStateMachine::new_with_policy(
-            MultipleFeaturesContext::default(),
-            Testing::default(),
-        );
+        let mut machine = MultipleFeaturesStateMachine::new(MultipleFeaturesContext::default());
         let mut temporary = 0;
-        assert_eq!(
-            machine.process_event(&mut temporary, EnterFeatureA).await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine.process_event(&mut temporary, BuildFeatureA).await,
-            Ok(true)
-        );
+        machine
+            .process_event(&mut temporary, EnterFeatureA)
+            .await
+            .unwrap();
+        machine
+            .process_event(&mut temporary, BuildFeatureA)
+            .await
+            .unwrap();
         assert!(matches!(
             machine.feature_a_state(),
             MultipleFeaturesFeatureAStates::FeatureAData(FeatureAData(7))
         ));
-        assert_eq!(
-            machine.process_event(&mut temporary, FinishFeatureA).await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine.process_event(&mut temporary, EnterFeatureB).await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine
-                .process_event(&mut temporary, DeferredFeatureB)
-                .await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine.process_event(&mut temporary, UnlockFeatureB).await,
-            Ok(true)
-        );
+        machine
+            .process_event(&mut temporary, FinishFeatureA)
+            .await
+            .unwrap();
+        machine
+            .process_event(&mut temporary, EnterFeatureB)
+            .await
+            .unwrap();
+        machine
+            .process_event(&mut temporary, DeferredFeatureB)
+            .await
+            .unwrap();
+        machine
+            .process_event(&mut temporary, UnlockFeatureB)
+            .await
+            .unwrap();
         assert!(machine.is_terminated());
         assert_eq!(temporary, 31);
     });
@@ -1128,19 +1083,16 @@ fn multiple_children_compose_payload_async_context_eval_defer_and_lifecycle() {
 #[test]
 fn multiple_children_route_typed_exceptions_in_the_active_child() {
     smol::block_on(async {
-        let mut machine = MultipleFeaturesStateMachine::new_with_policy(
-            MultipleFeaturesContext::default(),
-            Testing::default(),
-        );
+        let mut machine = MultipleFeaturesStateMachine::new(MultipleFeaturesContext::default());
         let mut temporary = 0;
-        assert_eq!(
-            machine.process_event(&mut temporary, EnterFeatureA).await,
-            Ok(true)
-        );
-        assert_eq!(
-            machine.process_event(&mut temporary, FailFeatureA).await,
-            Ok(true)
-        );
+        machine
+            .process_event(&mut temporary, EnterFeatureA)
+            .await
+            .unwrap();
+        machine
+            .process_event(&mut temporary, FailFeatureA)
+            .await
+            .unwrap();
         assert!(machine.is(&MultipleFeaturesStates::Between));
         assert_eq!(machine.context().failure, Some(9));
         assert_eq!(temporary, 32);
@@ -1190,14 +1142,13 @@ impl DeepRootStateMachineContext for DeepContext {
 
 #[test]
 fn recursive_grandchildren_dispatch_deepest_first_and_complete_to_root() {
-    let mut machine =
-        DeepRootStateMachine::new_with_policy(DeepContext::default(), Testing::default());
+    let mut machine = DeepRootStateMachine::new(DeepContext::default());
     machine.initialize().unwrap();
     assert!(machine.deep_middle_is_active());
     assert!(machine.deep_leaf_is_active());
     assert_eq!(machine.context().entries, ["root", "middle", "leaf"]);
 
-    assert_eq!(machine.process_event(DeepAdvance), Ok(true));
+    machine.process_event(DeepAdvance).unwrap();
     assert!(machine.is_terminated());
     assert!(machine.is_deep_middle(&DeepRootDeepMiddleStates::X));
     assert!(machine.is_deep_leaf(&DeepRootDeepLeafStates::X));
@@ -1242,20 +1193,15 @@ impl OrthogonalCompositeRootStateMachineContext for NestedOrthogonalContext {
 #[test]
 fn composite_nodes_can_own_native_orthogonal_regions() {
     smol::block_on(async {
-        let mut machine = OrthogonalCompositeRootStateMachine::new_with_policy(
-            NestedOrthogonalContext::default(),
-            Testing::default(),
-        );
-        assert_eq!(machine.process_event(EnterNestedOrthogonal).await, Ok(true));
+        let mut machine =
+            OrthogonalCompositeRootStateMachine::new(NestedOrthogonalContext::default());
+        machine.process_event(EnterNestedOrthogonal).await.unwrap();
         assert!(matches!(
             machine.nested_orthogonal_state(0),
             Some(OrthogonalCompositeRootNestedOrthogonalStates::NestedLeftData(NestedLeftData(5)))
         ));
         assert!(machine.context().entered);
-        assert_eq!(
-            machine.process_event(FinishNestedOrthogonal).await,
-            Ok(true)
-        );
+        machine.process_event(FinishNestedOrthogonal).await.unwrap();
         assert!(machine.is_terminated());
     });
 }
@@ -1282,10 +1228,9 @@ impl DeepOrthogonalRootStateMachineContext for DeepOrthogonalContext {}
 
 #[test]
 fn orthogonal_region_groups_can_be_recursive_grandchildren() {
-    let mut machine =
-        DeepOrthogonalRootStateMachine::new_with_policy(DeepOrthogonalContext, Testing::default());
+    let mut machine = DeepOrthogonalRootStateMachine::new(DeepOrthogonalContext);
     machine.initialize().unwrap();
     assert!(machine.deep_orthogonal_leaf_is_active());
-    assert_eq!(machine.process_event(DeepOrthogonalAdvance), Ok(true));
+    machine.process_event(DeepOrthogonalAdvance).unwrap();
     assert!(machine.is_terminated());
 }

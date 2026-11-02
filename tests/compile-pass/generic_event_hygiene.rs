@@ -31,15 +31,15 @@ impl CollisionStateMachineContext for CollisionContext {
 }
 
 fn main() {
-    assert!(StaticLifetimeStateMachine::new(StaticContext)
+    StaticLifetimeStateMachine::new(StaticContext)
         .process_event(StaticMessage("static"))
-        .unwrap());
-    assert!(CollisionStateMachine::new(CollisionContext)
+        .unwrap();
+    CollisionStateMachine::new(CollisionContext)
         .process_event(CollisionEvent(1_u8, 2_u16, 3_u32))
-        .unwrap());
-    assert!(BoundNamesStateMachine::new(BoundNamesContext)
+        .unwrap();
+    BoundNamesStateMachine::new(BoundNamesContext)
         .process_event(BoundPayload(BoundValue))
-        .unwrap());
+        .unwrap();
 }
 
 trait Accepts<T> {}

@@ -1,9 +1,5 @@
 use sml::sml;
 
-sml::sml_policies!(Testing {
-    testing: sml::TestingPolicy,
-});
-
 pub struct OpenClose;
 pub struct CdDetected;
 pub struct Play;
@@ -70,11 +66,11 @@ impl PlayerStateMachineContext for Context {
 
 #[test]
 fn cpp_shaped_cd_player_table_dispatches() {
-    let mut sm = PlayerStateMachine::new_with_policy(Context::default(), Testing::default());
+    let mut sm = PlayerStateMachine::new(Context::default());
 
-    assert_eq!(sm.process_event(OpenClose), Ok(true));
-    assert!(sm.is(&PlayerStates::Open));
-    assert_eq!(sm.process_event(Play), Ok(true));
+    sm.process_event(OpenClose).unwrap();
+    assert!(matches!(sm.state(), PlayerStates::Open));
+    sm.process_event(Play).unwrap();
     assert!(sm.is_terminated());
     assert_eq!(sm.context().actions, 4);
 }
@@ -122,17 +118,14 @@ impl TransitionKindsStateMachineContext for TransitionContext {
 
 #[test]
 fn cpp_internal_and_self_transition_lifecycle_differs() {
-    let mut sm = TransitionKindsStateMachine::new_with_policy(
-        TransitionContext::default(),
-        Testing::default(),
-    );
+    let mut sm = TransitionKindsStateMachine::new(TransitionContext::default());
     sm.initialize().unwrap();
 
-    assert_eq!(sm.process_event(Ping), Ok(true));
+    sm.process_event(Ping).unwrap();
     assert_eq!(sm.context().entries, 1);
     assert_eq!(sm.context().exits, 0);
 
-    assert_eq!(sm.process_event(Reset), Ok(true));
+    sm.process_event(Reset).unwrap();
     assert_eq!(sm.context().entries, 2);
     assert_eq!(sm.context().exits, 1);
     assert_eq!(sm.context().actions, 2);
@@ -173,23 +166,19 @@ impl EventDataStateMachineContext for EventContext {
 
 #[test]
 fn external_cpp_style_event_types_preserve_payloads() {
-    let mut sm =
-        EventDataStateMachine::new_with_policy(EventContext::default(), Testing::default());
+    let mut sm = EventDataStateMachine::new(EventContext::default());
 
-    assert_eq!(
-        sm.process_event(Ack {
+    assert!(sm
+        .process_event(Ack {
             valid: false,
             id: 1,
-        }),
-        Ok(false)
-    );
-    assert_eq!(
-        sm.process_event(Ack {
-            valid: true,
-            id: 42,
-        }),
-        Ok(true)
-    );
+        })
+        .is_err());
+    sm.process_event(Ack {
+        valid: true,
+        id: 42,
+    })
+    .unwrap();
 
     assert!(sm.is_terminated());
     assert_eq!(sm.context().captured, Some(42));
@@ -216,11 +205,9 @@ impl AnonymousStateMachineContext for AnonymousDslContext {
 
 #[test]
 fn cpp_anonymous_transition_spelling_initializes() {
-    let mut sm =
-        AnonymousStateMachine::new_with_policy(AnonymousDslContext::default(), Testing::default());
+    let mut sm = AnonymousStateMachine::new(AnonymousDslContext::default());
 
-    assert_eq!(sm.initialize(), Ok(()));
-    assert!(sm.is(&AnonymousStates::Ready));
+    assert!(matches!(sm.initialize().unwrap(), AnonymousStates::Ready));
     assert!(sm.context().prepared);
 }
 
@@ -250,12 +237,9 @@ impl OriginCompletionStateMachineContext for OriginCompletionContext {
 
 #[test]
 fn cpp_origin_completion_preserves_external_event() {
-    let mut sm = OriginCompletionStateMachine::new_with_policy(
-        OriginCompletionContext::default(),
-        Testing::default(),
-    );
+    let mut sm = OriginCompletionStateMachine::new(OriginCompletionContext::default());
 
-    assert_eq!(sm.process_event(Release { id: 7 }), Ok(true));
+    sm.process_event(Release { id: 7 }).unwrap();
 
     assert!(sm.is_terminated());
     assert_eq!(sm.context().id, Some(7));
@@ -288,12 +272,9 @@ impl DataActionSequenceStateMachineContext for DataActionSequenceContext {
 
 #[test]
 fn only_final_action_constructs_output_state_data() {
-    let mut sm = DataActionSequenceStateMachine::new_with_policy(
-        DataActionSequenceContext::default(),
-        Testing::default(),
-    );
+    let mut sm = DataActionSequenceStateMachine::new(DataActionSequenceContext::default());
 
-    assert_eq!(sm.process_event(Build), Ok(true));
+    sm.process_event(Build).unwrap();
 
     assert!(matches!(sm.state(), DataActionSequenceStates::Ready(42)));
     assert!(sm.context().recorded);
@@ -319,12 +300,11 @@ impl NamedEventStateMachineContext for NamedEventContext {
 
 #[test]
 fn cpp_named_event_literal_is_accepted() {
-    let mut sm =
-        NamedEventStateMachine::new_with_policy(NamedEventContext::default(), Testing::default());
+    let mut sm = NamedEventStateMachine::new(NamedEventContext::default());
     sm.initialize().unwrap();
     assert_eq!(sm.context().entries, 1);
     assert!(sm.is(&NamedEventStates::Idle));
-    assert_eq!(sm.process_event(NamedEventEvents::Connected), Ok(true));
+    sm.process_event(NamedEventEvents::Connected).unwrap();
     assert!(sm.is(&NamedEventStates::X));
     assert!(sm.is_terminated());
 }
