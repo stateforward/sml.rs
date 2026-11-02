@@ -750,18 +750,17 @@ mod task {
                     events.close();
                 }
                 Message::Run(job, reply) => {
-                    let accepted = if running {
-                        match step(scope.as_ref(), &mut machine, job).await {
-                            Some(accepted) => accepted,
-                            None => {
-                                running = false;
-                                events.close();
-                                false
-                            }
-                        }
+                    let stepped = if running {
+                        step(scope.as_ref(), &mut machine, job).await
                     } else {
-                        false
+                        Some(false)
                     };
+                    // `None`: the scope ended while the step waited for a slot.
+                    let accepted = stepped.unwrap_or_else(|| {
+                        running = false;
+                        events.close();
+                        false
+                    });
                     if running && machine.is_terminated() {
                         running = false;
                         // Already-queued events still drain, each resolving `false`.

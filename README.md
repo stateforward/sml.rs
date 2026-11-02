@@ -41,7 +41,7 @@ owner-provided synchronization boundary.
 ## Quick start
 
 ```rust
-use sml::sml;
+use sml::{sml, sml_policies, Emit, StepHook};
 
 pub struct OpenClose;
 pub struct CdDetected;
@@ -58,46 +58,63 @@ sml! {
     }
 }
 
+/// Actions record what they did; the step hook receives it as data.
 #[derive(Default)]
 struct Context {
-    actions: usize,
+    emitted: Vec<&'static str>,
 }
 
 impl PlayerStateMachineContext for Context {
     fn open_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("drawer opened");
         Ok(())
     }
 
     fn close_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("drawer closed");
         Ok(())
     }
 
     fn start_playback(&mut self, _: &Play) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("playing");
         Ok(())
     }
 
     fn stop_playback(&mut self, _: &Stop) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("stopped");
         Ok(())
     }
 }
 
-fn main() -> Result<(), PlayerError> {
-    let mut player = PlayerStateMachine::new(Context::default());
+impl Emit<&'static str> for Context {
+    fn drain_outputs(&mut self, sink: impl FnMut(&'static str)) {
+        self.emitted.drain(..).for_each(sink);
+    }
+}
 
-    assert!(player.is(&PlayerStates::Empty));
-    player.process_event(OpenClose)?;
-    player.process_event(OpenClose)?;
-    player.process_event(CdDetected)?;
-    player.process_event(Play)?;
-    player.process_event(Stop)?;
+#[derive(Default)]
+struct Print;
 
-    assert!(player.is_terminated());
-    assert_eq!(player.context().actions, 4);
-    Ok(())
+impl<L> StepHook<L, PlayerEvents> for Print {
+    type Output = &'static str;
+
+    fn output(&mut self, _logger: &mut L, output: &'static str) {
+        println!("{output}");
+    }
+}
+
+sml_policies!(Production { step_hook: Print });
+
+fn main() {
+    let mut player = PlayerStateMachine::new_with_policy(Context::default(), Production::default());
+
+    assert_eq!(player.process_event(OpenClose), Ok(true));
+    assert_eq!(player.process_event(OpenClose), Ok(true));
+    assert_eq!(player.process_event(CdDetected), Ok(true));
+    assert_eq!(player.process_event(Play), Ok(true));
+    assert_eq!(player.process_event(Stop), Ok(true));
+    // `X` takes no more events.
+    assert_eq!(player.process_event(Play), Ok(false));
 }
 ```
 
@@ -139,10 +156,12 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 <!-- public methods emitted by the flat, orthogonal, and composite generators -->
 
-All generated machines provide construction, event processing, state identity
-queries, visitors, and termination queries, matching the public surface of
-`sml.cpp`'s `sm`. Getters that lend out the state, the context, or a policy
-slot require `TestingPolicy`:
+A generated machine is driven, not inspected. Its public API is construction,
+`initialize()`, and `process_event`; state and context can change under any
+reader, so nothing that reads them is public. Anything an owner needs to know
+it asks with an event and learns from what the step emits (see
+[Step hooks](#step-hooks)). The inspection API exists only for tests, behind a
+policy whose `testing` slot is `TestingPolicy`:
 
 <!-- public event-processing traits from src/lib.rs -->
 
@@ -155,18 +174,18 @@ an allocation-free ready future. Async callbacks are a separate concern from
 scheduling: an async-callback machine's inherent `process_event` is itself
 `async`.
 
-| Shape | Public state API | With `TestingPolicy` |
-|---|---|---|
-| Flat | `is(...)`, `visit_current_state(...)`, `visit_current_events(...)` | `state()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
-| Orthogonal | `is(...)`, `is_region(...)`, `visit_current_events(...)` | `states()`, `state(region)`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
-| Composite | Parent and typed child identity, active, and visitor queries | Typed child state getters and setters, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Shape | With `TestingPolicy` only |
+|---|---|
+| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `visit_current_events(...)`, `is_terminated()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Orthogonal | `states()`, `state(region)`, `is(...)`, `is_region(...)`, `visit_current_events(...)`, `is_terminated()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Composite | Parent and typed child state, identity, active, and visitor queries, `is_terminated()`, `context()`, `logger()`, `observer()`, setters |
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
 completion stabilization after every handled event.
 
-The machine owner can query the static event types reachable from its current
-state with `visit_current_events`:
+A test can query the static event types reachable from the current state with
+`visit_current_events`:
 
 ```rust
 use core::any::TypeId;
@@ -190,8 +209,7 @@ ancestors and reports the union of active orthogonal regions, once per static
 payload type. Catch-all unexpected transitions are omitted; specific typed
 unexpected transitions are included. The generated `Events::EVENT_NAMES`
 constant provides the corresponding deterministic variant-name table. The
-visitor API is intended for an actor or other owner to query its own machine;
-it is not a general introspection facility and is not exposed through events or
+visitor API is a testing facility; it is not exposed through events or
 messages. Payloads containing non-static borrowed lifetimes are not reported,
 because `TypeId` requires a `'static` type.
 
@@ -245,8 +263,9 @@ no-op and adds no allocation. A custom lock must keep its guard scoped to the
 lock state itself; generated machines may mutate the other policy slots while
 the guard is held.
 
-`TestingPolicy` opts a machine into the state, context, and policy getters
-and the `set_current_states` helper; production machines do not expose them. The
+`TestingPolicy` opts a machine into the inspection API (state, identity,
+visitor, termination, context, and policy-slot queries) and the
+`set_current_states` helper; production machines expose none of them. The
 capability marker is sealed, so a custom production policy cannot opt itself
 into state mutation. Flat machines pass one state; orthogonal machines pass
 one state per region.
@@ -299,16 +318,79 @@ as `sml.cpp` does.
 | `TokioScheduler` | `tokio` | On a dedicated task that owns the machine; callers only queue, and no lock is held across `.await` |
 
 Queued schedulers drive synchronous machines without a temporary context. A
-scheduled machine exposes only `process_event_async`, `try_process_event`,
-`Terminated`, and `Clone`.
+scheduled machine is a handle whose only operations are `process_event_async`,
+`try_process_event`, and `Clone`.
 
-The `step_hook` slot runs around each event with the machine's context and
-logger: `StepHook::before_step` sees the event, and `after_step` receives a
-`Step` (event name, acceptance, termination) once the event has run to
-completion and before the caller's completion resolves. An owner uses it to
-journal each step and drain the outputs its context collected. It is a
-separate slot because `Logger` only receives static names, never the context
-or the event payload.
+#### Scopes
+
+`TokioScope` groups machines under one owner, and scopes nest the way the
+machines do (host → projects → each project's machines):
+
+```rust
+use sml::{sml_policies, TokioScheduler, TokioScope};
+
+sml_policies!(Shared { scheduler: TokioScheduler });
+
+let projects = TokioScope::new(8); // at most 8 project machines step at once
+let host = HostStateMachine::new_with_policy(
+    host_context,
+    Shared::default().with_scheduler(TokioScheduler::default().owning(projects.clone())),
+);
+let children = TokioScope::new(4);
+let project = ProjectStateMachine::new_with_policy(
+    project_context,
+    Shared::default().with_scheduler(projects.scheduler().owning(children.clone())),
+);
+let child = ChildStateMachine::new_with_policy(
+    child_context,
+    Shared::default().with_scheduler(children.scheduler()),
+);
+```
+
+Each machine in a scope keeps its own task and FIFO queue, so one machine's
+slow step never delays a sibling's queue. The scope caps how many of its
+machines run a step at once; waiting steps get a slot in FIFO order, so a busy
+machine cannot starve the others, and each scope's cap is independent of every
+other scope's. When a scope's owner reaches `X`, or is itself ended by its own
+scope, the scope ends: every machine in it stops, its queued and later callers
+resolve to `false`, and each machine that owns a scope ends that scope in turn.
+A machine placed in an ended scope never starts. `TokioScope::end` ends a scope
+explicitly. Scopes are Tokio-only: `InlineScheduler` and `FifoScheduler` run
+steps in their callers and have no task to end.
+
+### Step hooks
+
+The `step_hook` slot is how an owner learns what a step did. Actions record
+what they emit in the context, which implements `Emit<Output>`; after the
+event has run to completion the generated step drains those outputs and hands
+each to `StepHook::output`, then calls `after_step` with a `Step` (event name,
+acceptance, termination), all before a scheduler resolves the caller's
+completion. `before_step` sees the input event first, so one hook can journal
+the input, collect the outputs as data, and act on them. The hook never sees
+the context. It is a separate slot because `Logger` only receives static
+names, never event payloads or outputs.
+
+```rust
+use sml::{Emit, Step, StepHook};
+
+impl Emit<Command> for ProjectContext {
+    fn drain_outputs(&mut self, sink: impl FnMut(Command)) {
+        self.commands.drain(..).for_each(sink);
+    }
+}
+
+impl<L> StepHook<L, ProjectEvents> for Journal {
+    type Output = Command;
+
+    fn before_step(&mut self, _logger: &mut L, event: &ProjectEvents) { /* record the input */ }
+    fn output(&mut self, _logger: &mut L, command: Command) { self.pending.push(command); }
+    fn after_step(&mut self, _logger: &mut L, step: Step) { /* journal, then send `pending` */ }
+}
+```
+
+Every context implements `Emit<()>` as a no-op, which the default `()` hook
+uses. A context that buffers outputs needs a hook whose `Output` matches, or
+its buffer is never drained.
 
 ## State and event data
 

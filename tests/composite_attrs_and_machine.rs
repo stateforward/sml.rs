@@ -3,7 +3,11 @@
 //! payloads, and synchronous composites implement `sml::Machine<Events>`.
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sml::sml;
+use sml::{sml, sml_policies};
+
+sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
 
 const fn journalable<T: Clone + core::fmt::Debug + PartialEq + Serialize + DeserializeOwned>() {}
 
@@ -69,7 +73,7 @@ fn single_child_composite_applies_the_parent_attrs_and_implements_machine() {
     journalable::<JobEvents>();
     assert_ne!(JobEvents::from(Step(1)), JobEvents::from(Step(2)));
     assert_eq!(format!("{:?}", JobStates::Idle), "Idle");
-    let mut job = JobStateMachine::new(JobContext);
+    let mut job = JobStateMachine::new_with_policy(JobContext, Testing::default());
     assert!(sml::Machine::<JobEvents>::process_event(
         &mut job,
         Start.into()
@@ -113,7 +117,7 @@ fn drive<M: sml::Machine<E>, E>(machine: &mut M, event: E) -> bool {
 
 #[test]
 fn composite_tree_implements_machine() {
-    let mut outer = OuterStateMachine::new(OuterContext);
+    let mut outer = OuterStateMachine::new_with_policy(OuterContext, Testing::default());
     assert!(drive(&mut outer, OuterEvents::from(Go)));
     assert!(drive(&mut outer, OuterEvents::from(Go)));
     assert!(drive(&mut outer, OuterEvents::from(Go)));

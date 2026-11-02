@@ -172,7 +172,7 @@ mod events {
 
     #[test]
     fn translated_behavior() {
-        let mut sm = EventsExampleStateMachine::new(Context);
+        let mut sm = EventsExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2 { value: true }), Ok(true));
         assert_eq!(sm.process_event(EventsExampleEvents::E3), Ok(true));
@@ -205,7 +205,8 @@ mod composite {
 
     #[test]
     fn translated_behavior() {
-        let mut sm = CompositeExampleStateMachine::new(Context);
+        let mut sm =
+            CompositeExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2), Ok(true));
         assert_eq!(sm.process_event(E3), Ok(true));
@@ -234,7 +235,10 @@ mod orthogonal_regions {
 
     #[test]
     fn translated_behavior() {
-        let mut sm = OrthogonalRegionsExampleStateMachine::new(Context);
+        let mut sm = OrthogonalRegionsExampleStateMachine::new_with_policy(
+            Context,
+            crate::Testing::default(),
+        );
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2), Ok(true));
         assert_eq!(sm.process_event(E3), Ok(true));
@@ -386,7 +390,8 @@ mod history {
     impl HistoryExampleStateMachineContext for Context {}
     #[test]
     fn translated_behavior() {
-        let mut sm = HistoryExampleStateMachine::new(Context);
+        let mut sm =
+            HistoryExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(HistoryExampleEvents::E1), Ok(true));
         assert_eq!(sm.process_event(HistoryExampleEvents::E1), Ok(true));
         assert_eq!(sm.process_event(HistoryExampleEvents::E3), Ok(true));
@@ -426,7 +431,10 @@ mod dependencies {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = DependenciesExampleStateMachine::new(Context::default());
+        let mut sm = DependenciesExampleStateMachine::new_with_policy(
+            Context::default(),
+            crate::Testing::default(),
+        );
         assert_eq!(sm.process_event(E1 { i: 0 }), Ok(true));
         assert_eq!(sm.process_event(E1 { i: 0 }), Ok(false));
         assert_eq!(sm.process_event(E1 { i: 42 }), Ok(true));
@@ -491,7 +499,8 @@ mod visitor {
     impl VisitorExampleStateMachineContext for Context {}
     #[test]
     fn translated_behavior() {
-        let mut sm = VisitorExampleStateMachine::new(Context);
+        let mut sm =
+            VisitorExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert!(sm.visit_current_state(|s| matches!(s, VisitorExampleStates::S1)));
         assert_eq!(sm.process_event(E2), Ok(true));
@@ -633,7 +642,8 @@ mod defer_and_process {
     impl DeferAndProcessExampleStateMachineContext for Context {}
     #[test]
     fn translated_behavior() {
-        let mut sm = DeferAndProcessExampleStateMachine::new(Context);
+        let mut sm =
+            DeferAndProcessExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2), Ok(true));
         assert!(sm.is(&DeferAndProcessExampleStates::S2));
@@ -667,7 +677,7 @@ mod dependency_injection {
             Ok(())
         }
     }
-    struct Controller<'a>(&'a mut DependencyInjectionExampleStateMachine<Context>);
+    struct Controller<'a>(&'a mut DependencyInjectionExampleStateMachine<Context, crate::Testing>);
     impl Controller<'_> {
         fn start(&mut self) {
             assert_eq!(self.0.process_event(E1), Ok(true));
@@ -677,10 +687,13 @@ mod dependency_injection {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = DependencyInjectionExampleStateMachine::new(Context {
-            integer: 42,
-            real: 87.0,
-        });
+        let mut sm = DependencyInjectionExampleStateMachine::new_with_policy(
+            Context {
+                integer: 42,
+                real: 87.0,
+            },
+            crate::Testing::default(),
+        );
         Controller(&mut sm).start();
         assert!(sm.is_terminated());
     }
@@ -708,7 +721,8 @@ mod dispatch_policy {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = DispatchPolicyExampleStateMachine::new(Context);
+        let mut sm =
+            DispatchPolicyExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         for _ in 0..2 {
             assert_eq!(sm.process_event(Connect), Ok(true));
             assert_eq!(sm.process_event(Established), Ok(true));
@@ -764,7 +778,7 @@ mod euml_emulation {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = EumlExampleStateMachine::new(Context);
+        let mut sm = EumlExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2), Ok(true));
         assert_eq!(sm.process_event(E3), Ok(true));
@@ -802,7 +816,7 @@ mod nested {
     struct Context;
     impl NestedOwnedExampleStateMachineContext for Context {}
     struct Top {
-        machine: NestedOwnedExampleStateMachine<Context>,
+        machine: NestedOwnedExampleStateMachine<Context, crate::Testing>,
     }
     impl Top {
         fn process(&mut self) {
@@ -812,7 +826,10 @@ mod nested {
     #[test]
     fn translated_behavior() {
         let mut top = Top {
-            machine: NestedOwnedExampleStateMachine::new(Context),
+            machine: NestedOwnedExampleStateMachine::new_with_policy(
+                Context,
+                crate::Testing::default(),
+            ),
         };
         top.process();
         assert!(top.machine.is_terminated());
@@ -865,26 +882,34 @@ mod dispatch_table {
     sml! { DispatchTableExample { *"idle"_s + event<Event1> = "s1"_s, "s1"_s + event<Event2> = X, } }
     struct Context;
     impl DispatchTableExampleStateMachineContext for Context {}
-    type Handler = fn(&mut DispatchTableExampleStateMachine<Context>, &RuntimeEvent) -> bool;
+    type Handler =
+        fn(&mut DispatchTableExampleStateMachine<Context, crate::Testing>, &RuntimeEvent) -> bool;
     // The reference shape is required by DispatchTable's erased handler ABI.
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "the example callback signature mirrors the sml.cpp contract"
     )]
-    fn event1(sm: &mut DispatchTableExampleStateMachine<Context>, _: &RuntimeEvent) -> bool {
+    fn event1(
+        sm: &mut DispatchTableExampleStateMachine<Context, crate::Testing>,
+        _: &RuntimeEvent,
+    ) -> bool {
         matches!(sm.process_event(Event1), Ok(true))
     }
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "the example callback signature mirrors the sml.cpp contract"
     )]
-    fn event2(sm: &mut DispatchTableExampleStateMachine<Context>, _: &RuntimeEvent) -> bool {
+    fn event2(
+        sm: &mut DispatchTableExampleStateMachine<Context, crate::Testing>,
+        _: &RuntimeEvent,
+    ) -> bool {
         matches!(sm.process_event(Event2), Ok(true))
     }
     #[test]
     fn translated_behavior() {
         let handlers: [Handler; 2] = [event1, event2];
-        let mut sm = DispatchTableExampleStateMachine::new(Context);
+        let mut sm =
+            DispatchTableExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         let mut dispatch = DispatchTable::new(&mut sm, 1, &handlers);
         assert_eq!(dispatch.dispatch(&RuntimeEvent, 1), Some(true));
         assert_eq!(dispatch.dispatch(&RuntimeEvent, 2), Some(true));
@@ -984,7 +1009,8 @@ mod plant_uml {
     }
     #[test]
     fn translated_behavior_and_graphviz_input_compile() {
-        let mut sm = PlantUmlExampleStateMachine::new(Context);
+        let mut sm =
+            PlantUmlExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         assert_eq!(sm.process_event(E1), Ok(true));
         assert_eq!(sm.process_event(E2), Ok(true));
         assert_eq!(sm.process_event(E3), Ok(true));
@@ -1017,32 +1043,32 @@ mod sdl2 {
             Ok(e.0.key == 32)
         }
     }
-    type Handler = fn(&mut Sdl2ExampleStateMachine<Context>, &SdlEvent) -> bool;
+    type Handler = fn(&mut Sdl2ExampleStateMachine<Context, crate::Testing>, &SdlEvent) -> bool;
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "the example callback signature mirrors the sml.cpp contract"
     )]
-    fn key(sm: &mut Sdl2ExampleStateMachine<Context>, e: &SdlEvent) -> bool {
+    fn key(sm: &mut Sdl2ExampleStateMachine<Context, crate::Testing>, e: &SdlEvent) -> bool {
         matches!(sm.process_event(KeyUp(*e)), Ok(true))
     }
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "the example callback signature mirrors the sml.cpp contract"
     )]
-    fn mouse(sm: &mut Sdl2ExampleStateMachine<Context>, _: &SdlEvent) -> bool {
+    fn mouse(sm: &mut Sdl2ExampleStateMachine<Context, crate::Testing>, _: &SdlEvent) -> bool {
         matches!(sm.process_event(MouseUp), Ok(true))
     }
     #[allow(
         clippy::trivially_copy_pass_by_ref,
         reason = "the example callback signature mirrors the sml.cpp contract"
     )]
-    fn quit(sm: &mut Sdl2ExampleStateMachine<Context>, _: &SdlEvent) -> bool {
+    fn quit(sm: &mut Sdl2ExampleStateMachine<Context, crate::Testing>, _: &SdlEvent) -> bool {
         matches!(sm.process_event(Quit), Ok(true))
     }
     #[test]
     fn translated_behavior() {
         let handlers: [Handler; 3] = [key, mouse, quit];
-        let mut sm = Sdl2ExampleStateMachine::new(Context);
+        let mut sm = Sdl2ExampleStateMachine::new_with_policy(Context, crate::Testing::default());
         let mut dispatch = DispatchTable::new(&mut sm, KEY_UP, &handlers);
         let _ = dispatch.dispatch(&SdlEvent { key: 32 }, KEY_UP);
         let _ = dispatch.dispatch(&SdlEvent { key: 0 }, MOUSE_UP);

@@ -464,7 +464,10 @@ impl GenericTemporaryLifecycleStateMachineContext for TemporaryLifecycleContext 
 
 #[test]
 fn temporary_context_generics_propagate_through_initialize_and_exception_paths() {
-    let mut machine = GenericTemporaryLifecycleStateMachine::new(TemporaryLifecycleContext);
+    let mut machine = GenericTemporaryLifecycleStateMachine::new_with_policy(
+        TemporaryLifecycleContext,
+        TestingPolicies::default(),
+    );
     let mut values = vec![1_u32];
 
     machine.initialize(&mut values).unwrap();
@@ -493,7 +496,10 @@ impl GenericAnonymousCompletionStateMachineContext for AnonymousCompletionContex
 
 #[test]
 fn anonymous_initialization_does_not_require_event_family_inference() {
-    let mut machine = GenericAnonymousCompletionStateMachine::new(AnonymousCompletionContext);
+    let mut machine = GenericAnonymousCompletionStateMachine::new_with_policy(
+        AnonymousCompletionContext,
+        TestingPolicies::default(),
+    );
 
     machine.initialize().unwrap();
     assert!(machine.is(&GenericAnonymousCompletionStates::Ready));
@@ -570,7 +576,10 @@ fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
 
     let event: HigherRankedEvent<fn(&u32), u32> =
         HigherRankedEvent(observe, std::marker::PhantomData);
-    let mut machine = GenericHigherRankedStateMachine::new(HigherRankedContext);
+    let mut machine = GenericHigherRankedStateMachine::new_with_policy(
+        HigherRankedContext,
+        TestingPolicies::default(),
+    );
 
     assert!(machine.process_event(event).unwrap());
     assert!(machine.is_terminated());
@@ -628,8 +637,10 @@ impl GenericCompletionLifetimeBoundStateMachineContext for CompletionLifetimeBou
 #[test]
 fn completion_callbacks_drop_bounds_for_omitted_event_specific_lifetimes() {
     let value = 11_u32;
-    let mut machine =
-        GenericCompletionLifetimeBoundStateMachine::new(CompletionLifetimeBoundContext);
+    let mut machine = GenericCompletionLifetimeBoundStateMachine::new_with_policy(
+        CompletionLifetimeBoundContext,
+        TestingPolicies::default(),
+    );
 
     assert!(machine.process_event(FirstLifetimeEvent(&value)).unwrap());
     assert!(machine.is_terminated());

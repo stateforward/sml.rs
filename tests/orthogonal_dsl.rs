@@ -219,7 +219,8 @@ impl CustomErrorOrthogonalStateMachineContext for CustomErrorContext {
 
 #[test]
 fn orthogonal_callbacks_preserve_custom_error_types() {
-    let mut machine = CustomErrorOrthogonalStateMachine::new(CustomErrorContext);
+    let mut machine =
+        CustomErrorOrthogonalStateMachine::new_with_policy(CustomErrorContext, Testing::default());
     assert!(matches!(
         machine.process_event(CustomEvent),
         Err(CustomErrorOrthogonalError::ActionFailed(
@@ -414,7 +415,8 @@ impl TemporaryOrthogonalStateMachineContext for TemporaryContext {
 
 #[test]
 fn orthogonal_callbacks_reborrow_mutable_temporary_context() {
-    let mut machine = TemporaryOrthogonalStateMachine::new(TemporaryContext);
+    let mut machine =
+        TemporaryOrthogonalStateMachine::new_with_policy(TemporaryContext, Testing::default());
     let mut temporary = 0;
     machine.initialize(&mut temporary).unwrap();
     assert_eq!(
@@ -525,14 +527,16 @@ impl DeferOrthogonalStateMachineContext for QueueContext {}
 
 #[test]
 fn orthogonal_process_dispatches_after_installing_the_target_state() {
-    let mut machine = ProcessOrthogonalStateMachine::new(QueueContext);
+    let mut machine =
+        ProcessOrthogonalStateMachine::new_with_policy(QueueContext, Testing::default());
     assert_eq!(machine.process_event(QueueStart), Ok(true));
     assert!(machine.is_terminated());
 }
 
 #[test]
 fn orthogonal_defer_retries_owned_events_after_a_state_change() {
-    let mut machine = DeferOrthogonalStateMachine::new(QueueContext);
+    let mut machine =
+        DeferOrthogonalStateMachine::new_with_policy(QueueContext, Testing::default());
     assert_eq!(machine.process_event(QueueDeferred), Ok(true));
     assert!(machine.is_region(0, &DeferOrthogonalStates::Locked));
     assert_eq!(machine.process_event(QueueUnlock), Ok(true));
@@ -581,7 +585,10 @@ impl AsyncDeferOrthogonalStateMachineContext for AsyncQueueContext {
 #[test]
 fn async_orthogonal_process_uses_allocation_free_iterative_dispatch() {
     smol::block_on(async {
-        let mut machine = AsyncProcessOrthogonalStateMachine::new(AsyncQueueContext);
+        let mut machine = AsyncProcessOrthogonalStateMachine::new_with_policy(
+            AsyncQueueContext,
+            Testing::default(),
+        );
         assert_eq!(machine.process_event(AsyncQueueStart).await, Ok(true));
         assert!(machine.is_terminated());
     });
@@ -590,7 +597,10 @@ fn async_orthogonal_process_uses_allocation_free_iterative_dispatch() {
 #[test]
 fn async_orthogonal_defer_retries_after_awaited_state_change() {
     smol::block_on(async {
-        let mut machine = AsyncDeferOrthogonalStateMachine::new(AsyncQueueContext);
+        let mut machine = AsyncDeferOrthogonalStateMachine::new_with_policy(
+            AsyncQueueContext,
+            Testing::default(),
+        );
         assert_eq!(machine.process_event(AsyncQueueDeferred).await, Ok(true));
         assert_eq!(machine.process_event(AsyncQueueUnlock).await, Ok(true));
         assert!(machine.is_terminated());

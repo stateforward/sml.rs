@@ -343,7 +343,8 @@ impl NonHistoryParentStateMachineContext for NonHistoryContext {}
 
 #[test]
 fn child_without_h_marker_resets_when_reentered() {
-    let mut sm = NonHistoryParentStateMachine::new(NonHistoryContext);
+    let mut sm =
+        NonHistoryParentStateMachine::new_with_policy(NonHistoryContext, Testing::default());
     assert_eq!(sm.process_event(NhEnter), Ok(true));
     assert_eq!(sm.process_event(NhAdvance), Ok(true));
     assert!(sm.is_child(&NonHistoryParentNonHistorySubStates::Advanced));
@@ -428,7 +429,8 @@ impl FailureParentStateMachineContext for FailureContext {
 
 #[test]
 fn composite_callbacks_preserve_custom_error_types() {
-    let mut machine = FailureParentStateMachine::new(FailureContext);
+    let mut machine =
+        FailureParentStateMachine::new_with_policy(FailureContext, Testing::default());
     assert!(matches!(
         machine.process_event(CompositeFailureEvent),
         Err(FailureParentError::ActionFailed(CompositeFailure::Child))
@@ -621,7 +623,8 @@ impl TemporaryParentStateMachineContext for TemporaryCompositeContext {
 
 #[test]
 fn composite_callbacks_reborrow_mutable_temporary_context() {
-    let mut machine = TemporaryParentStateMachine::new(TemporaryCompositeContext);
+    let mut machine =
+        TemporaryParentStateMachine::new_with_policy(TemporaryCompositeContext, Testing::default());
     let mut temporary = 0;
     machine.initialize(&mut temporary).unwrap();
     assert_eq!(
@@ -744,14 +747,16 @@ impl DeferParentStateMachineContext for CompositeQueueContext {}
 
 #[test]
 fn composite_process_dispatches_after_installing_the_child_target() {
-    let mut machine = ProcessParentStateMachine::new(CompositeQueueContext);
+    let mut machine =
+        ProcessParentStateMachine::new_with_policy(CompositeQueueContext, Testing::default());
     assert_eq!(machine.process_event(CompositeQueueStart), Ok(true));
     assert!(machine.is_terminated());
 }
 
 #[test]
 fn composite_defer_retries_owned_child_events_after_state_change() {
-    let mut machine = DeferParentStateMachine::new(CompositeQueueContext);
+    let mut machine =
+        DeferParentStateMachine::new_with_policy(CompositeQueueContext, Testing::default());
     assert_eq!(machine.process_event(CompositeQueueDeferred), Ok(true));
     assert!(machine.child_is_active());
     assert_eq!(machine.process_event(CompositeQueueUnlock), Ok(true));
@@ -806,7 +811,10 @@ impl AsyncDeferParentStateMachineContext for AsyncCompositeQueueContext {
 #[test]
 fn async_composite_process_uses_iterative_child_first_dispatch() {
     smol::block_on(async {
-        let mut machine = AsyncProcessParentStateMachine::new(AsyncCompositeQueueContext);
+        let mut machine = AsyncProcessParentStateMachine::new_with_policy(
+            AsyncCompositeQueueContext,
+            Testing::default(),
+        );
         assert_eq!(
             machine.process_event(AsyncCompositeQueueStart).await,
             Ok(true)
@@ -818,7 +826,10 @@ fn async_composite_process_uses_iterative_child_first_dispatch() {
 #[test]
 fn async_composite_defer_retries_after_awaited_child_state_change() {
     smol::block_on(async {
-        let mut machine = AsyncDeferParentStateMachine::new(AsyncCompositeQueueContext);
+        let mut machine = AsyncDeferParentStateMachine::new_with_policy(
+            AsyncCompositeQueueContext,
+            Testing::default(),
+        );
         assert_eq!(
             machine.process_event(AsyncCompositeQueueDeferred).await,
             Ok(true)
@@ -952,7 +963,8 @@ impl MultipleChildrenStateMachineContext for MultipleChildrenContext {}
 
 #[test]
 fn multiple_direct_children_route_and_complete_independently() {
-    let mut machine = MultipleChildrenStateMachine::new(MultipleChildrenContext);
+    let mut machine =
+        MultipleChildrenStateMachine::new_with_policy(MultipleChildrenContext, Testing::default());
     assert_eq!(machine.process_event(EnterMultiA), Ok(true));
     assert!(machine.is(&MultipleChildrenStates::MultiA));
     assert!(machine.is_multi_a(&MultipleChildrenMultiAStates::Idle));
@@ -1270,7 +1282,8 @@ impl DeepOrthogonalRootStateMachineContext for DeepOrthogonalContext {}
 
 #[test]
 fn orthogonal_region_groups_can_be_recursive_grandchildren() {
-    let mut machine = DeepOrthogonalRootStateMachine::new(DeepOrthogonalContext);
+    let mut machine =
+        DeepOrthogonalRootStateMachine::new_with_policy(DeepOrthogonalContext, Testing::default());
     machine.initialize().unwrap();
     assert!(machine.deep_orthogonal_leaf_is_active());
     assert_eq!(machine.process_event(DeepOrthogonalAdvance), Ok(true));

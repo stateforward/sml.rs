@@ -37,7 +37,8 @@ fn state_can_be_injected_for_focused_transition_testing() {
 
 #[test]
 fn current_state_can_be_visited_without_exposing_machine_internals() {
-    let sm = InspectableStateMachine::new(Context::default());
+    let sm: InspectableStateMachine<Context, TestingPolicies> =
+        InspectableStateMachine::new_with_policy(Context::default(), TestingPolicies::default());
     let name = sm.visit_current_state(|state| match state {
         InspectableStates::Idle => "idle",
         InspectableStates::Running => "running",

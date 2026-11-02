@@ -65,7 +65,7 @@ fn wildcard_after_input_state() {
     struct Context;
     impl StateMachineContext for Context {}
 
-    let mut sm = StateMachine::new(Context);
+    let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
 
     assert_eq!(sm.process_event(Events::Event1), Ok(true));
     assert!(sm.is(&States::State2));
@@ -142,7 +142,7 @@ fn derive_display_events_states() {
     struct Context;
     impl StateMachineContext for Context {}
 
-    let mut sm = StateMachine::new(Context);
+    let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
     assert!(sm.is(&States::Init));
 
     let event = Events::Event;
@@ -166,7 +166,7 @@ fn named_derive_display_events_states() {
     struct Context;
     impl SMStateMachineContext for Context {}
 
-    let mut sm = SMStateMachine::new(Context);
+    let mut sm = SMStateMachine::new_with_policy(Context, crate::Testing::default());
     assert!(sm.is(&SMStates::Init));
 
     let event = SMEvents::Event;
@@ -202,7 +202,7 @@ fn async_guards_and_actions() {
             }
         }
 
-        let mut sm = StateMachine::new(Context);
+        let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
 
         assert_eq!(sm.process_event(Events::Event1).await, Ok(true));
         assert!(sm.is(&States::State2));
@@ -244,7 +244,7 @@ fn async_on_entry_and_exit() {
             }
         }
 
-        let mut sm = StateMachine::new(Context);
+        let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
 
         assert_eq!(sm.process_event(Events::Event1).await, Ok(true));
         assert!(sm.is(&States::State2));
@@ -357,7 +357,8 @@ fn guarded_transition_before_unguarded() {
             Ok(())
         }
     }
-    let mut sm = StateMachine::new(Context { enabled: true });
+    let mut sm =
+        StateMachine::new_with_policy(Context { enabled: true }, crate::Testing::default());
     assert_eq!(sm.process_event(Events::Event1), Ok(true));
     assert!(sm.is(&States::State2));
 
@@ -642,7 +643,8 @@ mod machine_trait_api {
 
     #[test]
     fn synchronous_trait_dispatches_flat_machine() {
-        let mut flat = TraitSyncFlatStateMachine::new(Context);
+        let mut flat =
+            TraitSyncFlatStateMachine::new_with_policy(Context, crate::Testing::default());
         assert!(process_sync(
             &mut flat,
             TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)
@@ -653,7 +655,8 @@ mod machine_trait_api {
     #[test]
     fn asynchronous_trait_dispatches_flat_machine() {
         smol::block_on(async {
-            let mut flat = TraitSyncFlatStateMachine::new(Context);
+            let mut flat =
+                TraitSyncFlatStateMachine::new_with_policy(Context, crate::Testing::default());
             assert!(
                 process_async(&mut flat, TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)).await
             );
@@ -663,7 +666,8 @@ mod machine_trait_api {
 
     #[test]
     fn trait_rejection_preserves_private_inherent_error_contract() {
-        let mut inherent = TraitPrivateErrorStateMachine::new(Context);
+        let mut inherent =
+            TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
         assert!(matches!(
             inherent.process_event(RejectedEvent),
             Err(TraitPrivateErrorError::ActionFailed(
@@ -672,7 +676,8 @@ mod machine_trait_api {
         ));
         assert!(inherent.is(&TraitPrivateErrorStates::Idle));
 
-        let mut synchronous = TraitPrivateErrorStateMachine::new(Context);
+        let mut synchronous =
+            TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
         assert!(!Machine::process_event(
             &mut synchronous,
             TraitPrivateErrorEvents::RejectedEvent(RejectedEvent),
@@ -680,7 +685,8 @@ mod machine_trait_api {
         assert!(synchronous.is(&TraitPrivateErrorStates::Idle));
 
         smol::block_on(async {
-            let mut asynchronous = TraitPrivateErrorStateMachine::new(Context);
+            let mut asynchronous =
+                TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
             assert!(
                 !Machine::process_event_async(
                     &mut asynchronous,

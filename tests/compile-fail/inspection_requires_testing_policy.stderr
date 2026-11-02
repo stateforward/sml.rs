@@ -1,0 +1,71 @@
+error[E0599]: the method `is` exists for struct `ProductionInspectionStateMachine<Context>`, but its trait bounds were not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:28:21
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_- method `is` not found for this struct
+...
+28 |       let _ = machine.is(&ProductionInspectionStates::Ready);
+   |                       ^^ method cannot be called on `ProductionInspectionStateMachine<Context>` due to unsatisfied trait bounds
+   |
+note: trait bound `(): TestingAccess` was not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:5:1
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_^
+   = note: this error originates in the macro `sml` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `context` exists for struct `ProductionInspectionStateMachine<Context>`, but its trait bounds were not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:29:21
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_- method `context` not found for this struct
+...
+29 |       let _ = machine.context();
+   |                       ^^^^^^^ method cannot be called on `ProductionInspectionStateMachine<Context>` due to unsatisfied trait bounds
+   |
+note: trait bound `(): TestingAccess` was not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:5:1
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_^
+   = note: this error originates in the macro `sml` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `visit_current_events` exists for struct `ProductionInspectionStateMachine<Context>`, but its trait bounds were not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:30:13
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_- method `visit_current_events` not found for this struct
+...
+30 |       machine.visit_current_events(&mut Names);
+   |               ^^^^^^^^^^^^^^^^^^^^ method cannot be called on `ProductionInspectionStateMachine<Context>` due to unsatisfied trait bounds
+   |
+note: trait bound `(): TestingAccess` was not satisfied
+  --> tests/compile-fail/inspection_requires_testing_policy.rs:5:1
+   |
+ 5 | / sml! {
+ 6 | |     ProductionInspection {
+ 7 | |         *Idle + event<Tick> = Ready,
+ 8 | |     }
+ 9 | | }
+   | |_^
+   = note: this error originates in the macro `sml` (in Nightly builds, run with -Z macro-backtrace for more info)

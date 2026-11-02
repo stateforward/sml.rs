@@ -243,10 +243,13 @@ Call `initialize()` once after construction to run initial entry behavior and
 anonymous-transition stabilization. Normal event processing automatically
 stabilizes subsequent anonymous and completion transitions.
 
-`is(&States::Idle)` performs the payload-insensitive state identity check
-corresponding to `sm.is("idle"_s)` in C++. As in `sml.cpp`, a machine does not
-lend out its state or context: `state()`, `context()`, `context_mut()`, and the
-policy-slot getters require a `TestingPolicy` policy.
+A machine is driven, not inspected: its public API is construction,
+`initialize()`, and `process_event`. The inspection API, including
+`is(&States::Idle)` (the payload-insensitive identity check corresponding to
+`sm.is("idle"_s)` in C++), `state()`, the visitors, `is_terminated()`,
+`context()`, and the policy-slot getters, requires a `TestingPolicy` policy.
+An owner learns what a step did from the outputs the step emitted, which a
+`step_hook` policy receives (see [Step hooks](../README.md#step-hooks)).
 
 Prefix a callback with `async` in a guard or action position to generate an
 async machine, for example `[async ready] / async send`. Rust futures provide
@@ -267,7 +270,9 @@ A `scheduler` policy (see [Schedulers](../README.md#schedulers)) turns a
 synchronous machine without a temporary context into a cloneable handle whose
 `process_event_async(&self, event)` queues the event at call time and resolves
 to its acceptance once it has run to completion: the `sml.cpp` `co_sm`
-behavior, chosen per machine through its policy rather than a wrapper type.
+behavior, chosen per machine through its policy rather than a wrapper type. A
+scheduled machine's only operations are `process_event_async`,
+`try_process_event`, and `Clone`.
 
 Generated synchronous composite machines without a temporary context or an
 orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
@@ -304,8 +309,8 @@ replay feeds the inputs into a fresh machine and checks it does the same.
   receives every process, guard, action, and state change inside one
   `process_event`, in order: child-table transitions, completions, `defer` and
   `process(...)` re-dispatch, and `exception<E>` recovery included. A
-  `step_hook` policy receives the logger, the context, and the input event
-  around each step, so the owner journals there. The
+  `step_hook` policy receives the logger, the input event, and the outputs
+  the step emitted around each step, so the owner journals there. The
   callbacks pass static names, never payloads, so the trace stays
   allocation-free; payloads live in the journaled input.
 - **Replay:** process each journaled input in a fresh machine with the same
@@ -366,8 +371,8 @@ The generated parent owns both state values and one unified context. While
 parent only when the child has no matching transition. Leaving and re-entering
 the child resets it to its initial state by default. Mark the child's initial
 state as `*"idle"_s(H)` to retain shallow history across re-entry, exactly as
-in `sml.cpp`. `is_child(...)` and `child_is_active()` expose typed composite
-queries; `child_state()` requires `TestingPolicy`. Parent and child lifecycle
+in `sml.cpp`. With `TestingPolicy`, `child_state()`, `is_child(...)`, and
+`child_is_active()` expose typed composite queries. Parent and child lifecycle
 rows and unexpected handlers participate in the same child-first ordering.
 Sync or async guards/actions are supported. A parent anonymous transition from
 `state<Sub>` becomes eligible only after the child reaches `X`, matching

@@ -1,5 +1,9 @@
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 pub struct Start;
 pub struct Advance;
 pub struct Kick;
@@ -19,7 +23,7 @@ impl ProcessQueueDslStateMachineContext for Context {}
 
 #[test]
 fn cpp_process_action_dispatches_after_the_current_transition() {
-    let mut sm = ProcessQueueDslStateMachine::new(Context);
+    let mut sm = ProcessQueueDslStateMachine::new_with_policy(Context, Testing::default());
 
     assert_eq!(sm.process_event(Start), Ok(true));
     assert!(sm.is(&ProcessQueueDslStates::Ready));
@@ -44,7 +48,7 @@ impl DeferQueueDslStateMachineContext for DeferContext {}
 
 #[test]
 fn cpp_defer_action_retries_after_a_state_change() {
-    let mut sm = DeferQueueDslStateMachine::new(DeferContext);
+    let mut sm = DeferQueueDslStateMachine::new_with_policy(DeferContext, Testing::default());
 
     assert_eq!(sm.process_event(Deferred), Ok(true));
     assert!(sm.is(&DeferQueueDslStates::Idle));
@@ -82,7 +86,10 @@ impl AsyncProcessQueueDslStateMachineContext for AsyncProcessContext {
 #[test]
 fn async_flat_process_uses_allocation_free_iterative_dispatch() {
     smol::block_on(async {
-        let mut machine = AsyncProcessQueueDslStateMachine::new(AsyncProcessContext);
+        let mut machine = AsyncProcessQueueDslStateMachine::new_with_policy(
+            AsyncProcessContext,
+            Testing::default(),
+        );
         assert_eq!(machine.process_event(AsyncEnable).await, Ok(true));
         assert_eq!(machine.process_event(AsyncStart).await, Ok(true));
         assert!(machine.is_terminated());
@@ -112,7 +119,8 @@ impl AsyncDeferQueueDslStateMachineContext for AsyncDeferContext {
 #[test]
 fn async_flat_defer_retries_after_awaited_state_change() {
     smol::block_on(async {
-        let mut machine = AsyncDeferQueueDslStateMachine::new(AsyncDeferContext);
+        let mut machine =
+            AsyncDeferQueueDslStateMachine::new_with_policy(AsyncDeferContext, Testing::default());
         assert_eq!(machine.process_event(AsyncDeferred).await, Ok(true));
         assert_eq!(machine.process_event(AsyncUnlock).await, Ok(true));
         assert!(machine.is_terminated());

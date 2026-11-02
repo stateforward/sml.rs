@@ -90,13 +90,14 @@ impl PolicyAsyncStateMachineContext for AsyncContext {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_supports_async_processing_without_unsafe_borrows() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -119,7 +120,7 @@ impl Dispatch for CandidateDispatch {
     }
 }
 
-type CandidatePolicies = PolicyBundle<(), (), CandidateDispatch>;
+type CandidatePolicies = PolicyBundle<(), (), CandidateDispatch, (), TestingPolicy>;
 
 #[test]
 fn custom_dispatch_can_select_a_later_guarded_candidate() {
@@ -130,7 +131,7 @@ fn custom_dispatch_can_select_a_later_guarded_candidate() {
             (),
             (),
             (),
-            (),
+            TestingPolicy,
             DefaultQueuePolicy,
             DefaultQueuePolicy,
         ),
@@ -370,11 +371,12 @@ sml! {
 struct QueueContext;
 impl PolicyQueueStateMachineContext for QueueContext {}
 
-type QueuePolicies = PolicyBundle<(), (), JumpTable, (), (), TinyQueues, TinyQueues>;
+type QueuePolicies = PolicyBundle<(), (), JumpTable, (), TestingPolicy, TinyQueues, TinyQueues>;
 
 #[test]
 fn custom_queue_factories_replace_the_default_queue() {
-    let policy = QueuePolicies::with_dispatch(JumpTable, (), (), (), (), TinyQueues, TinyQueues);
+    let policy =
+        QueuePolicies::with_dispatch(JumpTable, (), (), (), TestingPolicy, TinyQueues, TinyQueues);
     let mut machine = PolicyQueueStateMachine::new_with_policy(QueueContext, policy);
     assert!(machine.process_event(Deferred).unwrap());
     assert!(machine.process_event(Unlock).unwrap());
@@ -405,7 +407,7 @@ impl RawMutex for LockProbe {
 }
 
 type LockedQueuePolicies =
-    PolicyBundle<(), (), JumpTable, ThreadSafe<LockProbe>, (), TinyQueues, TinyQueues>;
+    PolicyBundle<(), (), JumpTable, ThreadSafe<LockProbe>, TestingPolicy, TinyQueues, TinyQueues>;
 
 #[test]
 fn deferred_processing_does_not_reenter_the_thread_lock() {
@@ -416,7 +418,7 @@ fn deferred_processing_does_not_reenter_the_thread_lock() {
         (),
         (),
         ThreadSafe::new(LockProbe),
-        (),
+        TestingPolicy,
         TinyQueues,
         TinyQueues,
     );
@@ -448,13 +450,14 @@ fn thread_safe_policy_wraps_event_processing() {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -467,14 +470,15 @@ fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
 
     let composite_policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -488,7 +492,7 @@ fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );

@@ -7,10 +7,10 @@ All notable changes to this project are documented here. This project follows
 ## 2.0.0 - Unreleased
 
 A scheduler policy turns a generated machine into a shared handle that many
-tasks can call. To make that possible, generated machines no longer hand out
-references to their state, context, or policy slots outside `TestingPolicy`,
-matching `sml.cpp`'s public `sm` surface. See the
-[2.0 migration guide](docs/migrating-to-2.0.md).
+tasks can call. A machine is now driven, never inspected: no generated machine
+exposes its state, context, or policy slots outside `TestingPolicy`, and an
+owner learns what a step did from the outputs the step emitted, handed to its
+step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
 
 ### Added
 
@@ -31,10 +31,18 @@ matching `sml.cpp`'s public `sm` surface. See the
   re-entrant action, only queue.
 - `TokioScheduler` (`tokio` feature): a dedicated task owns the machine and
   runs queued events; callers only queue, and no lock is held across `.await`.
-- A `step_hook` policy slot (`StepHook`, `Step`): `before_step` sees each
-  event and `after_step` runs once it has run to completion, both with the
-  machine's context and logger, so an owner can journal each step and drain
-  the outputs its context collected.
+- `TokioScope`: machines placed in a scope keep their own tasks and FIFO
+  queues while the scope caps how many step at once, in FIFO-fair order. A
+  machine that owns a scope (`TokioScheduler::owning`) ends it when it reaches
+  `X` or is itself ended; ending a scope ends every machine in it, resolving
+  their queued and later callers to `false`, and cascades through nested
+  owners.
+- A `step_hook` policy slot (`StepHook`, `Step`) and the `Emit` context trait:
+  `before_step` sees each input event; once the event has run to completion
+  the generated step drains what the step emitted from the context and hands
+  each output to `output`, then calls `after_step`. The hook never sees the
+  context. Every context implements `Emit<()>` as a no-op for the default
+  `()` hook.
 - `PolicyBundle::with_scheduler` and `with_step_hook`; `sml_policies!`
   accepts `scheduler:` and `step_hook:`.
 
@@ -44,10 +52,13 @@ matching `sml.cpp`'s public `sm` surface. See the
   `Ok(true)` when a transition handled the event, `Ok(false)` when none did
   (formerly `Err(InvalidEvent)` or `Err(TransitionsFailed)`), and `Err` for
   guard, action, and queue failures. `initialize` returns `Result<(), Error>`.
-- **Breaking:** `state()`, `states()`, typed child state getters,
-  `context()`, `context_mut()`, `logger()`, `logger_mut()`, `observer()`, and
-  `observer_mut()` require a `TestingPolicy` policy. `is(...)`, region and
-  child identity queries, `is_terminated()`, and the visitors stay public.
+- **Breaking:** every inspection method requires a `TestingPolicy` policy:
+  `state()`, `states()`, `is(...)`, region and child identity and active
+  queries, typed child state getters, `visit_current_state(s)`, child
+  visitors, `visit_current_events`, `is_terminated()` and the generated
+  `Terminated` impl, `context()`, `context_mut()`, `logger()`, `logger_mut()`,
+  `observer()`, and `observer_mut()`. A production machine's public API is
+  construction, `initialize`, `process_event`, and `Machine<E>`.
 - **Breaking:** the generated machine's storage depends on the scheduler
   slot, so code generic over a machine's policy needs
   `P: sml::Policies<Scheduler = ()>` to process events on the owned machine.

@@ -190,7 +190,8 @@ where
     run_policy(&mut sm);
     let elapsed = start.elapsed();
 
-    assert!(sm.is(&PlayerStates::Empty));
+    // Only `Empty` accepts `CdDetected`: the workload ended where it began.
+    assert!(Machine::process_event(&mut sm, PlayerEvents::CdDetected(CdDetected)));
     println!(
         "{label} {} ns total; {:.3} ns/event",
         elapsed.as_nanos(),
@@ -320,7 +321,8 @@ fn main() {
     }
     let elapsed = start.elapsed();
 
-    assert!(sm.is(&PlayerStates::Empty));
+    // Only `Empty` accepts `CdDetected`: the workload ended where it began.
+    assert!(Machine::process_event(&mut sm, PlayerEvents::CdDetected(CdDetected)));
     println!(
         "{} ns total; {:.3} ns/event",
         elapsed.as_nanos(),

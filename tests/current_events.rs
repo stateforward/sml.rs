@@ -151,7 +151,8 @@ fn flat_query_is_static_and_does_not_run_guards() {
 
 #[test]
 fn composite_query_includes_active_ancestor_and_child_transitions_once() {
-    let mut machine = CurrentEventsParentStateMachine::new(CompositeContext);
+    let mut machine =
+        CurrentEventsParentStateMachine::new_with_policy(CompositeContext, Testing::default());
     let mut capture = Capture::default();
 
     assert_eq!(machine.process_event(CompositeEnter), Ok(true));
@@ -172,7 +173,8 @@ fn composite_query_includes_active_ancestor_and_child_transitions_once() {
 
 #[test]
 fn orthogonal_query_is_the_union_of_active_regions() {
-    let machine = CurrentEventsOrthogonalStateMachine::new(OrthogonalContext);
+    let machine =
+        CurrentEventsOrthogonalStateMachine::new_with_policy(OrthogonalContext, Testing::default());
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
@@ -185,7 +187,8 @@ fn orthogonal_query_is_the_union_of_active_regions() {
 
 #[test]
 fn multi_composite_query_tracks_only_the_active_child_and_ancestor() {
-    let mut machine = CurrentEventsMultiParentStateMachine::new(MultiContext);
+    let mut machine =
+        CurrentEventsMultiParentStateMachine::new_with_policy(MultiContext, Testing::default());
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
@@ -205,7 +208,8 @@ fn multi_composite_query_tracks_only_the_active_child_and_ancestor() {
 
 #[test]
 fn catch_all_is_not_reported_but_specific_unexpected_events_are() {
-    let machine = CurrentEventsFlatStateMachine::new(FlatContext::default());
+    let machine =
+        CurrentEventsFlatStateMachine::new_with_policy(FlatContext::default(), Testing::default());
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
@@ -216,7 +220,10 @@ fn catch_all_is_not_reported_but_specific_unexpected_events_are() {
 
 #[test]
 fn event_names_are_exhaustive_when_the_event_enum_has_no_variants() {
-    let machine = CurrentEventsWithoutExternalEventsStateMachine::new(EmptyEventContext);
+    let machine = CurrentEventsWithoutExternalEventsStateMachine::new_with_policy(
+        EmptyEventContext,
+        Testing::default(),
+    );
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
