@@ -1935,17 +1935,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     } else {
         quote! {}
     };
-    let terminated_trait_impl = quote! {
-        #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
-            ::sml::Terminated for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
-        {
-            #[inline(always)]
-            fn is_terminated(&self) -> bool {
-                self.core.is_terminated()
-            }
-        }
-    };
     let core_type = quote! {
         #core_type_name<#state_lifetimes #context_type_ident, <#policy_type_ident as ::sml::MachinePolicy>::Policy>
     };
@@ -2112,66 +2101,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 self.core.exit_skip = false;
                 core::mem::replace(&mut self.core.state, state)
             }
-        }
-    };
-
-    let public_state_api = quote! {
-        /// Borrows the configured logger.
-        #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger(&self.core.policy)
-        }
-
-        /// Mutably borrows the configured logger.
-        #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger_mut(&mut self.core.policy)
-        }
-
-        /// Borrows the configured observer.
-        #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer(&self.core.policy)
-        }
-
-        /// Mutably borrows the configured observer.
-        #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer_mut(&mut self.core.policy)
-        }
-
-        /// Returns the current state.
-        #[inline(always)]
-        pub fn state(&self) -> &#states_type_name <#state_lifetimes> {
-            &self.core.state
-        }
-
-        /// Returns true when the machine is in its terminal `X` state.
-        #[inline(always)]
-        pub fn is_terminated(&self) -> bool {
-            self.core.is_terminated()
-        }
-
-        /// Invokes a visitor for the currently active state.
-        #[inline(always)]
-        pub fn visit_current_state<R>(
-            &self,
-            visitor: impl FnOnce(&#states_type_name <#state_lifetimes>) -> R
-        ) -> R {
-            visitor(&self.core.state)
-        }
-
-
-        /// Returns the current context.
-        #[inline(always)]
-        pub fn context(&self) -> &#context_type_ident {
-            &self.core.context
-        }
-
-        /// Returns the current context as a mutable reference.
-        #[inline(always)]
-        pub fn context_mut(&mut self) -> &mut #context_type_ident {
-            &mut self.core.context
         }
     };
 
@@ -2415,36 +2344,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 )
             }
 
-            /// Borrows the configured logger.
-            #[inline(always)]
-            fn logger(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger(&self.policy)
-            }
-
-            /// Mutably borrows the configured logger.
-            #[inline(always)]
-            fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger_mut(&mut self.policy)
-            }
-
-            /// Borrows the configured observer.
-            #[inline(always)]
-            fn observer(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer(&self.policy)
-            }
-
-            /// Mutably borrows the configured observer.
-            #[inline(always)]
-            fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer_mut(&mut self.policy)
-            }
-
-            /// Returns the current state.
-            #[inline(always)]
-            fn state(&self) -> &#states_type_name <#state_lifetimes> {
-                &self.state
-            }
-
             /// Returns true when the active state has the same variant as
             /// `expected`. State payloads are intentionally ignored, matching
             /// `sml.cpp`'s state-identity query.
@@ -2457,15 +2356,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #[inline(always)]
             fn is_terminated(&self) -> bool {
                 #is_terminated
-            }
-
-            /// Invokes a visitor for the currently active state.
-            #[inline(always)]
-            fn visit_current_state<R>(
-                &self,
-                visitor: impl FnOnce(&#states_type_name <#state_lifetimes>) -> R
-            ) -> R {
-                visitor(&self.state)
             }
 
             #visit_current_events
@@ -2565,7 +2455,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
             #public_initialize
-            #public_state_api
 
             /// Process an event.
             ///
@@ -2586,7 +2475,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #scheduled_api
         #default_constructor_impl
         #testing_state_api
-        #terminated_trait_impl
     })
 }
 

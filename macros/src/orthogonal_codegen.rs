@@ -529,34 +529,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize
         }
 
-        #[inline(always)]
-        pub fn states(&self) -> &[#states_name; #region_count] { &self.core.states }
-
-        #[inline(always)]
-        pub fn state(&self, region: usize) -> Option<&#states_name> {
-            self.core.states.get(region)
-        }
-
-
-        #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger_mut(&mut self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer_mut(&mut self.core.policy)
-        }
 
         /// Replaces all active orthogonal region states for a testing policy.
         pub fn set_current_states(
@@ -571,21 +543,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             core::mem::replace(&mut self.core.states, states)
         }
 
-        #[inline(always)]
-        pub fn is_region(&self, region: usize, expected: &#states_name) -> bool {
-            self.core.states.get(region).is_some_and(|state| state == expected)
-        }
-
-        #[inline(always)]
-        pub fn is_terminated(&self) -> bool {
-            self.core.states.iter().all(|state| matches!(state, #states_name::X))
-        }
-
-        #[inline(always)]
-        pub fn context(&self) -> &T { &self.core.context }
-
-        #[inline(always)]
-        pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
     };
 
     let scheduling =
@@ -768,32 +725,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             #[inline(always)]
             fn states(&self) -> &[#states_name; #region_count] { &self.states }
 
-            #[inline(always)]
-            fn state(&self, region: usize) -> Option<&#states_name> {
-                self.states.get(region)
-            }
-
             #visit_current_events
-
-            #[inline(always)]
-            fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger(&self.policy)
-            }
-
-            #[inline(always)]
-            fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger_mut(&mut self.policy)
-            }
-
-            #[inline(always)]
-            fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer(&self.policy)
-            }
-
-            #[inline(always)]
-            fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer_mut(&mut self.policy)
-            }
 
             /// Creates a machine in selected orthogonal states with a policy.
             /// Replaces all active orthogonal region states for a testing policy.
@@ -899,11 +831,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             }
         }
 
-        impl<T: #context_name, #policy_name: ::sml::Policy>
-            ::sml::Terminated for #machine_name<T, #policy_name> {
-            #[inline(always)]
-            fn is_terminated(&self) -> bool { self.core.is_terminated() }
-        }
         impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
             #[inline(always)]
             pub fn new(context: T) -> Self {

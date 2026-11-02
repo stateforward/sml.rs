@@ -798,12 +798,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize
         }
 
-        #[inline(always)]
-        pub fn state(&self) -> &#parent_states_name { &self.core.state }
-
-        #[inline(always)]
-        pub fn child_state(&self) -> &#child_states_name { &self.core.child_state }
-
         pub fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
         where
             <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
@@ -822,61 +816,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             core::mem::replace(&mut self.core.child_state, state)
         }
 
-        #[inline(always)]
-        pub fn visit_current_state<R>(
-            &self,
-            visitor: impl FnOnce(&#parent_states_name) -> R,
-        ) -> R {
-            visitor(&self.core.state)
-        }
 
-        #[inline(always)]
-        pub fn visit_child_state<R>(
-            &self,
-            visitor: impl FnOnce(&#child_states_name) -> R,
-        ) -> R {
-            visitor(&self.core.child_state)
-        }
-
-
-        #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger_mut(&mut self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer_mut(&mut self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn is_child(&self, expected: &#child_states_name) -> bool {
-            self.core.child_state == *expected
-        }
-
-        #[inline(always)]
-        pub fn child_is_active(&self) -> bool {
-            matches!(self.core.state, #parent_states_name::#child_state_variant)
-        }
-
-        #[inline(always)]
-        pub fn is_terminated(&self) -> bool { self.core.is_terminated() }
-
-        #[inline(always)]
-        pub fn context(&self) -> &T { &self.core.context }
-
-        #[inline(always)]
-        pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
     };
     let scheduling = scheduled_items(&ScheduledItems {
         machine_name: &machine_name,
@@ -1080,12 +1020,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 #stabilize_body
             }
 
-            #[inline(always)]
-            fn state(&self) -> &#parent_states_name { &self.state }
-
-            #[inline(always)]
-            fn child_state(&self) -> &#child_states_name { &self.child_state }
-
             fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
             where
                 <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
@@ -1104,43 +1038,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 core::mem::replace(&mut self.child_state, state)
             }
 
-            #[inline(always)]
-            fn visit_current_state<R>(
-                &self,
-                visitor: impl FnOnce(&#parent_states_name) -> R,
-            ) -> R {
-                visitor(&self.state)
-            }
-
-            #[inline(always)]
-            fn visit_child_state<R>(
-                &self,
-                visitor: impl FnOnce(&#child_states_name) -> R,
-            ) -> R {
-                visitor(&self.child_state)
-            }
-
             #visit_current_events
-
-            #[inline(always)]
-            fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger(&self.policy)
-            }
-
-            #[inline(always)]
-            fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger_mut(&mut self.policy)
-            }
-
-            #[inline(always)]
-            fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer(&self.policy)
-            }
-
-            #[inline(always)]
-            fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer_mut(&mut self.policy)
-            }
 
             #[inline]
             #async_keyword fn __sml_process_event_unlocked<EventInput>(
@@ -1244,10 +1142,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             }
         }
 
-        impl<T: #context_name, #policy_name: ::sml::Policy>
-            ::sml::Terminated for #machine_name<T, #policy_name> {
-            fn is_terminated(&self) -> bool { self.core.is_terminated() }
-        }
 
         impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
             pub fn new(context: T) -> Self {
@@ -1773,14 +1667,6 @@ fn generate_multi_code(
                 "{}_states",
                 string_morph::to_snake_case(&reference.to_string())
             );
-            let state_method = format_ident!(
-                "{}_state",
-                string_morph::to_snake_case(&reference.to_string())
-            );
-            let active_method = format_ident!(
-                "{}_is_active",
-                string_morph::to_snake_case(&reference.to_string())
-            );
             child_is_states.push((
                 quote! { [#child_states_name; #region_count] },
                 quote! { machine.#states_method() == self },
@@ -1789,20 +1675,8 @@ fn generate_multi_code(
                 fn #states_method(&self) -> &[#child_states_name; #region_count] {
                     &self.#field
                 }
-                fn #state_method(&self, region: usize) -> Option<&#child_states_name> {
-                    self.#field.get(region)
-                }
-                fn #active_method(&self) -> bool { #active }
             });
-            child_public_api.push(quote! {
-                pub fn #states_method(&self) -> &[#child_states_name; #region_count] {
-                    self.core.#states_method()
-                }
-                pub fn #state_method(&self, region: usize) -> Option<&#child_states_name> {
-                    self.core.#state_method(region)
-                }
-                pub fn #active_method(&self) -> bool { self.core.#active_method() }
-            });
+            child_public_api.push(quote! {});
             let depth = node_depths
                 .get(&reference.to_string())
                 .copied()
@@ -1989,21 +1863,9 @@ fn generate_multi_code(
         child_callback_methods.push(quote! {
             fn #callback(&self, old_state: &#child_states_name, new_state: &#child_states_name) {}
         });
-        let state_method = format_ident!(
-            "{}_state",
-            string_morph::to_snake_case(&reference.to_string())
-        );
         let is_method = format_ident!("is_{}", string_morph::to_snake_case(&reference.to_string()));
         let set_method = format_ident!(
             "set_{}_state",
-            string_morph::to_snake_case(&reference.to_string())
-        );
-        let visit_method = format_ident!(
-            "visit_{}_state",
-            string_morph::to_snake_case(&reference.to_string())
-        );
-        let active_method = format_ident!(
-            "{}_is_active",
             string_morph::to_snake_case(&reference.to_string())
         );
         let active = tree_active_condition(
@@ -2019,7 +1881,6 @@ fn generate_multi_code(
             quote! { machine.#is_method(self) },
         ));
         child_api.push(quote! {
-            fn #state_method(&self) -> &#child_states_name { &self.#field }
             fn #is_method(&self, expected: &#child_states_name) -> bool {
                 self.#field == *expected
             }
@@ -2031,38 +1892,14 @@ fn generate_multi_code(
                 self.#exit_skip = false;
                 core::mem::replace(&mut self.#field, state)
             }
-            fn #visit_method<R>(
-                &self,
-                visitor: impl FnOnce(&#child_states_name) -> R,
-            ) -> R {
-                visitor(&self.#field)
-            }
-            fn #active_method(&self) -> bool {
-                #active
-            }
         });
         child_public_api.push(quote! {
-            pub fn #state_method(&self) -> &#child_states_name {
-                self.core.#state_method()
-            }
-            pub fn #is_method(&self, expected: &#child_states_name) -> bool {
-                self.core.#is_method(expected)
-            }
             pub fn #set_method(&mut self, state: #child_states_name) -> #child_states_name
             where
                 <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
                     ::sml::TestingAccess,
             {
                 self.core.#set_method(state)
-            }
-            pub fn #visit_method<R>(
-                &self,
-                visitor: impl FnOnce(&#child_states_name) -> R,
-            ) -> R {
-                self.core.#visit_method(visitor)
-            }
-            pub fn #active_method(&self) -> bool {
-                self.core.#active_method()
             }
         });
         let depth = node_depths
@@ -2772,7 +2609,6 @@ fn generate_multi_code(
     let root_state_api = if let Some(region_count) = root_region_count {
         quote! {
             fn states(&self) -> &[#parent_states_name; #region_count] { &self.states }
-            fn state(&self, region: usize) -> Option<&#parent_states_name> { self.states.get(region) }
             fn set_current_states(&mut self, states: [#parent_states_name; #region_count]) -> [#parent_states_name; #region_count]
             where
                 <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
@@ -2788,7 +2624,6 @@ fn generate_multi_code(
         }
     } else {
         quote! {
-            fn state(&self) -> &#parent_states_name { &self.state }
             fn set_current_states(&mut self, state: #parent_states_name) -> #parent_states_name
             where
                 <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
@@ -2836,18 +2671,6 @@ fn generate_multi_code(
     };
     let public_root_state_api = if let Some(region_count) = root_region_count {
         quote! {
-            /// Returns all active root-region states.
-            #[inline(always)]
-            pub fn states(&self) -> &[#parent_states_name; #region_count] {
-                self.core.states()
-            }
-
-            /// Returns the active root state for `region`, if it exists.
-            #[inline(always)]
-            pub fn state(&self, region: usize) -> Option<&#parent_states_name> {
-                self.core.state(region)
-            }
-
             /// Replaces all active root-region states for a testing policy.
             pub fn set_current_states(
                 &mut self,
@@ -2860,20 +2683,9 @@ fn generate_multi_code(
                 self.core.set_current_states(states)
             }
 
-            /// Returns whether a root region equals `expected`.
-            #[inline(always)]
-            pub fn is_region(&self, region: usize, expected: &#parent_states_name) -> bool {
-                self.core.is_region(region, expected)
-            }
         }
     } else {
         quote! {
-            /// Returns the active root state.
-            #[inline(always)]
-            pub fn state(&self) -> &#parent_states_name {
-                self.core.state()
-            }
-
             /// Replaces the active root state for a testing policy.
             pub fn set_current_states(
                 &mut self,
@@ -2894,47 +2706,6 @@ fn generate_multi_code(
 
         #(#child_public_api)*
 
-        /// Borrows the configured logger.
-        #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger(&self.core.policy)
-        }
-
-        /// Mutably borrows the configured logger.
-        #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-            ::sml::__private::PolicyParts::logger_mut(&mut self.core.policy)
-        }
-
-        /// Borrows the configured observer.
-        #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer(&self.core.policy)
-        }
-
-        /// Mutably borrows the configured observer.
-        #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-            ::sml::__private::PolicyParts::observer_mut(&mut self.core.policy)
-        }
-
-        /// Returns whether the composite is in its terminal state.
-        #[inline(always)]
-        pub fn is_terminated(&self) -> bool {
-            self.core.is_terminated()
-        }
-
-        /// Returns the current context.
-        #[inline(always)]
-        pub fn context(&self) -> &T {
-            self.core.context()
-        }
-
-        /// Returns the current context as a mutable reference.
-        #[inline(always)]
-        pub fn context_mut(&mut self) -> &mut T {
-            self.core.context_mut()
-        }
     };
 
     let mut is_states = child_is_states;
@@ -3132,26 +2903,6 @@ fn generate_multi_code(
             #root_state_api
             #visit_current_events
             #(#child_api)*
-            #[inline(always)]
-            pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger(&self.policy)
-            }
-
-            #[inline(always)]
-            pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
-                ::sml::__private::PolicyParts::logger_mut(&mut self.policy)
-            }
-
-            #[inline(always)]
-            pub fn observer(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer(&self.policy)
-            }
-
-            #[inline(always)]
-            pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
-                ::sml::__private::PolicyParts::observer_mut(&mut self.policy)
-            }
-
             #[inline]
             #async_keyword fn __sml_process_event_unlocked<EventInput>(
                 &mut self,
@@ -3226,10 +2977,6 @@ fn generate_multi_code(
             }
         }
 
-        impl<T: #context_name, #policy_name: ::sml::Policy>
-            ::sml::Terminated for #machine_name<T, #policy_name> {
-            fn is_terminated(&self) -> bool { self.core.is_terminated() }
-        }
         impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
             pub fn new(context: T) -> Self {
                 let policy: ::sml::NoPolicy = core::default::Default::default();
