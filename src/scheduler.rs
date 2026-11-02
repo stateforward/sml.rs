@@ -476,14 +476,14 @@ mod shared {
             assert_eq!(poll(waiting.as_mut()), Poll::Pending);
             // Room appears while the machine is still busy: the waiting event
             // queues instead of running.
-            let (job, ticket) = lock(&cell.shared.queue)
-                .events
-                .pop()
-                .ok_or(())
-                .unwrap_or_else(|()| panic!("queued"));
+            let popped = lock(&cell.shared.queue).events.pop();
             assert_eq!(poll(waiting.as_mut()), Poll::Pending);
-            assert!(job(&mut lock(&cell.shared.machine)));
-            ticket.resolve(true);
+            let ran = popped.map(|(job, ticket)| {
+                let accepted = job(&mut lock(&cell.shared.machine));
+                ticket.resolve(accepted);
+                accepted
+            });
+            assert_eq!(ran, Some(true));
 
             assert!(cell.drain(9));
             assert_eq!(poll(first.as_mut()), Poll::Ready(true));
@@ -870,9 +870,6 @@ mod tests {
         DefaultQueuePolicy, JumpTable, NoPolicy, Policies, PolicyBundle, PolicyParts, StepHook,
         Terminated,
     };
-    use core::future::Future;
-    use core::pin::pin;
-    use core::task::{Context, Poll, Waker};
     use std::vec::Vec;
 
     /// Records each event; event `0` stops the machine.
@@ -904,8 +901,10 @@ mod tests {
         }
     }
 
-    pub(super) fn poll<F: Future>(future: F) -> Poll<F::Output> {
-        pin!(future).poll(&mut Context::from_waker(Waker::noop()))
+    #[cfg(feature = "std")]
+    pub(super) fn poll<F: core::future::Future>(future: F) -> core::task::Poll<F::Output> {
+        let waker = core::task::Waker::noop();
+        core::pin::pin!(future).poll(&mut core::task::Context::from_waker(waker))
     }
 
     #[test]
@@ -921,7 +920,7 @@ mod tests {
         };
         StepHook::<(), u8>::after_step(&mut (), &mut (), step);
         let mut context = Recorder::default();
-        crate::Emit::<()>::drain_outputs(&mut context, |()| {});
+        crate::Emit::<()>::drain_outputs(&mut context, drop);
         assert!(!machine.is_terminated());
         assert!(machine.seen.is_empty());
 
