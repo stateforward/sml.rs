@@ -449,7 +449,10 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
 
 impl<L, O, D, S, T, DQ, PQ, SC, H> PolicyBundle<L, O, D, S, T, DQ, PQ, SC, H> {
     /// Replaces the scheduler slot.
-    pub fn with_scheduler<SC2>(self, scheduler: SC2) -> PolicyBundle<L, O, D, S, T, DQ, PQ, SC2, H> {
+    pub fn with_scheduler<SC2>(
+        self,
+        scheduler: SC2,
+    ) -> PolicyBundle<L, O, D, S, T, DQ, PQ, SC2, H> {
         let Self {
             logger,
             observer,

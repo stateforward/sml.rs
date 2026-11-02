@@ -80,11 +80,9 @@ pub use policy::{
 };
 #[cfg(feature = "std")]
 pub use scheduler::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineScheduler};
+pub use scheduler::{Queued, Schedule, Scheduler, Step, StrictOrdering, SyncMachineStep};
 #[cfg(feature = "tokio")]
 pub use scheduler::{TokioCell, TokioCompletion, TokioScheduler};
-pub use scheduler::{
-    MachineStep, Queued, Schedule, Scheduler, Step, StrictOrdering, SyncMachineStep,
-};
 
 /// Marker and name access for a static typed event payload.
 ///

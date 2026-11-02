@@ -21,15 +21,15 @@ use crate::{StepHook, Terminated};
 /// `&mut self` machine.
 pub trait Scheduler {
     /// Storage for a generated machine core.
-    type Cell<M: MachineStep>;
+    type Cell<M>;
 }
 
 impl Scheduler for () {
-    type Cell<M: MachineStep> = M;
+    type Cell<M> = M;
 }
 
 /// Places a generated machine core into a scheduler's storage.
-pub trait Schedule<M: MachineStep>: Scheduler {
+pub trait Schedule<M: Terminated>: Scheduler {
     /// Moves `machine` into this scheduler's storage. A queued scheduler also
     /// runs the machine's initial entry here, as `sml.cpp` does on
     /// construction.
@@ -39,7 +39,7 @@ pub trait Schedule<M: MachineStep>: Scheduler {
     fn is_terminated(cell: &Self::Cell<M>) -> bool;
 }
 
-impl<M: MachineStep> Schedule<M> for () {
+impl<M: Terminated> Schedule<M> for () {
     #[inline]
     fn cell(self, machine: M) -> M {
         machine
@@ -57,7 +57,7 @@ impl<M: MachineStep> Schedule<M> for () {
 /// returned completion does not cancel the event: it still runs, and only its
 /// result is discarded. Once the machine reaches `X`, queued and later events
 /// resolve to `false` without running.
-pub trait Queued<M: MachineStep>: Schedule<M> + StrictOrdering {
+pub trait Queued<M: SyncMachineStep>: Schedule<M> + StrictOrdering {
     /// Resolves to the event's acceptance after it has run to completion.
     type Completion: core::future::Future<Output = bool>;
 
@@ -91,17 +91,15 @@ pub trait StrictOrdering {
     const RUN_TO_COMPLETION: bool;
 }
 
-/// A generated machine core as a scheduler sees it.
+/// A generated machine core whose callbacks are synchronous, as a queued
+/// scheduler drives it.
 ///
 /// Generated machines implement this for their private core. It is public so
 /// owners can write their own [`Scheduler`].
-pub trait MachineStep: Terminated {
+pub trait SyncMachineStep: Terminated {
     /// The generated event enum.
     type Event;
-}
 
-/// A generated machine core whose callbacks are synchronous.
-pub trait SyncMachineStep: MachineStep {
     /// Runs the initial entry and anonymous-transition stabilization.
     fn start(&mut self) -> bool;
 
@@ -127,11 +125,12 @@ impl<C, L, E> StepHook<C, L, E> for () {}
 mod shared {
     extern crate std;
 
-    use super::{MachineStep, Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};
+    use super::{Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};
     use crate::utility::{EventQueue, QueueFull};
     use core::future::Future;
     use core::pin::Pin;
     use core::task::{Context, Poll, Waker};
+    use std::boxed::Box;
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
     use std::vec::Vec;
 
@@ -165,7 +164,7 @@ mod shared {
     }
 
     impl Scheduler for InlineScheduler {
-        type Cell<M: MachineStep> = InlineCell<M>;
+        type Cell<M> = InlineCell<M>;
     }
 
     impl StrictOrdering for InlineScheduler {
@@ -198,7 +197,10 @@ mod shared {
             core::future::ready(accepted)
         }
 
-        fn try_submit(cell: &InlineCell<M>, event: M::Event) -> Result<Self::Completion, QueueFull> {
+        fn try_submit(
+            cell: &InlineCell<M>,
+            event: M::Event,
+        ) -> Result<Self::Completion, QueueFull> {
             Ok(Self::submit(cell, event))
         }
     }
@@ -214,11 +216,11 @@ mod shared {
     pub struct FifoScheduler<const N: usize = 1024>;
 
     /// Shared storage for a [`FifoScheduler`] machine.
-    pub struct FifoCell<M: MachineStep, const N: usize> {
+    pub struct FifoCell<M, const N: usize> {
         shared: Arc<FifoShared<M, N>>,
     }
 
-    impl<M: MachineStep, const N: usize> Clone for FifoCell<M, N> {
+    impl<M, const N: usize> Clone for FifoCell<M, N> {
         fn clone(&self) -> Self {
             Self {
                 shared: Arc::clone(&self.shared),
@@ -226,14 +228,18 @@ mod shared {
         }
     }
 
-    struct FifoShared<M: MachineStep, const N: usize> {
+    // A queued event, type-erased like `sml.cpp`'s fifo task slots so the
+    // cell does not name the machine's event type.
+    type Job<M> = Box<dyn FnOnce(&mut M) -> bool + Send>;
+
+    struct FifoShared<M, const N: usize> {
         // Locked only by the draining caller, so it is never contended.
         machine: Mutex<M>,
-        queue: Mutex<FifoQueue<M::Event, N>>,
+        queue: Mutex<FifoQueue<M, N>>,
     }
 
-    struct FifoQueue<E, const N: usize> {
-        events: EventQueue<(E, Arc<Ticket>), N>,
+    struct FifoQueue<M, const N: usize> {
+        events: EventQueue<(Job<M>, Arc<Ticket>), N>,
         draining: bool,
         terminated: bool,
         room: Vec<Waker>,
@@ -280,7 +286,7 @@ mod shared {
     }
 
     impl<const N: usize> Scheduler for FifoScheduler<N> {
-        type Cell<M: MachineStep> = FifoCell<M, N>;
+        type Cell<M> = FifoCell<M, N>;
     }
 
     impl<const N: usize> StrictOrdering for FifoScheduler<N> {
@@ -319,7 +325,10 @@ mod shared {
         Full(E),
     }
 
-    impl<M: SyncMachineStep, const N: usize> FifoCell<M, N> {
+    impl<M: SyncMachineStep, const N: usize> FifoCell<M, N>
+    where
+        M::Event: Send + 'static,
+    {
         fn offer(&self, event: M::Event, waker: Option<&Waker>) -> Offer<M::Event> {
             let mut queue = lock(&self.shared.queue);
             if queue.terminated {
@@ -333,7 +342,8 @@ mod shared {
                     return Offer::Full(event);
                 }
                 let ticket = Arc::new(Ticket::default());
-                if queue.events.defer((event, Arc::clone(&ticket))).is_err() {
+                let job: Job<M> = Box::new(move |machine: &mut M| machine.step(event));
+                if queue.events.defer((job, Arc::clone(&ticket))).is_err() {
                     // `len() < N` was checked under the same lock.
                     return Offer::Done(false);
                 }
@@ -348,7 +358,7 @@ mod shared {
         // machine idle. Only the caller that set `draining` gets here, so the
         // machine lock is never contended.
         fn drain(&self, first: M::Event) -> bool {
-            let (accepted, mut terminated) = self.run(first);
+            let (accepted, mut terminated) = self.run(move |machine: &mut M| machine.step(first));
             loop {
                 let (next, room) = {
                     let mut queue = lock(&self.shared.queue);
@@ -362,13 +372,13 @@ mod shared {
                 for waker in room {
                     waker.wake();
                 }
-                let Some((event, ticket)) = next else {
+                let Some((job, ticket)) = next else {
                     return accepted;
                 };
                 let result = if terminated {
                     false
                 } else {
-                    let (result, now_terminated) = self.run(event);
+                    let (result, now_terminated) = self.run(job);
                     terminated = now_terminated;
                     result
                 };
@@ -376,9 +386,9 @@ mod shared {
             }
         }
 
-        fn run(&self, event: M::Event) -> (bool, bool) {
+        fn run(&self, job: impl FnOnce(&mut M) -> bool) -> (bool, bool) {
             let mut machine = lock(&self.shared.machine);
-            let accepted = machine.step(event);
+            let accepted = job(&mut machine);
             (accepted, machine.is_terminated())
         }
     }
@@ -399,7 +409,10 @@ mod shared {
     // by value when room appears.
     impl<M: SyncMachineStep, const N: usize> Unpin for FifoCompletion<M, N> {}
 
-    impl<M: SyncMachineStep, const N: usize> Future for FifoCompletion<M, N> {
+    impl<M: SyncMachineStep, const N: usize> Future for FifoCompletion<M, N>
+    where
+        M::Event: Send + 'static,
+    {
         type Output = bool;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
@@ -427,7 +440,10 @@ mod shared {
         }
     }
 
-    impl<M: SyncMachineStep, const N: usize> Queued<M> for FifoScheduler<N> {
+    impl<M: SyncMachineStep, const N: usize> Queued<M> for FifoScheduler<N>
+    where
+        M::Event: Send + 'static,
+    {
         type Completion = FifoCompletion<M, N>;
 
         fn submit(cell: &FifoCell<M, N>, event: M::Event) -> Self::Completion {
@@ -439,7 +455,10 @@ mod shared {
             FifoCompletion { state }
         }
 
-        fn try_submit(cell: &FifoCell<M, N>, event: M::Event) -> Result<Self::Completion, QueueFull> {
+        fn try_submit(
+            cell: &FifoCell<M, N>,
+            event: M::Event,
+        ) -> Result<Self::Completion, QueueFull> {
             match cell.offer(event, None) {
                 Offer::Done(accepted) => Ok(FifoCompletion {
                     state: FifoWait::Done(accepted),
@@ -460,12 +479,13 @@ pub use shared::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineSche
 mod task {
     extern crate std;
 
-    use super::{MachineStep, Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};
+    use super::{Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};
     use crate::utility::QueueFull;
     use core::future::Future;
     use core::pin::Pin;
     use core::sync::atomic::{AtomicBool, Ordering};
     use core::task::{Context, Poll};
+    use std::boxed::Box;
     use std::sync::Arc;
     use tokio::sync::{mpsc, oneshot};
 
@@ -496,16 +516,20 @@ mod task {
         }
     }
 
-    type Request<E> = (E, oneshot::Sender<bool>);
+    // A queued event, type-erased so the cell does not name the event type.
+    type Request<M> = (
+        Box<dyn FnOnce(&mut M) -> bool + Send>,
+        oneshot::Sender<bool>,
+    );
 
     /// Shared storage for a [`TokioScheduler`] machine: the queue into its
     /// task and the task's terminal flag.
-    pub struct TokioCell<M: MachineStep> {
-        events: mpsc::UnboundedSender<Request<M::Event>>,
+    pub struct TokioCell<M> {
+        events: mpsc::UnboundedSender<Request<M>>,
         terminated: Arc<AtomicBool>,
     }
 
-    impl<M: MachineStep> Clone for TokioCell<M> {
+    impl<M> Clone for TokioCell<M> {
         fn clone(&self) -> Self {
             Self {
                 events: self.events.clone(),
@@ -515,7 +539,7 @@ mod task {
     }
 
     impl Scheduler for TokioScheduler {
-        type Cell<M: MachineStep> = TokioCell<M>;
+        type Cell<M> = TokioCell<M>;
     }
 
     impl StrictOrdering for TokioScheduler {
@@ -526,7 +550,7 @@ mod task {
 
     async fn run<M: SyncMachineStep>(
         mut machine: M,
-        mut events: mpsc::UnboundedReceiver<Request<M::Event>>,
+        mut events: mpsc::UnboundedReceiver<Request<M>>,
         terminated: Arc<AtomicBool>,
     ) {
         let _ = machine.start();
@@ -536,8 +560,8 @@ mod task {
             events.close();
         }
         // The task ends once every handle is gone and the queue is empty.
-        while let Some((event, reply)) = events.recv().await {
-            let accepted = !stopped && machine.step(event);
+        while let Some((job, reply)) = events.recv().await {
+            let accepted = !stopped && job(&mut machine);
             if !stopped && machine.is_terminated() {
                 stopped = true;
                 terminated.store(true, Ordering::Release);
@@ -588,7 +612,9 @@ mod task {
                 return Poll::Ready(false);
             };
             // A closed reply means the task stopped before running the event.
-            Pin::new(reply).poll(cx).map(|accepted| accepted.unwrap_or(false))
+            Pin::new(reply)
+                .poll(cx)
+                .map(|accepted| accepted.unwrap_or(false))
         }
     }
 
@@ -601,7 +627,9 @@ mod task {
 
         fn submit(cell: &TokioCell<M>, event: M::Event) -> TokioCompletion {
             let (reply, receiver) = oneshot::channel();
-            let queued = cell.events.send((event, reply)).is_ok();
+            let job: Box<dyn FnOnce(&mut M) -> bool + Send> =
+                Box::new(move |machine: &mut M| machine.step(event));
+            let queued = cell.events.send((job, reply)).is_ok();
             TokioCompletion {
                 reply: queued.then_some(receiver),
             }
