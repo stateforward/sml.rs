@@ -19,14 +19,14 @@ the default `NoPolicy` path.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.5" }
+sml = { package = "stateforward-sml", version = "2.0" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "2.0", features = ["graphviz"] }
 ```
 
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
@@ -272,6 +272,57 @@ These policies are for the machine's owner to configure and query its own
 machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
 
+### Schedulers
+
+The `scheduler` slot decides who runs a machine's events. The default `()`
+keeps the owned `&mut self` machine above. A queued scheduler turns the
+generated machine type itself into a cloneable handle that many tasks can call
+through `&self`:
+
+```rust,ignore
+use sml::{sml_policies, FifoScheduler};
+
+sml_policies!(Shared { scheduler: FifoScheduler<1024> });
+
+let machine = MyStateMachine::new_with_policy(context, Shared::default());
+let handle = machine.clone();
+std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
+let accepted: bool = machine.process_event_async(Stop).await;
+assert!(machine.is(&MyStates::X));
+```
+
+`process_event_async` queues the event before it returns and resolves to its
+acceptance once the event has run to completion, including the machine's own
+`process`/`defer` queues and completion transitions. Dropping the completion
+does not cancel a queued event. The exception is a full bounded queue
+(`FifoScheduler<N>`): the completion then holds the event and queues it on the
+first poll that finds room, so dropping it before then discards the event.
+`try_process_event` returns `QueueFull` instead of waiting. Events run in FIFO
+order, one at a time, which is `sml.cpp`'s `strict_ordering_scheduler_contract`
+(`StrictOrdering`). Once the machine reaches `X`, queued and later events
+resolve to `false`. A queued machine runs its initial entry when constructed,
+as `sml.cpp` does.
+
+| Scheduler | Feature | Runs an event |
+|---|---|---|
+| `InlineScheduler` | `std` | In the caller, under the machine's lock, before `process_event_async` returns |
+| `FifoScheduler<N>` | `std` | `sml.cpp`'s draining model: a caller that finds the machine idle runs its event and drains what others queued meanwhile; a caller that finds it busy, including a re-entrant action, only queues. `N` bounds the queue (power of two) |
+
+Queued schedulers drive synchronous machines without a temporary context;
+async-callback and temporary-context machines keep the owned API. Besides
+`process_event_async`, `try_process_event`, and `Clone`, a scheduled handle
+answers the read-only queries `sml.cpp` still allows on a scheduled machine,
+`is(...)` and `visit_current_states(visitor)`. Both take the machine's lock, so
+they wait for a running event and must not be called from the machine's own
+callbacks.
+
+sml.rs ships no async-runtime scheduler, as `sml.cpp` ships none: like
+`InlineScheduler` and `FifoScheduler`, a scheduler for a runtime implements
+`Scheduler` (the storage it keeps the machine in and read access to it),
+`Schedule` (placing the machine there and running its initial entry), `Queued`
+(queuing an event and returning its completion), and `StrictOrdering`, driving
+the machine through `SyncMachineStep`.
+
 ## State and event data
 
 `event<E>` accepts an owned Rust event at the public boundary and passes `&E`
@@ -461,8 +512,8 @@ clang++ -std=c++20 -O3 -DNDEBUG -march=native \
 In 21 alternating runs, Rust completed the async RTC workload in a 2.543 ms
 median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
 405.3% higher throughput. This measures the uncontended ready path only.
-Scheduler queueing and suspended RTC completion require a separate benchmark
-when that adapter is implemented.
+Queued scheduler policies (see [Schedulers](#schedulers)) are not covered by
+this measurement.
 
 Reproduce both comparisons, including alternating order, raw samples, platform,
 and toolchain capture, with:

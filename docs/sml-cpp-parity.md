@@ -11,7 +11,7 @@ allows it; callback bodies and ownership remain Rust-native.
 | Entry and exit hooks | Supported | Sync and async hooks generated per state |
 | Initial entry lifecycle | Supported | Generated `initialize` enters the active initial state before stabilization |
 | Async processing | Supported | Async guards, actions, and entry/exit hooks |
-| Coroutine state-machine wrapper | Rust-native | Generated async processing uses Rust futures directly; no separate `co_sm` wrapper is needed |
+| Coroutine state-machine wrapper | Policy | The `scheduler` policy slot gives the generated machine `co_sm`'s queued `process_event_async`: `InlineScheduler` and `FifoScheduler<N>` (the draining `fifo_scheduler` model), both under `StrictOrdering` (`strict_ordering_scheduler_contract`). No wrapper type; queued schedulers drive synchronous machines, and the handle keeps `is` and `visit_current_states` |
 | Event and state data | Supported in all generators | Owned/borrowed events and inferred `state<T>` payloads in flat, orthogonal, parent, and child storage, including default initialization, lifecycle injection, completion, and sync/async producing actions |
 | Internal and self transitions | Supported | `tests/cpp_dsl.rs` verifies that internal transitions skip lifecycle hooks while explicit self-transitions run them |
 | Wildcard and multi-state input patterns | Supported | `tests/test.rs` covers runtime behavior and `tests/compile-fail` covers ordering and pattern errors |
@@ -55,8 +55,8 @@ The matching inline asynchronous RTC benchmark compares
 `Machine::process_event_async` with `co_sm` using its inline scheduler. Across 21
 alternating runs, Rust produced a 2.543 ms median (0.231 ns/event) versus 12.849
 ms (1.168 ns/event) for C++, 80.2% less elapsed time and 405.3% higher
-throughput. This result covers only the uncontended ready path; scheduler
-queueing and suspended completion are not yet claimed.
+throughput. This result covers only the uncontended ready path; queued
+scheduler policies are not covered by this measurement.
 
 `benchmarks/compare_machine_rtc.py` owns the alternating runner and
 `benchmarks/results/2026-07-13-machine-rtc.json` records all raw samples plus the

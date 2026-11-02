@@ -4,6 +4,26 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.0 - Unreleased
+
+### Added
+
+- A `scheduler` policy slot. `PolicyBundle` gains a defaulted scheduler type
+  parameter and `sml_policies!` accepts `scheduler: ...`. The default `()`
+  keeps the owned `&mut self` machine. A queued scheduler turns the generated
+  flat, composite, or orthogonal machine itself into a cloneable handle with
+  `process_event_async(&self, event)`, `try_process_event(&self, event)`,
+  `is(...)`, and `visit_current_states(visitor)`: the event is queued at call
+  time, dropping the completion does not cancel it, events run FIFO to
+  completion one at a time, and after `X` later events resolve to `false`.
+  Queued schedulers drive synchronous machines without a temporary context.
+- `InlineScheduler` and the bounded `FifoScheduler<N>` (`std`), the
+  `Scheduler`, `Schedule`, `Queued`, `StrictOrdering`, and `SyncMachineStep`
+  contract for owner-written schedulers, and the sealed `MachinePolicy` trait
+  that pairs a policy with its scheduler. `FifoScheduler` recovers draining
+  after a panicking step: the next caller drains, waiters for room are woken,
+  and nothing queued is stranded once the machine reaches `X`.
+
 ## 1.5.0 - 2026-10-31
 
 ### Added

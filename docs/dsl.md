@@ -261,8 +261,16 @@ uncontended inline RTC fast path. This is independent of async guards and
 actions. Generic callers pass the generated event enum; inherent methods also
 accept external event types that convert into that enum. Orthogonal, composite,
 async-callback, and temporary-context machines retain their shape-specific
-inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
-completion remains separate work.
+inherent processing APIs.
+
+A `scheduler` policy slot turns a synchronous machine without a temporary
+context into a cloneable handle whose `process_event_async(&self, event)`
+queues the event at call time (or, when a bounded queue is full, on the first
+poll that finds room) and resolves to its acceptance once it has run to
+completion: the `sml.cpp` `co_sm` behavior, chosen per machine through its
+policy rather than a wrapper type. A scheduled machine offers
+`process_event_async`, `try_process_event`, `Clone`, and the read-only queries
+`is(...)` and `visit_current_states(visitor)`, which take the machine's lock.
 
 Generated synchronous composite machines without a temporary context or an
 orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
