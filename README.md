@@ -610,14 +610,14 @@ Medians of 7 runs of 1.1 million events on an Apple M3 Max with Rust 1.98
 
 | Path | ns/event |
 |---|---:|
-| Owned machine, `Machine::process_event_async` (no scheduler) | 1.9 |
-| `InlineScheduler` | 4.8 |
-| `FifoScheduler<1024>` | 15.2 |
-| `TokioScheduler`, current-thread runtime | 154.3 |
-| `TokioScheduler`, 2 workers, caller is a task | 141.0 |
-| `TokioScheduler`, 2 workers, 11 events queued then awaited | 73.5 |
-| hsm.rs `dispatch`, current-thread runtime | 249.6 |
-| hsm.rs `dispatch`, 2 workers, caller is a task | 260.6 |
+| Owned machine, `Machine::process_event_async` (no scheduler) | 2.0 |
+| `InlineScheduler` | 5.0 |
+| `FifoScheduler<1024>` | 17.6 |
+| `TokioScheduler`, current-thread runtime | 155.4 |
+| `TokioScheduler`, 2 workers, caller is a task | 150.0 |
+| `TokioScheduler`, 2 workers, 11 events queued then awaited | 81.0 |
+| hsm.rs `dispatch`, current-thread runtime | 258.1 |
+| hsm.rs `dispatch`, 2 workers, caller is a task | 251.1 |
 
 A `TokioScheduler` event pays one channel send, one task wake-up, and one
 oneshot reply; queuing several events before awaiting them amortizes the
