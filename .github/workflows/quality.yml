@@ -103,7 +103,6 @@ jobs:
           package: stateforward-sml
           feature-group: all-features
           baseline-root: ${{ steps.compatibility.outputs.baseline_root }}
-          release-type: patch
       - name: Prepare unrelated-break negative control
         if: steps.compatibility.outputs.machine_exception == 'true'
         run: |
