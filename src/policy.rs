@@ -1,5 +1,6 @@
 //! Policy extension points for generated state machines.
 
+use crate::scheduler::{Scheduler, StrictOrdering};
 use crate::utility::{EventQueue, QueueFull};
 
 mod policy_parts {
@@ -8,6 +9,10 @@ mod policy_parts {
 
 mod policies {
     pub trait Sealed {}
+}
+
+mod machine_policy {
+    pub trait MachinePolicySealed {}
 }
 
 /// Supplies a stable name for a generated event payload or variant.
@@ -346,6 +351,11 @@ pub struct PolicyBundleParts<
 }
 
 /// A composable policy bundle.
+///
+/// The `SC` slot selects the [`Scheduler`]. The default `()` keeps the owned
+/// `&mut self` machine; a queued scheduler such as
+/// [`FifoScheduler`](crate::FifoScheduler) turns the generated machine into a
+/// cloneable handle.
 pub struct PolicyBundle<
     L = (),
     O = (),
@@ -354,6 +364,7 @@ pub struct PolicyBundle<
     T = (),
     DQ = DefaultQueuePolicy,
     PQ = DefaultQueuePolicy,
+    SC = (),
 > {
     /// Logger instance.
     logger: L,
@@ -369,6 +380,8 @@ pub struct PolicyBundle<
     process_queue: PQ,
     /// Dispatch strategy instance.
     dispatch: D,
+    /// Scheduler instance.
+    scheduler: SC,
 }
 
 impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
@@ -392,6 +405,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
             defer_queue,
             process_queue,
             dispatch: D::default(),
+            scheduler: (),
         }
     }
 
@@ -413,6 +427,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
             defer_queue,
             process_queue,
             dispatch,
+            scheduler: (),
         }
     }
 
@@ -426,6 +441,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
             defer_queue,
             process_queue,
             dispatch,
+            scheduler: (),
         } = self;
         (
             PolicyBundleParts {
@@ -441,7 +457,64 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
     }
 }
 
-impl<L, O, D, S, T, DQ, PQ> Default for PolicyBundle<L, O, D, S, T, DQ, PQ>
+impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
+    /// Replaces the scheduler slot.
+    pub fn with_scheduler<SC2>(self, scheduler: SC2) -> PolicyBundle<L, O, D, S, T, DQ, PQ, SC2> {
+        let Self {
+            logger,
+            observer,
+            thread_safe,
+            testing,
+            defer_queue,
+            process_queue,
+            dispatch,
+            scheduler: _,
+        } = self;
+        PolicyBundle {
+            logger,
+            observer,
+            thread_safe,
+            testing,
+            defer_queue,
+            process_queue,
+            dispatch,
+            scheduler,
+        }
+    }
+
+    /// Splits the scheduler slot from the other policy slots.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the tuple names the unscheduled bundle and the scheduler once each"
+    )]
+    pub fn into_scheduler(self) -> (PolicyBundle<L, O, D, S, T, DQ, PQ>, SC) {
+        let Self {
+            logger,
+            observer,
+            thread_safe,
+            testing,
+            defer_queue,
+            process_queue,
+            dispatch,
+            scheduler,
+        } = self;
+        (
+            PolicyBundle {
+                logger,
+                observer,
+                thread_safe,
+                testing,
+                defer_queue,
+                process_queue,
+                dispatch,
+                scheduler: (),
+            },
+            scheduler,
+        )
+    }
+}
+
+impl<L, O, D, S, T, DQ, PQ, SC> Default for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
 where
     L: Default,
     O: Default,
@@ -450,16 +523,19 @@ where
     T: Default,
     DQ: Default,
     PQ: Default,
+    SC: Default,
 {
     fn default() -> Self {
-        Self::new(
-            L::default(),
-            O::default(),
-            S::default(),
-            T::default(),
-            DQ::default(),
-            PQ::default(),
-        )
+        Self {
+            logger: L::default(),
+            observer: O::default(),
+            thread_safe: S::default(),
+            testing: T::default(),
+            defer_queue: DQ::default(),
+            process_queue: PQ::default(),
+            dispatch: D::default(),
+            scheduler: SC::default(),
+        }
     }
 }
 
@@ -660,6 +736,57 @@ where
 
 impl<L, O, D, S, T, DQ, PQ> policies::Sealed for PolicyBundle<L, O, D, S, T, DQ, PQ> {}
 
+/// The policy a generated machine is parameterized by: a [`Policies`] value
+/// together with a [`Scheduler`].
+///
+/// Every [`Policies`] type is a `MachinePolicy` with the `()` scheduler, so
+/// the owned `&mut self` machine is unchanged. A [`PolicyBundle`] whose
+/// scheduler slot holds a queued scheduler (one implementing
+/// [`StrictOrdering`]) is a `MachinePolicy` but not a [`Policies`]; generated
+/// machines with it are cloneable handles. This trait is sealed.
+pub trait MachinePolicy: machine_policy::MachinePolicySealed {
+    /// The policy slots other than the scheduler.
+    type Policies: Policies;
+    /// The scheduler slot.
+    type Scheduler: Scheduler;
+
+    /// Splits the scheduler from the other policy slots.
+    fn into_scheduled(self) -> (Self::Policies, Self::Scheduler);
+}
+
+impl<P: Policies> MachinePolicy for P {
+    type Policies = P;
+    type Scheduler = ();
+
+    #[inline]
+    fn into_scheduled(self) -> (P, ()) {
+        (self, ())
+    }
+}
+
+impl<P: Policies> machine_policy::MachinePolicySealed for P {}
+
+impl<L, O, D, S, T, DQ, PQ, SC> MachinePolicy for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
+where
+    PolicyBundle<L, O, D, S, T, DQ, PQ>: Policies,
+    SC: Scheduler + StrictOrdering,
+{
+    type Policies = PolicyBundle<L, O, D, S, T, DQ, PQ>;
+    type Scheduler = SC;
+
+    fn into_scheduled(self) -> (Self::Policies, SC) {
+        self.into_scheduler()
+    }
+}
+
+impl<L, O, D, S, T, DQ, PQ, SC> machine_policy::MachinePolicySealed
+    for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
+where
+    PolicyBundle<L, O, D, S, T, DQ, PQ>: Policies,
+    SC: Scheduler + StrictOrdering,
+{
+}
+
 /// The default policy bundle. Its fields are all zero-sized.
 pub struct NoPolicy {
     logger: (),
@@ -836,6 +963,10 @@ macro_rules! __sml_policy_check_duplicates {
         $crate::__sml_policy_check_duplicates!(@find process_queue [$($rest)*]);
         $crate::__sml_policy_check_duplicates!(@check [$($rest)*]);
     };
+    (@check [scheduler $($rest:ident)*]) => {
+        $crate::__sml_policy_check_duplicates!(@find scheduler [$($rest)*]);
+        $crate::__sml_policy_check_duplicates!(@check [$($rest)*]);
+    };
 
     (@find logger [logger $($rest:ident)*]) => {
         compile_error!("policy slot `logger` may only be specified once");
@@ -892,9 +1023,17 @@ macro_rules! __sml_policy_check_duplicates {
         $crate::__sml_policy_check_duplicates!(@find process_queue [$($rest)*]);
     };
     (@find process_queue []) => {};
+
+    (@find scheduler [scheduler $($rest:ident)*]) => {
+        compile_error!("policy slot `scheduler` may only be specified once");
+    };
+    (@find scheduler [$head:ident $($rest:ident)*]) => {
+        $crate::__sml_policy_check_duplicates!(@find scheduler [$($rest)*]);
+    };
+    (@find scheduler []) => {};
 }
 
-/// Expands a policy declaration while carrying the seven slot types through
+/// Expands a policy declaration while carrying the eight slot types through
 /// the parser. This is public only because exported `macro_rules!` macros
 /// expand at the call site.
 #[doc(hidden)]
@@ -902,7 +1041,7 @@ macro_rules! __sml_policy_check_duplicates {
 macro_rules! __sml_policy_parse {
     (@finish [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*]
     ) => {
         $crate::__sml_policy_check_duplicates!(@check [$($seen)*]);
@@ -915,164 +1054,186 @@ macro_rules! __sml_policy_parse {
             $testing,
             $defer_queue,
             $process_queue,
+            $scheduler,
         >;
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)*]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         logger: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$value] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* logger]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         observer: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$value] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* observer]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         dispatch: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$observer] [$value] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* dispatch]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         thread_safe: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$observer] [$dispatch] [$value]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* thread_safe]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         testing: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$value] [$defer_queue] [$process_queue]
+            [$value] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* testing]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         defer_queue: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$value] [$process_queue]
+            [$testing] [$value] [$process_queue] [$scheduler]
             [$($seen)* defer_queue]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         process_queue: $value:ty, $($rest:tt)*) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$value]
+            [$testing] [$defer_queue] [$value] [$scheduler]
             [$($seen)* process_queue]; $($rest)*);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         logger: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$value] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* logger]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         observer: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$value] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* observer]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         dispatch: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$value] [$thread_safe]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* dispatch]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         thread_safe: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$dispatch] [$value]
-            [$testing] [$defer_queue] [$process_queue]
+            [$testing] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* thread_safe]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         testing: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$value] [$defer_queue] [$process_queue]
+            [$value] [$defer_queue] [$process_queue] [$scheduler]
             [$($seen)* testing]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         defer_queue: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$value] [$process_queue]
+            [$testing] [$value] [$process_queue] [$scheduler]
             [$($seen)* defer_queue]);
     };
     (@parse [$name:ident]
         [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
-        [$testing:ty] [$defer_queue:ty] [$process_queue:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
         [$($seen:ident)*];
         process_queue: $value:ty
     ) => {
         $crate::__sml_policy_parse!(@finish [$name]
             [$logger] [$observer] [$dispatch] [$thread_safe]
-            [$testing] [$defer_queue] [$value]
+            [$testing] [$defer_queue] [$value] [$scheduler]
             [$($seen)* process_queue]);
+    };
+    (@parse [$name:ident]
+        [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
+        [$($seen:ident)*];
+        scheduler: $value:ty, $($rest:tt)*) => {
+        $crate::__sml_policy_parse!(@parse [$name]
+            [$logger] [$observer] [$dispatch] [$thread_safe]
+            [$testing] [$defer_queue] [$process_queue] [$value]
+            [$($seen)* scheduler]; $($rest)*);
+    };
+    (@parse [$name:ident]
+        [$logger:ty] [$observer:ty] [$dispatch:ty] [$thread_safe:ty]
+        [$testing:ty] [$defer_queue:ty] [$process_queue:ty] [$scheduler:ty]
+        [$($seen:ident)*];
+        scheduler: $value:ty
+    ) => {
+        $crate::__sml_policy_parse!(@finish [$name]
+            [$logger] [$observer] [$dispatch] [$thread_safe]
+            [$testing] [$defer_queue] [$process_queue] [$value]
+            [$($seen)* scheduler]);
     };
 }
 
@@ -1085,7 +1246,7 @@ macro_rules! sml_policies {
     ($name:ident { $($slots:tt)* }) => {
         $crate::__sml_policy_parse!(@parse [$name]
             [()] [()] [$crate::JumpTable] [()] [()]
-            [$crate::DefaultQueuePolicy] [$crate::DefaultQueuePolicy]
+            [$crate::DefaultQueuePolicy] [$crate::DefaultQueuePolicy] [()]
             [];
             $($slots)*);
     };
@@ -1160,6 +1321,26 @@ mod tests {
         let _: &() = PolicyParts::logger(&no_policy_parts);
         let _: &() = PolicyParts::observer(&no_policy_parts);
         let _: &() = PolicyParts::testing(&no_policy_parts);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn the_scheduler_slot_is_replaced_and_split_off() {
+        let bundle = PolicyBundle::<(), (), JumpTable>::default();
+        let scheduled = bundle.with_scheduler(crate::FifoScheduler::<4>);
+        let (unscheduled, crate::FifoScheduler::<4>) = MachinePolicy::into_scheduled(scheduled);
+        let (_parts, ()) = Policies::into_parts(unscheduled.with_scheduler(()));
+        let (_policy, ()) = MachinePolicy::into_scheduled(NoPolicy::default());
+        let _: PolicyBundle<
+            (),
+            (),
+            JumpTable,
+            (),
+            (),
+            DefaultQueuePolicy,
+            DefaultQueuePolicy,
+            crate::InlineScheduler,
+        > = PolicyBundle::default();
     }
 
     #[test]
