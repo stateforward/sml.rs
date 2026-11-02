@@ -2,6 +2,9 @@
 //!
 //! An example of a state machine which will loop between State 2 and State 3.
 //! A picture depicting the state machine can be found in the README.
+//!
+//! `process_event` reports whether a transition handled the event: `Ok(true)`
+//! moves the machine along, `Ok(false)` means the current state ignored it.
 
 #![deny(missing_docs)]
 
@@ -22,26 +25,30 @@ impl LoopingStateMachineContext for Context {}
 
 fn main() {
     let mut sm = LoopingStateMachine::new(Context);
-    assert!(matches!(sm.state(), &LoopingStates::State1));
 
+    // State1 -> State2
     let r = sm.process_event(LoopingEvents::Event1);
-    assert!(matches!(r, Ok(&LoopingStates::State2)));
+    assert_eq!(r, Ok(true));
+
+    // State2 -> State3
+    let r = sm.process_event(LoopingEvents::Event2);
+    assert_eq!(r, Ok(true));
+
+    // Go back in the loop a few time: State3 -> State2 -> State3 -> State2
+    let r = sm.process_event(LoopingEvents::Event3);
+    assert_eq!(r, Ok(true));
 
     let r = sm.process_event(LoopingEvents::Event2);
-    assert!(matches!(r, Ok(&LoopingStates::State3)));
-
-    // Go back in the loop a few time
-    let r = sm.process_event(LoopingEvents::Event3);
-    assert!(matches!(r, Ok(&LoopingStates::State2)));
-
-    let r = sm.process_event(LoopingEvents::Event2);
-    assert!(matches!(r, Ok(&LoopingStates::State3)));
+    assert_eq!(r, Ok(true));
 
     let r = sm.process_event(LoopingEvents::Event3);
-    assert!(matches!(r, Ok(&LoopingStates::State2)));
+    assert_eq!(r, Ok(true));
 
     // Now we cannot use Event1 again, as it is outside the state machine loop
     let r = sm.process_event(LoopingEvents::Event1);
-    assert!(matches!(r, Err(LoopingError::InvalidEvent)));
-    assert!(matches!(sm.state(), &LoopingStates::State2));
+    assert_eq!(r, Ok(false));
+
+    // The machine is still in State2, so the loop continues
+    let r = sm.process_event(LoopingEvents::Event2);
+    assert_eq!(r, Ok(true));
 }

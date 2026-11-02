@@ -18,10 +18,7 @@ sml! {
 struct Context;
 
 impl GenericStateMachineContext for Context {
-    fn inspect<'event, T, const N: usize>(
-        &mut self,
-        event: &Event<'event, T, N>,
-    ) -> Result<(), ()>
+    fn inspect<'event, T, const N: usize>(&mut self, event: &Event<'event, T, N>) -> Result<(), ()>
     where
         T: Debug + 'event,
     {
@@ -32,10 +29,10 @@ impl GenericStateMachineContext for Context {
 
 fn main() {
     let value = 7_u32;
-    GenericStateMachine::new(Context)
+    assert!(GenericStateMachine::new(Context)
         .process_event(Event {
             value: &value,
             bytes: [0; 4],
         })
-        .unwrap();
+        .unwrap());
 }

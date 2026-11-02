@@ -36,5 +36,5 @@ fn main() {
 
     let result = sm.process_event(Events::Event1(&mut MyEventData(42))); // Guard will pass
 
-    assert!(matches!(result, Ok(&States::State2)));
+    assert_eq!(result, Ok(true)); // now in State2
 }

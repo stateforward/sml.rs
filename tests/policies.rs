@@ -90,19 +90,20 @@ impl PolicyAsyncStateMachineContext for AsyncContext {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_supports_async_processing_without_unsafe_borrows() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
     let mut machine = PolicyAsyncStateMachine::new_with_policy(AsyncContext, policy);
 
-    smol::block_on(machine.process_event(AsyncGo)).unwrap();
+    assert!(smol::block_on(machine.process_event(AsyncGo)).unwrap());
     assert!(machine.is(&PolicyAsyncStates::AsyncReady));
 }
 
@@ -119,7 +120,7 @@ impl Dispatch for CandidateDispatch {
     }
 }
 
-type CandidatePolicies = PolicyBundle<(), (), CandidateDispatch>;
+type CandidatePolicies = PolicyBundle<(), (), CandidateDispatch, (), TestingPolicy>;
 
 #[test]
 fn custom_dispatch_can_select_a_later_guarded_candidate() {
@@ -130,12 +131,12 @@ fn custom_dispatch_can_select_a_later_guarded_candidate() {
             (),
             (),
             (),
-            (),
+            TestingPolicy,
             DefaultQueuePolicy,
             DefaultQueuePolicy,
         ),
     );
-    machine.process_event(FirstCandidate).unwrap();
+    assert!(machine.process_event(FirstCandidate).unwrap());
     assert!(machine.is(&PolicyCandidateStates::CandidateTwo));
 }
 
@@ -193,12 +194,12 @@ fn flat_logger_and_custom_dispatch_are_owner_policies() {
     let gate = Gate {
         rejected: AtomicUsize::new(0),
     };
-    let policy = PolicyBundle::<Log, Observe, Gate>::with_dispatch(
+    let policy = PolicyBundle::<Log, Observe, Gate, (), TestingPolicy>::with_dispatch(
         gate,
         Log::default(),
         Observe::default(),
         (),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -207,8 +208,8 @@ fn flat_logger_and_custom_dispatch_are_owner_policies() {
     assert_eq!(PolicyFlatEvents::EVENT_NAMES, &["Fail", "Go", "Stop"]);
     assert_eq!(PolicyFlatStates::name(&PolicyFlatStates::Idle), "Idle");
     assert_eq!(PolicyFlatEvents::name(&PolicyFlatEvents::Go(Go)), "Go");
-    machine.process_event(Go).unwrap();
-    assert!(machine.process_event(Stop).is_err());
+    assert!(machine.process_event(Go).unwrap());
+    assert_eq!(machine.process_event(Stop), Ok(false));
     assert!(machine.process_event(Fail).is_err());
     assert_eq!(machine.logger().process, 3);
     assert_eq!(machine.logger().guards, 1);
@@ -269,18 +270,18 @@ impl PolicyParentStateMachineContext for CompositeContext {
 
 #[test]
 fn composite_policy_is_shared_by_parent_and_child() {
-    let policy = PolicyBundle::<Log, (), JumpTable>::with_dispatch(
+    let policy = PolicyBundle::<Log, (), JumpTable, (), TestingPolicy>::with_dispatch(
         JumpTable,
         Log::default(),
         (),
         (),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
     let mut machine =
         PolicyParentStateMachine::new_with_policy(CompositeContext::default(), policy);
-    machine.process_event(Enter).unwrap();
+    assert!(machine.process_event(Enter).unwrap());
     assert_eq!(machine.logger().process, 1);
     assert_eq!(machine.context().process_events.get(), 1);
     assert!(machine.child_is_active());
@@ -323,12 +324,12 @@ impl PolicyOrthogonalStateMachineContext for OrthogonalContext {
 
 #[test]
 fn orthogonal_policy_uses_the_same_dispatch_and_logger_slots() {
-    let policy = PolicyBundle::<Log, (), BranchStm>::with_dispatch(
+    let policy = PolicyBundle::<Log, (), BranchStm, (), TestingPolicy>::with_dispatch(
         BranchStm,
         Log::default(),
         (),
         (),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -336,7 +337,7 @@ fn orthogonal_policy_uses_the_same_dispatch_and_logger_slots() {
         PolicyOrthogonalStateMachine::new_with_policy(OrthogonalContext::default(), policy);
     assert!(machine.process_event(OrthogonalFail).is_err());
     assert_eq!(machine.logger().actions, 0);
-    machine.process_event(Left).unwrap();
+    assert!(machine.process_event(Left).unwrap());
     assert_eq!(machine.logger().process, 2);
     assert_eq!(machine.context().process_events.get(), 2);
     assert_eq!(
@@ -370,14 +371,15 @@ sml! {
 struct QueueContext;
 impl PolicyQueueStateMachineContext for QueueContext {}
 
-type QueuePolicies = PolicyBundle<(), (), JumpTable, (), (), TinyQueues, TinyQueues>;
+type QueuePolicies = PolicyBundle<(), (), JumpTable, (), TestingPolicy, TinyQueues, TinyQueues>;
 
 #[test]
 fn custom_queue_factories_replace_the_default_queue() {
-    let policy = QueuePolicies::with_dispatch(JumpTable, (), (), (), (), TinyQueues, TinyQueues);
+    let policy =
+        QueuePolicies::with_dispatch(JumpTable, (), (), (), TestingPolicy, TinyQueues, TinyQueues);
     let mut machine = PolicyQueueStateMachine::new_with_policy(QueueContext, policy);
-    machine.process_event(Deferred).unwrap();
-    machine.process_event(Unlock).unwrap();
+    assert!(machine.process_event(Deferred).unwrap());
+    assert!(machine.process_event(Unlock).unwrap());
     assert!(machine.is_terminated());
 }
 
@@ -405,7 +407,7 @@ impl RawMutex for LockProbe {
 }
 
 type LockedQueuePolicies =
-    PolicyBundle<(), (), JumpTable, ThreadSafe<LockProbe>, (), TinyQueues, TinyQueues>;
+    PolicyBundle<(), (), JumpTable, ThreadSafe<LockProbe>, TestingPolicy, TinyQueues, TinyQueues>;
 
 #[test]
 fn deferred_processing_does_not_reenter_the_thread_lock() {
@@ -416,13 +418,13 @@ fn deferred_processing_does_not_reenter_the_thread_lock() {
         (),
         (),
         ThreadSafe::new(LockProbe),
-        (),
+        TestingPolicy,
         TinyQueues,
         TinyQueues,
     );
     let mut machine = PolicyQueueStateMachine::new_with_policy(QueueContext, policy);
-    machine.process_event(Deferred).unwrap();
-    machine.process_event(Unlock).unwrap();
+    assert!(machine.process_event(Deferred).unwrap());
+    assert!(machine.process_event(Unlock).unwrap());
     assert!(machine.is_terminated());
     assert_eq!(LOCK_CALLS.load(Ordering::Relaxed), 2);
 }
@@ -441,54 +443,56 @@ fn thread_safe_policy_wraps_event_processing() {
         DefaultQueuePolicy,
     );
     let mut machine = PolicyFlatStateMachine::new_with_policy(Context::default(), policy);
-    machine.process_event(Go).unwrap();
+    assert!(machine.process_event(Go).unwrap());
     assert_eq!(LOCK_CALLS.load(Ordering::Relaxed), 1);
 }
 
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
     let mut machine = PolicyFlatStateMachine::new_with_policy(Context::default(), policy);
 
-    machine.process_event(Go).unwrap();
+    assert!(machine.process_event(Go).unwrap());
     assert!(machine.is(&PolicyFlatStates::Ready));
 }
 
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies =
+        PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>, TestingPolicy>;
 
     let composite_policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
     let mut composite =
         PolicyParentStateMachine::new_with_policy(CompositeContext::default(), composite_policy);
-    composite.process_event(Enter).unwrap();
-    composite.process_event(ChildWork).unwrap();
+    assert!(composite.process_event(Enter).unwrap());
+    assert!(composite.process_event(ChildWork).unwrap());
 
     let orthogonal_policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
         (),
         ThreadSafe::new(std::sync::Mutex::new(())),
-        (),
+        TestingPolicy,
         DefaultQueuePolicy,
         DefaultQueuePolicy,
     );
@@ -496,7 +500,7 @@ fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
         OrthogonalContext::default(),
         orthogonal_policy,
     );
-    orthogonal.process_event(Left).unwrap();
+    assert!(orthogonal.process_event(Left).unwrap());
     assert!(orthogonal.is_region(0, &PolicyOrthogonalStates::X));
 }
 

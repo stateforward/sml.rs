@@ -156,7 +156,6 @@ fn main() {
         let start = Instant::now();
         run_wrapped(&mut wrapped);
         let elapsed = start.elapsed().as_nanos();
-        assert!(matches!(wrapped.state(), WrappedPlayerStates::Empty));
         println!(
             "rust-wrapper {elapsed} ns total; {:.3} ns/event",
             elapsed as f64 / 11_000_000.0
@@ -167,7 +166,6 @@ fn main() {
         let start = Instant::now();
         smol::block_on(run(&mut machine));
         let elapsed = start.elapsed().as_nanos();
-        assert!(matches!(machine.state(), AsyncPlayerStates::Empty));
         println!(
             "rust-native {elapsed} ns total; {:.3} ns/event",
             elapsed as f64 / 11_000_000.0

@@ -18,5 +18,5 @@ impl StateMachineContext for Context {}
 
 fn main() {
     let mut machine = StateMachine::new(Context);
-    machine.process_event(Events::Go(Payload)).unwrap();
+    assert!(machine.process_event(Events::Go(Payload)).unwrap());
 }

@@ -6,6 +6,10 @@
 
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault(u8);
 
@@ -74,15 +78,19 @@ impl TwoLevelStateMachineContext for TwoLevelContext {
     }
 }
 
-fn run_two_level(machine: &mut TwoLevelStateMachine<TwoLevelContext>, fail_at: u8) -> Vec<String> {
-    machine.process_event(Go { fail_at }).unwrap();
+fn run_two_level(
+    machine: &mut TwoLevelStateMachine<TwoLevelContext, Testing>,
+    fail_at: u8,
+) -> Vec<String> {
+    assert_eq!(machine.process_event(Go { fail_at }), Ok(true));
     assert!(machine.is(&TwoLevelStates::Idle));
     core::mem::take(&mut machine.context_mut().log)
 }
 
 #[test]
 fn two_level_completion_fault_is_caught_by_the_child_exception_row() {
-    let mut machine = TwoLevelStateMachine::new(TwoLevelContext::default());
+    let mut machine =
+        TwoLevelStateMachine::new_with_policy(TwoLevelContext::default(), Testing::default());
     assert_eq!(
         run_two_level(&mut machine, 1),
         ["first", "kid_first_fault 1", "parent_done"]
@@ -96,7 +104,8 @@ fn two_level_completion_fault_is_caught_by_the_child_exception_row() {
 
 #[test]
 fn two_level_completion_fault_walks_out_to_the_parent_exception_row() {
-    let mut machine = TwoLevelStateMachine::new(TwoLevelContext::default());
+    let mut machine =
+        TwoLevelStateMachine::new_with_policy(TwoLevelContext::default(), Testing::default());
     // "second" has no exception row, so state<TwoLevelKid> + exception<Fault>
     // handles it and exits the child.
     assert_eq!(
@@ -111,10 +120,13 @@ fn two_level_completion_fault_walks_out_to_the_parent_exception_row() {
 
 #[test]
 fn two_level_anonymous_parent_completion_fault_is_caught_by_the_parent_row() {
-    let mut machine = TwoLevelStateMachine::new(TwoLevelContext {
-        fail_parent_done: true,
-        ..TwoLevelContext::default()
-    });
+    let mut machine = TwoLevelStateMachine::new_with_policy(
+        TwoLevelContext {
+            fail_parent_done: true,
+            ..TwoLevelContext::default()
+        },
+        Testing::default(),
+    );
     assert_eq!(
         run_two_level(&mut machine, 0),
         ["first", "second", "parent_done", "parent_fault 3"]
@@ -193,15 +205,19 @@ impl DeepFaultRootStateMachineContext for DeepFaultContext {
     }
 }
 
-fn run_deep(machine: &mut DeepFaultRootStateMachine<DeepFaultContext>, fail_at: u8) -> Vec<String> {
-    machine.process_event(Deep { fail_at }).unwrap();
+fn run_deep(
+    machine: &mut DeepFaultRootStateMachine<DeepFaultContext, Testing>,
+    fail_at: u8,
+) -> Vec<String> {
+    assert_eq!(machine.process_event(Deep { fail_at }), Ok(true));
     assert!(machine.is(&DeepFaultRootStates::Idle));
     core::mem::take(&mut machine.context_mut().log)
 }
 
 #[test]
 fn three_level_completion_fault_is_caught_by_the_innermost_exception_row() {
-    let mut machine = DeepFaultRootStateMachine::new(DeepFaultContext::default());
+    let mut machine =
+        DeepFaultRootStateMachine::new_with_policy(DeepFaultContext::default(), Testing::default());
     assert_eq!(
         run_deep(&mut machine, 1),
         ["leaf_one", "leaf_fault 1", "middle_done"]
@@ -214,7 +230,8 @@ fn three_level_completion_fault_is_caught_by_the_innermost_exception_row() {
 
 #[test]
 fn three_level_completion_fault_walks_out_to_the_root_exception_row() {
-    let mut machine = DeepFaultRootStateMachine::new(DeepFaultContext::default());
+    let mut machine =
+        DeepFaultRootStateMachine::new_with_policy(DeepFaultContext::default(), Testing::default());
     // Neither "leaf two" nor the middle table has an exception row.
     assert_eq!(
         run_deep(&mut machine, 2),
@@ -228,10 +245,13 @@ fn three_level_completion_fault_walks_out_to_the_root_exception_row() {
 
 #[test]
 fn three_level_anonymous_middle_completion_fault_walks_out_to_the_root() {
-    let mut machine = DeepFaultRootStateMachine::new(DeepFaultContext {
-        fail_middle_done: true,
-        ..DeepFaultContext::default()
-    });
+    let mut machine = DeepFaultRootStateMachine::new_with_policy(
+        DeepFaultContext {
+            fail_middle_done: true,
+            ..DeepFaultContext::default()
+        },
+        Testing::default(),
+    );
     assert_eq!(
         run_deep(&mut machine, 0),
         ["leaf_one", "leaf_two", "middle_done", "root_fault 3"]
@@ -284,15 +304,21 @@ impl AsyncFaultParentStateMachineContext for AsyncFaultContext {
 #[test]
 fn async_composite_completion_fault_is_caught_by_the_parent_row() {
     smol::block_on(async {
-        let mut machine = AsyncFaultParentStateMachine::new(AsyncFaultContext::default());
-        machine.process_event(AsyncGo { fail: true }).await.unwrap();
+        let mut machine = AsyncFaultParentStateMachine::new_with_policy(
+            AsyncFaultContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(
+            machine.process_event(AsyncGo { fail: true }).await,
+            Ok(true)
+        );
         assert!(machine.is(&AsyncFaultParentStates::Idle));
         assert_eq!(machine.context().log, ["kid_work", "parent_recover 4"]);
         machine.context_mut().log.clear();
-        machine
-            .process_event(AsyncGo { fail: false })
-            .await
-            .unwrap();
+        assert_eq!(
+            machine.process_event(AsyncGo { fail: false }).await,
+            Ok(true)
+        );
         assert!(machine.is(&AsyncFaultParentStates::Idle));
         assert_eq!(machine.context().log, ["kid_work"]);
     });
@@ -324,7 +350,7 @@ impl LooseParentStateMachineContext for LooseContext {
 fn unhandled_completion_fault_still_returns_the_action_error() {
     // The only exception row is on a state that is not active, so the fault
     // is returned to the caller unchanged.
-    let mut machine = LooseParentStateMachine::new(LooseContext);
+    let mut machine = LooseParentStateMachine::new_with_policy(LooseContext, Testing::default());
     assert!(matches!(
         machine.process_event(Loose),
         Err(LooseParentError::ActionFailed(Fault(6)))
@@ -376,8 +402,11 @@ impl OrthogonalFaultStateMachineContext for OrthogonalFaultContext {
 
 #[test]
 fn orthogonal_region_completion_fault_is_caught_by_its_exception_row() {
-    let mut machine = OrthogonalFaultStateMachine::new(OrthogonalFaultContext::default());
-    machine.process_event(Tick { fail: true }).unwrap();
+    let mut machine = OrthogonalFaultStateMachine::new_with_policy(
+        OrthogonalFaultContext::default(),
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Tick { fail: true }), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalFaultStates::LeftIdle)
@@ -387,7 +416,7 @@ fn orthogonal_region_completion_fault_is_caught_by_its_exception_row() {
         ["right_tick", "left_step", "left_fault 5"]
     );
     machine.context_mut().log.clear();
-    machine.process_event(Tick { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Tick { fail: false }), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalFaultStates::LeftIdle)
@@ -454,8 +483,9 @@ impl InternalSpinStateMachineContext for SpinContext {
 
 #[test]
 fn completion_fault_recovered_by_an_internal_row_ends_process_event() {
-    let mut machine = InternalSpinStateMachine::new(SpinContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        InternalSpinStateMachine::new_with_policy(SpinContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     // The internal row left the child in "spinning"; the step ended there.
     assert!(machine.is(&InternalSpinStates::InternalSpinKid));
     assert!(machine.is_child(&InternalSpinInternalSpinKidStates::Spinning));
@@ -487,7 +517,8 @@ impl InitialSpinStateMachineContext for SpinContext {
 
 #[test]
 fn completion_fault_recovered_by_an_internal_row_ends_initialize() {
-    let mut machine = InitialSpinStateMachine::new(SpinContext::default());
+    let mut machine =
+        InitialSpinStateMachine::new_with_policy(SpinContext::default(), Testing::default());
     machine.initialize().unwrap();
     assert!(machine.is(&InitialSpinStates::InitialSpinKid));
     assert!(machine.is_child(&InitialSpinInitialSpinKidStates::Spinning));
@@ -519,8 +550,9 @@ impl SelfSpinStateMachineContext for SpinContext {
 
 #[test]
 fn completion_fault_recovered_by_a_self_targeting_row_ends_process_event() {
-    let mut machine = SelfSpinStateMachine::new(SpinContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        SelfSpinStateMachine::new_with_policy(SpinContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(machine.is(&SelfSpinStates::SelfSpinKid));
     assert!(machine.is_child(&SelfSpinSelfSpinKidStates::Spinning));
     assert_eq!((machine.context().spins, machine.context().faults), (1, 1));
@@ -549,8 +581,9 @@ impl OrthogonalSpinStateMachineContext for SpinContext {
 
 #[test]
 fn orthogonal_completion_fault_recovered_by_an_internal_row_ends_process_event() {
-    let mut machine = OrthogonalSpinStateMachine::new(SpinContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        OrthogonalSpinStateMachine::new_with_policy(SpinContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalSpinStates::LeftSpinning)
@@ -604,8 +637,9 @@ impl OrthogonalPeerStateMachineContext for PeerContext {
 
 #[test]
 fn orthogonal_no_progress_recovery_lets_a_peer_region_finish_on_process_event() {
-    let mut machine = OrthogonalPeerStateMachine::new(PeerContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        OrthogonalPeerStateMachine::new_with_policy(PeerContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalPeerStates::LeftSpinning)
@@ -653,7 +687,10 @@ impl OrthogonalInitialPeerStateMachineContext for PeerContext {
 
 #[test]
 fn orthogonal_no_progress_recovery_lets_a_peer_region_finish_on_initialize() {
-    let mut machine = OrthogonalInitialPeerStateMachine::new(PeerContext::default());
+    let mut machine = OrthogonalInitialPeerStateMachine::new_with_policy(
+        PeerContext::default(),
+        Testing::default(),
+    );
     machine.initialize().unwrap();
     assert!(matches!(
         machine.state(0),
@@ -707,8 +744,9 @@ impl NestedPeerStateMachineContext for PeerContext {
 
 #[test]
 fn nested_orthogonal_no_progress_recovery_lets_a_peer_region_finish() {
-    let mut machine = NestedPeerStateMachine::new(PeerContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        NestedPeerStateMachine::new_with_policy(PeerContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(machine.is(&NestedPeerStates::NestedPeerKid));
     assert!(matches!(
         machine.nested_peer_kid_state(0),
@@ -761,7 +799,8 @@ impl RootPeerStateMachineContext for PeerContext {
 
 #[test]
 fn orthogonal_root_no_progress_recovery_lets_a_peer_region_finish_on_initialize() {
-    let mut machine = RootPeerStateMachine::new(PeerContext::default());
+    let mut machine =
+        RootPeerStateMachine::new_with_policy(PeerContext::default(), Testing::default());
     machine.initialize().unwrap();
     assert!(machine.is_region(0, &RootPeerStates::LeftSpinning));
     assert!(machine.is_region(1, &RootPeerStates::RightDone));
@@ -809,8 +848,11 @@ impl AsyncOrthogonalPeerStateMachineContext for PeerContext {
 #[test]
 fn async_orthogonal_no_progress_recovery_lets_a_peer_region_finish() {
     smol::block_on(async {
-        let mut machine = AsyncOrthogonalPeerStateMachine::new(PeerContext::default());
-        machine.process_event(Spin).await.unwrap();
+        let mut machine = AsyncOrthogonalPeerStateMachine::new_with_policy(
+            PeerContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(machine.process_event(Spin).await, Ok(true));
         assert!(matches!(
             machine.state(0),
             Some(AsyncOrthogonalPeerStates::LeftSpinning)
@@ -872,8 +914,9 @@ impl PeerMovesOnceStateMachineContext for PeerFaultContext {
 
 #[test]
 fn orthogonal_peer_exception_move_does_not_retry_the_faulting_region() {
-    let mut machine = PeerMovesOnceStateMachine::new(PeerFaultContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine =
+        PeerMovesOnceStateMachine::new_with_policy(PeerFaultContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(machine.is_region(0, &PeerMovesOnceStates::LeftSpinning));
     assert!(machine.is_region(1, &PeerMovesOnceStates::RightTwo));
     let context = machine.context();
@@ -912,8 +955,11 @@ impl PeerAlternatesStateMachineContext for PeerFaultContext {
 
 #[test]
 fn orthogonal_alternating_peer_exception_rows_terminate() {
-    let mut machine = PeerAlternatesStateMachine::new(PeerFaultContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine = PeerAlternatesStateMachine::new_with_policy(
+        PeerFaultContext::default(),
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(machine.is_region(0, &PeerAlternatesStates::LeftSpinning));
     assert!(machine.is_region(1, &PeerAlternatesStates::RightTwo));
     let context = machine.context();
@@ -946,8 +992,11 @@ impl PeerOnlyHandlerStateMachineContext for PeerFaultContext {
 
 #[test]
 fn orthogonal_fault_handled_only_by_a_moving_peer_settles_the_faulting_region() {
-    let mut machine = PeerOnlyHandlerStateMachine::new(PeerFaultContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine = PeerOnlyHandlerStateMachine::new_with_policy(
+        PeerFaultContext::default(),
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(machine.is_region(0, &PeerOnlyHandlerStates::LeftSpinning));
     assert!(machine.is_region(1, &PeerOnlyHandlerStates::RightTwo));
     let context = machine.context();
@@ -981,7 +1030,10 @@ impl RegionKidFaultStateMachineContext for PeerFaultContext {
 
 #[test]
 fn fault_inside_a_region_composite_is_not_retried_after_a_peer_moves() {
-    let mut machine = RegionKidFaultStateMachine::new(PeerFaultContext::default());
+    let mut machine = RegionKidFaultStateMachine::new_with_policy(
+        PeerFaultContext::default(),
+        Testing::default(),
+    );
     machine.initialize().unwrap();
     assert!(machine.is_region(0, &RegionKidFaultStates::RegionKidFaultKid));
     assert!(machine.is_region(1, &RegionKidFaultStates::RightTwo));
@@ -1022,8 +1074,11 @@ impl NestedPeerMovesStateMachineContext for PeerFaultContext {
 
 #[test]
 fn nested_orthogonal_peer_exception_move_does_not_retry_the_faulting_region() {
-    let mut machine = NestedPeerMovesStateMachine::new(PeerFaultContext::default());
-    machine.process_event(Spin).unwrap();
+    let mut machine = NestedPeerMovesStateMachine::new_with_policy(
+        PeerFaultContext::default(),
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Spin), Ok(true));
     assert!(matches!(
         machine.nested_peer_moves_kid_state(0),
         Some(NestedPeerMovesNestedPeerMovesKidStates::LeftSpinning)
@@ -1063,7 +1118,8 @@ impl PeerKidMovesStateMachineContext for PeerFaultContext {
 
 #[test]
 fn peer_region_composite_exception_move_does_not_retry_the_faulting_region() {
-    let mut machine = PeerKidMovesStateMachine::new(PeerFaultContext::default());
+    let mut machine =
+        PeerKidMovesStateMachine::new_with_policy(PeerFaultContext::default(), Testing::default());
     machine.initialize().unwrap();
     assert!(machine.is_region(0, &PeerKidMovesStates::LeftSpinning));
     assert!(machine.is_region(1, &PeerKidMovesStates::PeerKidMovesKid));
@@ -1143,8 +1199,9 @@ impl ReenterStateMachineContext for ReenterContext {
 
 #[test]
 fn a_settled_site_runs_again_after_a_recovery_reenters_its_node() {
-    let mut machine = ReenterStateMachine::new(ReenterContext::default());
-    machine.process_event(Go { fail_at: 0 }).unwrap();
+    let mut machine =
+        ReenterStateMachine::new_with_policy(ReenterContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail_at: 0 }), Ok(true));
     assert!(machine.is(&ReenterStates::Done));
     let context = machine.context();
     assert_eq!((context.left, context.right, context.recoveries), (2, 2, 1));
@@ -1202,7 +1259,10 @@ impl MovedSettledStateMachineContext for MovedSettledContext {
 
 #[test]
 fn a_settled_region_moved_by_a_peer_fault_runs_its_new_completions() {
-    let mut machine = MovedSettledStateMachine::new(MovedSettledContext::default());
+    let mut machine = MovedSettledStateMachine::new_with_policy(
+        MovedSettledContext::default(),
+        Testing::default(),
+    );
     machine.initialize().unwrap();
     assert!(machine.is_region(0, &MovedSettledStates::LeftDone));
     assert!(machine.is_region(1, &MovedSettledStates::RightSpinning));

@@ -9,7 +9,7 @@ error[E0599]: the method `set_current_states` exists for struct `ProductionMachi
    | |_- method `set_current_states` not found for this struct
 ...
 19 |       machine.set_current_states(ProductionMachineStates::Ready);
-   |               ^^^^^^^^^^^^^^^^^^
+   |               ^^^^^^^^^^^^^^^^^^ method cannot be called on `ProductionMachineStateMachine<Context>` due to unsatisfied trait bounds
    |
 note: trait bound `(): TestingAccess` was not satisfied
   --> tests/compile-fail/no_policy_state_override.rs:5:1

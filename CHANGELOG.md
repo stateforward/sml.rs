@@ -4,6 +4,71 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.0 - Unreleased
+
+A scheduler policy turns a generated machine into a shared handle that many
+tasks can call. A machine is now driven, never inspected: no generated machine
+exposes its state, context, or policy slots outside `TestingPolicy`, and an
+owner learns what a step did from the outputs the step emitted, handed to its
+step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
+
+### Added
+
+- A `scheduler` policy slot (`Scheduler`, `Schedule`, `Queued`,
+  `StrictOrdering`, `SyncMachineStep`), runtime-agnostic like `sml.cpp`'s
+  scheduler contract: a scheduler for an async runtime implements these
+  traits outside sml.rs. The default `()` keeps the owned
+  `&mut self` machine. With a queued scheduler the generated machine is a
+  cloneable handle: `process_event_async(&self, event)` queues the event at
+  call time and resolves to its acceptance once it has run to completion, and
+  `try_process_event` reports `QueueFull` instead of waiting. Dropping the
+  completion does not cancel a queued event; when a bounded queue is full,
+  the event is queued only once a poll finds room, so dropping the
+  completion first discards it. Events run in FIFO order, one at a
+  time, each to completion; after `X`, queued and later events resolve to
+  `false`. A queued machine runs its initial entry when it is constructed.
+- Queued schedulers drive synchronous machines without a temporary context;
+  a machine with async guards or actions keeps its owned `async fn
+  process_event`.
+- `InlineScheduler` (std): runs the event under the machine's lock before
+  `process_event_async` returns.
+- `FifoScheduler<N>` (std): the `sml.cpp` draining model on a bounded
+  power-of-two queue. A caller that finds the machine idle runs its event and
+  drains what others queued meanwhile; callers that find it busy, including a
+  re-entrant action, only queue. When the queue is full,
+  `process_event_async` waits for room before queuing; dropping that
+  completion first discards the event.
+- A `step_hook` policy slot (`StepHook`, `Step`) and the `Emit` context trait:
+  `before_step` sees each input event; once the event has run to completion
+  the generated step drains what the step emitted from the context and hands
+  each output to `output`, then calls `after_step`. The hook never sees the
+  context. Every context implements `Emit<()>` as a no-op for the default
+  `()` hook.
+- `PolicyBundle::with_scheduler` and `with_step_hook`; `sml_policies!`
+  accepts `scheduler:` and `step_hook:`.
+
+### Changed
+
+- **Breaking:** the inherent `process_event` returns `Result<bool, Error>`:
+  `Ok(true)` when a transition handled the event, `Ok(false)` when none did
+  (formerly `Err(InvalidEvent)` or `Err(TransitionsFailed)`), and `Err` for
+  guard, action, and queue failures. `initialize` returns `Result<(), Error>`.
+- **Breaking:** every inspection method requires a `TestingPolicy` policy:
+  `state()`, `states()`, `is(...)`, region and child identity and active
+  queries, typed child state getters, `visit_current_state(s)`, child
+  visitors, `visit_current_events`, `is_terminated()` and the generated
+  `Terminated` impl, `context()`, `context_mut()`, `logger()`, `logger_mut()`,
+  `observer()`, and `observer_mut()`. A production machine's public API is
+  construction, `initialize`, `process_event`, and `Machine<E>`.
+- **Breaking:** the generated machine's storage depends on the scheduler
+  slot, so code generic over a machine's policy needs
+  `P: sml::Policies<Scheduler = ()>` to process events on the owned machine.
+- **Breaking:** `PolicyBundle` and `PolicyBundleParts` gain trailing
+  scheduler and step-hook parameters (defaulted); `Policies` gains
+  `type Scheduler`; `PolicyParts` gains `type StepHook` and `step_hook_mut`;
+  `Policies::into_parts` returns the scheduler as a third element.
+- The workspace uses Cargo's version 2 feature resolver.
+
 ## 1.5.0 - 2026-10-31
 
 ### Added

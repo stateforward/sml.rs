@@ -50,67 +50,78 @@ fn main() {
     let mut sm: BatteryStateMachine<Context, TestingPolicies> =
         BatteryStateMachine::new_with_policy(Context, TestingPolicies::default());
 
-    assert!(matches!(sm.state(), &BatteryStates::Idle));
+    assert!(sm.is(&BatteryStates::Idle));
 
     let r = sm.process_event(BatteryEvents::Charge);
-    assert!(matches!(r, Ok(&BatteryStates::Charging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Charging));
 
     let r = sm.process_event(BatteryEvents::Discharge);
-    assert!(matches!(r, Ok(&BatteryStates::Discharging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Discharging));
 
     let r = sm.process_event(BatteryEvents::Charge);
-    assert!(matches!(r, Ok(&BatteryStates::Charging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Charging));
 
     let r = sm.process_event(BatteryEvents::ChargeComplete);
-    assert!(matches!(r, Ok(&BatteryStates::Charged)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Charged));
 
     let r = sm.process_event(BatteryEvents::Charge);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Charged));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Charged));
 
     let r = sm.process_event(BatteryEvents::Discharge);
-    assert!(matches!(r, Ok(&BatteryStates::Discharging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Discharging));
 
     let r = sm.process_event(BatteryEvents::DischargeComplete);
-    assert!(matches!(r, Ok(&BatteryStates::Discharged)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Discharged));
 
     let r = sm.process_event(BatteryEvents::Discharge);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Discharged));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Discharged));
 
     sm.set_current_states(BatteryStates::Idle);
     let r = sm.process_event(BatteryEvents::FaultDetected);
-    assert!(matches!(r, Ok(&BatteryStates::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Fault));
 
     sm.set_current_states(BatteryStates::Charging);
     let r = sm.process_event(BatteryEvents::FaultDetected);
-    assert!(matches!(r, Ok(&BatteryStates::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Fault));
 
     sm.set_current_states(BatteryStates::Charged);
     let r = sm.process_event(BatteryEvents::FaultDetected);
-    assert!(matches!(r, Ok(&BatteryStates::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Fault));
 
     sm.set_current_states(BatteryStates::Discharging);
     let r = sm.process_event(BatteryEvents::FaultDetected);
-    assert!(matches!(r, Ok(&BatteryStates::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Fault));
 
     sm.set_current_states(BatteryStates::Discharged);
     let r = sm.process_event(BatteryEvents::FaultDetected);
-    assert!(matches!(r, Ok(&BatteryStates::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::Charge);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::Discharge);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::ChargeComplete);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::DischargeComplete);
-    assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&BatteryStates::Fault));
 }

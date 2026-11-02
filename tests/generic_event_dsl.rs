@@ -34,18 +34,20 @@ impl GenericOwnedStateMachineContext for OwnedContext {
 
 #[test]
 fn generic_owned_event_is_statically_dispatched_for_multiple_monomorphizations() {
-    let mut machine = GenericOwnedStateMachine::new(OwnedContext::default());
+    let mut machine = GenericOwnedStateMachine::new_with_policy(
+        OwnedContext::default(),
+        TestingPolicies::default(),
+    );
 
-    machine.process_event(Owned(7_u32)).unwrap();
-    machine.process_event(Owned(String::from("typed"))).unwrap();
+    assert!(machine.process_event(Owned(7_u32)).unwrap());
+    assert!(machine.process_event(Owned(String::from("typed"))).unwrap());
 
     assert_eq!(machine.context().accepted, 2);
 
     let event = GenericOwnedEvents::from(Owned(11_u16));
-    assert!(<GenericOwnedStateMachine<_> as Machine<_>>::process_event(
-        &mut machine,
-        event,
-    ));
+    assert!(<GenericOwnedStateMachine<_, TestingPolicies> as Machine<
+        _,
+    >>::process_event(&mut machine, event,));
     assert_eq!(machine.context().accepted, 3);
 }
 
@@ -78,12 +80,15 @@ impl GenericBorrowedStateMachineContext for BorrowedContext {
 
 #[test]
 fn lifetime_parameterized_event_borrows_only_for_dispatch() {
-    let mut machine = GenericBorrowedStateMachine::new(BorrowedContext::default());
+    let mut machine = GenericBorrowedStateMachine::new_with_policy(
+        BorrowedContext::default(),
+        TestingPolicies::default(),
+    );
     let first = String::from("first");
     let second = [1_u8, 2, 3];
 
-    machine.process_event(Borrowed(&first)).unwrap();
-    machine.process_event(Borrowed(&second[..])).unwrap();
+    assert!(machine.process_event(Borrowed(&first)).unwrap());
+    assert!(machine.process_event(Borrowed(&second[..])).unwrap());
 
     assert_eq!(machine.context().inspected, 2);
     assert_eq!(first, "first");
@@ -112,8 +117,11 @@ impl ConcreteStaticStateMachineContext for StaticContext {
 
 #[test]
 fn concrete_static_lifetime_is_not_promoted_to_a_generic_parameter() {
-    let mut machine = ConcreteStaticStateMachine::new(StaticContext::default());
-    machine.process_event(StaticBorrow("static")).unwrap();
+    let mut machine = ConcreteStaticStateMachine::new_with_policy(
+        StaticContext::default(),
+        TestingPolicies::default(),
+    );
+    assert!(machine.process_event(StaticBorrow("static")).unwrap());
     assert_eq!(machine.context().inspected, 1);
 }
 
@@ -174,13 +182,16 @@ impl GenericOperationStateMachineContext for OperationContext {
 
 #[test]
 fn mutable_borrowed_typed_operation_completes_synchronously() {
-    let mut machine = GenericOperationStateMachine::new(OperationContext::default());
+    let mut machine = GenericOperationStateMachine::new_with_policy(
+        OperationContext::default(),
+        TestingPolicies::default(),
+    );
     let mut operation = Operation {
         input: String::from("answer"),
         result: None,
     };
 
-    machine.process_event(&mut operation).unwrap();
+    assert!(machine.process_event(&mut operation).unwrap());
 
     assert_eq!(operation.result.as_deref(), Some("answer"));
     assert_eq!(machine.context().completed, 1);
@@ -215,7 +226,7 @@ impl GenericConstStateMachineContext for ConstContext {
 #[test]
 fn const_generic_event_propagates_bounds_and_where_clause() {
     let mut machine = GenericConstStateMachine::new(ConstContext);
-    machine.process_event(ConstPacket([1_u8, 2, 3, 4])).unwrap();
+    assert!(machine.process_event(ConstPacket([1_u8, 2, 3, 4])).unwrap());
 }
 
 #[derive(Clone)]
@@ -242,8 +253,11 @@ impl GenericCompletionStateMachineContext for CompletionContext {
 
 #[test]
 fn generic_owned_event_propagates_into_origin_aware_completion() {
-    let mut machine = GenericCompletionStateMachine::new(CompletionContext::default());
-    machine.process_event(CompletionEvent(42_u32)).unwrap();
+    let mut machine = GenericCompletionStateMachine::new_with_policy(
+        CompletionContext::default(),
+        TestingPolicies::default(),
+    );
+    assert!(machine.process_event(CompletionEvent(42_u32)).unwrap());
 
     assert!(machine.is_terminated());
     assert_eq!(machine.context().finished, 1);
@@ -293,14 +307,16 @@ impl EventSpecificCompletionStateMachineContext for EventSpecificCompletionConte
 #[test]
 fn completion_origin_keeps_only_the_lifetimes_used_by_its_variants() {
     let value = String::from("origin");
-    let mut machine =
-        EventSpecificCompletionStateMachine::new(EventSpecificCompletionContext::default());
-    machine
+    let mut machine = EventSpecificCompletionStateMachine::new_with_policy(
+        EventSpecificCompletionContext::default(),
+        TestingPolicies::default(),
+    );
+    assert!(machine
         .process_event(SecondOrigin(&value, [1_u8; 2]))
-        .unwrap();
-    machine
+        .unwrap());
+    assert!(machine
         .process_event(FirstOrigin(&value, [0_u8; 4]))
-        .unwrap();
+        .unwrap());
 
     assert!(machine.is_terminated());
     assert_eq!(machine.context().finished, 1);
@@ -343,14 +359,14 @@ fn temporary_context_generics_propagate_to_non_generic_callbacks() {
 
     machine.initialize().unwrap();
 
-    machine
+    assert!(machine
         .process_event(&mut values, TemporaryContextEvent(String::from("value")))
-        .unwrap();
+        .unwrap());
     assert_eq!(values, ["value"]);
 
-    machine
+    assert!(machine
         .process_event(&mut values, GenericTemporaryContextEvents::<String>::Reset)
-        .unwrap();
+        .unwrap());
     assert!(values.is_empty());
 }
 
@@ -448,16 +464,19 @@ impl GenericTemporaryLifecycleStateMachineContext for TemporaryLifecycleContext 
 
 #[test]
 fn temporary_context_generics_propagate_through_initialize_and_exception_paths() {
-    let mut machine = GenericTemporaryLifecycleStateMachine::new(TemporaryLifecycleContext);
+    let mut machine = GenericTemporaryLifecycleStateMachine::new_with_policy(
+        TemporaryLifecycleContext,
+        TestingPolicies::default(),
+    );
     let mut values = vec![1_u32];
 
     machine.initialize(&mut values).unwrap();
     assert!(values.is_empty());
     assert!(machine.is(&GenericTemporaryLifecycleStates::Idle));
 
-    machine
+    assert!(machine
         .process_event(&mut values, TemporaryLifecycleEvent(7_u32))
-        .unwrap();
+        .unwrap());
     assert!(machine.is_terminated());
 }
 
@@ -477,14 +496,17 @@ impl GenericAnonymousCompletionStateMachineContext for AnonymousCompletionContex
 
 #[test]
 fn anonymous_initialization_does_not_require_event_family_inference() {
-    let mut machine = GenericAnonymousCompletionStateMachine::new(AnonymousCompletionContext);
+    let mut machine = GenericAnonymousCompletionStateMachine::new_with_policy(
+        AnonymousCompletionContext,
+        TestingPolicies::default(),
+    );
 
     machine.initialize().unwrap();
     assert!(machine.is(&GenericAnonymousCompletionStates::Ready));
 
-    machine
+    assert!(machine
         .process_event(CompletionAfterInitialization(7_u32))
-        .unwrap();
+        .unwrap());
     assert!(machine.is_terminated());
 }
 
@@ -517,9 +539,9 @@ fn event_specific_lifetimes_are_collected_from_nested_type_arguments() {
     let value = 9_u8;
     let mut machine = GenericNestedLifetimeStateMachine::new(NestedLifetimeContext);
 
-    machine
+    assert!(machine
         .process_event(NestedLifetimeEvent(Some(&value), String::from("nested")))
-        .unwrap();
+        .unwrap());
 }
 
 pub struct HigherRankedEvent<F, T>(F, std::marker::PhantomData<T>);
@@ -554,9 +576,12 @@ fn higher_ranked_lifetimes_remain_bound_inside_the_event_type() {
 
     let event: HigherRankedEvent<fn(&u32), u32> =
         HigherRankedEvent(observe, std::marker::PhantomData);
-    let mut machine = GenericHigherRankedStateMachine::new(HigherRankedContext);
+    let mut machine = GenericHigherRankedStateMachine::new_with_policy(
+        HigherRankedContext,
+        TestingPolicies::default(),
+    );
 
-    machine.process_event(event).unwrap();
+    assert!(machine.process_event(event).unwrap());
     assert!(machine.is_terminated());
 }
 
@@ -612,10 +637,12 @@ impl GenericCompletionLifetimeBoundStateMachineContext for CompletionLifetimeBou
 #[test]
 fn completion_callbacks_drop_bounds_for_omitted_event_specific_lifetimes() {
     let value = 11_u32;
-    let mut machine =
-        GenericCompletionLifetimeBoundStateMachine::new(CompletionLifetimeBoundContext);
+    let mut machine = GenericCompletionLifetimeBoundStateMachine::new_with_policy(
+        CompletionLifetimeBoundContext,
+        TestingPolicies::default(),
+    );
 
-    machine.process_event(FirstLifetimeEvent(&value)).unwrap();
+    assert!(machine.process_event(FirstLifetimeEvent(&value)).unwrap());
     assert!(machine.is_terminated());
 }
 
@@ -655,6 +682,6 @@ fn callbacks_drop_inline_bounds_for_omitted_event_lifetimes() {
     let second = 2_u32;
     let mut machine = GenericInlineLifetimeBoundStateMachine::new(InlineLifetimeBoundContext);
 
-    machine.process_event(InlineFirst(&first)).unwrap();
-    machine.process_event(InlineSecond(&second)).unwrap();
+    assert!(machine.process_event(InlineFirst(&first)).unwrap());
+    assert!(machine.process_event(InlineSecond(&second)).unwrap());
 }

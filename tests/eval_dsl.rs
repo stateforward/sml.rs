@@ -1,5 +1,9 @@
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 pub struct Run {
     enabled: bool,
 }
@@ -38,12 +42,12 @@ impl EvalDslStateMachineContext for Context {
 
 #[test]
 fn cpp_eval_action_preserves_sequence_order_and_guarding() {
-    let mut enabled = EvalDslStateMachine::new(Context::default());
-    enabled.process_event(Run { enabled: true }).unwrap();
+    let mut enabled = EvalDslStateMachine::new_with_policy(Context::default(), Testing::default());
+    assert_eq!(enabled.process_event(Run { enabled: true }), Ok(true));
     assert_eq!(enabled.context().order, ["before", "conditional", "after"]);
 
-    let mut disabled = EvalDslStateMachine::new(Context::default());
-    disabled.process_event(Run { enabled: false }).unwrap();
+    let mut disabled = EvalDslStateMachine::new_with_policy(Context::default(), Testing::default());
+    assert_eq!(disabled.process_event(Run { enabled: false }), Ok(true));
     assert_eq!(disabled.context().order, ["before", "after"]);
 }
 
@@ -81,8 +85,9 @@ impl AsyncEvalDslStateMachineContext for AsyncContext {
 #[test]
 fn eval_supports_async_guards_and_actions() {
     smol::block_on(async {
-        let mut sm = AsyncEvalDslStateMachine::new(AsyncContext::default());
-        sm.process_event(AsyncRun).await.unwrap();
+        let mut sm =
+            AsyncEvalDslStateMachine::new_with_policy(AsyncContext::default(), Testing::default());
+        assert_eq!(sm.process_event(AsyncRun).await, Ok(true));
         assert_eq!(sm.context().actions, 2);
     });
 }

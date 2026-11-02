@@ -19,14 +19,14 @@ the default `NoPolicy` path.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.5" }
+sml = { package = "stateforward-sml", version = "2.0" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "2.0", features = ["graphviz"] }
 ```
 
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
@@ -41,7 +41,7 @@ owner-provided synchronization boundary.
 ## Quick start
 
 ```rust
-use sml::sml;
+use sml::{sml, sml_policies, Emit, StepHook};
 
 pub struct OpenClose;
 pub struct CdDetected;
@@ -58,46 +58,63 @@ sml! {
     }
 }
 
+/// Actions record what they did; the step hook receives it as data.
 #[derive(Default)]
 struct Context {
-    actions: usize,
+    emitted: Vec<&'static str>,
 }
 
 impl PlayerStateMachineContext for Context {
     fn open_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("drawer opened");
         Ok(())
     }
 
     fn close_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("drawer closed");
         Ok(())
     }
 
     fn start_playback(&mut self, _: &Play) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("playing");
         Ok(())
     }
 
     fn stop_playback(&mut self, _: &Stop) -> Result<(), ()> {
-        self.actions += 1;
+        self.emitted.push("stopped");
         Ok(())
     }
 }
 
-fn main() -> Result<(), PlayerError> {
-    let mut player = PlayerStateMachine::new(Context::default());
+impl Emit<&'static str> for Context {
+    fn drain_outputs(&mut self, sink: impl FnMut(&'static str)) {
+        self.emitted.drain(..).for_each(sink);
+    }
+}
 
-    assert!(player.is(&PlayerStates::Empty));
-    player.process_event(OpenClose)?;
-    player.process_event(OpenClose)?;
-    player.process_event(CdDetected)?;
-    player.process_event(Play)?;
-    player.process_event(Stop)?;
+#[derive(Default)]
+struct Print;
 
-    assert!(player.is_terminated());
-    assert_eq!(player.context().actions, 4);
-    Ok(())
+impl<L> StepHook<L, PlayerEvents> for Print {
+    type Output = &'static str;
+
+    fn output(&mut self, _logger: &mut L, output: &'static str) {
+        println!("{output}");
+    }
+}
+
+sml_policies!(Production { step_hook: Print });
+
+fn main() {
+    let mut player = PlayerStateMachine::new_with_policy(Context::default(), Production::default());
+
+    assert_eq!(player.process_event(OpenClose), Ok(true));
+    assert_eq!(player.process_event(OpenClose), Ok(true));
+    assert_eq!(player.process_event(CdDetected), Ok(true));
+    assert_eq!(player.process_event(Play), Ok(true));
+    assert_eq!(player.process_event(Stop), Ok(true));
+    // `X` takes no more events.
+    assert_eq!(player.process_event(Play), Ok(false));
 }
 ```
 
@@ -139,32 +156,36 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 <!-- public methods emitted by the flat, orthogonal, and composite generators -->
 
-All generated machines provide construction, context access, event processing,
-and termination queries. The state API follows the machine shape:
+A generated machine is driven, not inspected. Its public API is construction,
+`initialize()`, and `process_event`; state and context can change under any
+reader, so nothing that reads them is public. Anything an owner needs to know
+it asks with an event and learns from what the step emits (see
+[Step hooks](#step-hooks)). The inspection API exists only for tests, behind a
+policy whose `testing` slot is `TestingPolicy`:
 
 <!-- public event-processing traits from src/lib.rs -->
 
-Synchronous flat and composite machines implement `Machine<E>` with
-`process_event` and `process_event_async`. Both report event acceptance as
-`bool`, matching the `sml.cpp` `co_sm` contract. The latter returns an
-allocation-free ready future after the uncontended inline run-to-completion fast
-path. Detailed Rust errors remain available from the generated machine's
-inherent `process_event` method. Async callbacks are a separate concern.
-Orthogonal, async-callback, and temporary-context machines retain their
-shape-specific inherent processing APIs.
+The inherent `process_event` returns `Result<bool, Error>`: `Ok(true)` when a
+transition handled the event, `Ok(false)` when none did, and `Err` when a
+guard, action, or bounded queue failed. Synchronous flat and composite
+machines also implement `Machine<E>` with `process_event` and
+`process_event_async`, both reporting acceptance as `bool`; the latter returns
+an allocation-free ready future. Async callbacks are a separate concern from
+scheduling: an async-callback machine's inherent `process_event` is itself
+`async`.
 
-| Shape | Main state API |
+| Shape | With `TestingPolicy` only |
 |---|---|
-| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Orthogonal | `states()`, `state(region)`, `is_region(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Composite | Parent state methods plus typed child state, active, setter, visitor, and `set_current_states(...)` with `TestingPolicy` |
+| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `visit_current_events(...)`, `is_terminated()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Orthogonal | `states()`, `state(region)`, `is(...)`, `is_region(...)`, `visit_current_events(...)`, `is_terminated()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Composite | Parent and typed child state, identity, active, and visitor queries, `is_terminated()`, `context()`, `logger()`, `observer()`, setters |
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
 completion stabilization after every handled event.
 
-The machine owner can query the static event types reachable from its current
-state with `visit_current_events`:
+A test can query the static event types reachable from the current state with
+`visit_current_events`:
 
 ```rust
 use core::any::TypeId;
@@ -188,8 +209,7 @@ ancestors and reports the union of active orthogonal regions, once per static
 payload type. Catch-all unexpected transitions are omitted; specific typed
 unexpected transitions are included. The generated `Events::EVENT_NAMES`
 constant provides the corresponding deterministic variant-name table. The
-visitor API is intended for an actor or other owner to query its own machine;
-it is not a general introspection facility and is not exposed through events or
+visitor API is a testing facility; it is not exposed through events or
 messages. Payloads containing non-static borrowed lifetimes are not reported,
 because `TypeId` requires a `'static` type.
 
@@ -202,8 +222,9 @@ payload state returns that payload value instead.
 Generated machines take an optional policy bundle:
 
 ```rust
-use sml::{sml, sml_policies, Logger, PolicyBundle, TestingPolicy};
+use sml::{sml, sml_policies, Logger, TestingPolicy};
 
+#[derive(Default)]
 struct Trace;
 impl Logger for Trace {}
 
@@ -214,17 +235,7 @@ sml_policies!(TestPolicies {
 
 // The default constructor remains the zero-cost NoPolicy path. A custom
 // bundle is supplied explicitly:
-let machine = MyStateMachine::new_with_policy(
-    context,
-    TestPolicies::new(
-        Trace,
-        (),
-        (),
-        TestingPolicy,
-        sml::DefaultQueuePolicy,
-        sml::DefaultQueuePolicy,
-    ),
-);
+let machine = MyStateMachine::new_with_policy(context, TestPolicies::default());
 ```
 
 `NoPolicy` is the default and all of its slots are zero-sized. Its generated
@@ -252,8 +263,9 @@ no-op and adds no allocation. A custom lock must keep its guard scoped to the
 lock state itself; generated machines may mutate the other policy slots while
 the guard is held.
 
-`TestingPolicy` opts a machine into the `set_current_states` helper;
-production `NoPolicy` machines do not expose that state mutation method. The
+`TestingPolicy` opts a machine into the inspection API (state, identity,
+visitor, termination, context, and policy-slot queries) and the
+`set_current_states` helper; production machines expose none of them. The
 capability marker is sealed, so a custom production policy cannot opt itself
 into state mutation. Flat machines pass one state; orthogonal machines pass
 one state per region.
@@ -271,6 +283,87 @@ directly.
 These policies are for the machine's owner to configure and query its own
 machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
+
+### Schedulers
+
+The `scheduler` slot decides who runs a machine's events. The default `()`
+keeps the owned machine above. A queued scheduler turns the generated machine
+into a cloneable handle that many tasks can call through `&self`:
+
+```rust
+use sml::{sml_policies, FifoScheduler};
+
+sml_policies!(Shared { scheduler: FifoScheduler<1024> });
+
+let machine = MyStateMachine::new_with_policy(context, Shared::default());
+let handle = machine.clone();
+std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
+let accepted: bool = machine.process_event_async(Stop).await;
+```
+
+`process_event_async` queues the event before it returns and resolves to its
+acceptance once the event has run to completion, including the machine's own
+`process`/`defer` queues and completion transitions. Dropping the completion
+does not cancel a queued event. The exception is a full bounded queue
+(`FifoScheduler<N>`): the completion then holds the event and queues it on
+the first poll that finds room, so dropping it before then discards the
+event. `try_process_event` returns `QueueFull` instead of waiting. Events run in FIFO order, one at a
+time, which is `sml.cpp`'s `strict_ordering_scheduler_contract`
+(`StrictOrdering`). Once the machine reaches `X`, queued and later events
+resolve to `false`. A queued machine runs its initial entry when constructed,
+as `sml.cpp` does.
+
+| Scheduler | Feature | Runs an event |
+|---|---|---|
+| `InlineScheduler` | `std` | In the caller, under the machine's lock, before `process_event_async` returns |
+| `FifoScheduler<N>` | `std` | `sml.cpp`'s draining model: a caller that finds the machine idle runs its event and drains what others queued meanwhile; a caller that finds it busy, including a re-entrant action, only queues. `N` bounds the queue (power of two) |
+
+Queued schedulers drive synchronous machines without a temporary context. A
+scheduled machine is a handle whose only operations are `process_event_async`,
+`try_process_event`, and `Clone`.
+
+sml.rs ships no async-runtime scheduler, as `sml.cpp` ships none: like
+`InlineScheduler` and `FifoScheduler`, a scheduler for a runtime implements
+`Scheduler` (the storage it keeps the machine in), `Schedule` (placing the
+machine there and running its initial entry), `Queued` (queuing an event and
+returning its completion), and `StrictOrdering`, driving the machine through
+`SyncMachineStep`. A task-per-machine scheduler, for instance, keeps a channel
+in its cell, spawns a task that owns the machine in `cell`, and sends a boxed
+`FnOnce(&mut M) -> bool` per event from `submit`.
+
+### Step hooks
+
+The `step_hook` slot is how an owner learns what a step did. Actions record
+what they emit in the context, which implements `Emit<Output>`; after the
+event has run to completion the generated step drains those outputs and hands
+each to `StepHook::output`, then calls `after_step` with a `Step` (event name,
+acceptance, termination), all before a scheduler resolves the caller's
+completion. `before_step` sees the input event first, so one hook can journal
+the input, collect the outputs as data, and act on them. The hook never sees
+the context. It is a separate slot because `Logger` only receives static
+names, never event payloads or outputs.
+
+```rust
+use sml::{Emit, Step, StepHook};
+
+impl Emit<Command> for ProjectContext {
+    fn drain_outputs(&mut self, sink: impl FnMut(Command)) {
+        self.commands.drain(..).for_each(sink);
+    }
+}
+
+impl<L> StepHook<L, ProjectEvents> for Journal {
+    type Output = Command;
+
+    fn before_step(&mut self, _logger: &mut L, event: &ProjectEvents) { /* record the input */ }
+    fn output(&mut self, _logger: &mut L, command: Command) { self.pending.push(command); }
+    fn after_step(&mut self, _logger: &mut L, step: Step) { /* journal, then send `pending` */ }
+}
+```
+
+Every context implements `Emit<()>` as a no-op, which the default `()` hook
+uses. A context that buffers outputs needs a hook whose `Output` matches, or
+its buffer is never drained.
 
 ## State and event data
 
@@ -399,7 +492,8 @@ the 25 programs under `../sml.cpp/example` in
 - [Capability parity matrix](docs/sml-cpp-parity.md)
 - [Example-by-example translation audit](docs/sml-cpp-examples.md)
 - [Migrating from 0.8 to 1.0](docs/migrating-to-1.0.md)
-- [1.x stability policy](docs/stability.md)
+- [Migrating from 1.x to 2.0](docs/migrating-to-2.0.md)
+- [Stability policy](docs/stability.md)
 
 Rust-specific mappings, including trait methods instead of inline lambdas,
 context fields instead of type-based dependency injection, `Result` instead of
@@ -461,8 +555,41 @@ clang++ -std=c++20 -O3 -DNDEBUG -march=native \
 In 21 alternating runs, Rust completed the async RTC workload in a 2.543 ms
 median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
 405.3% higher throughput. This measures the uncontended ready path only.
-Scheduler queueing and suspended RTC completion require a separate benchmark
-when that adapter is implemented.
+
+### Scheduler policies
+
+The same workload runs through each scheduler policy; every caller awaits its
+event's completion before sending the next. The `inline` and `fifo` modes of
+`player_benchmark` measure 11 million events:
+
+```bash
+cargo run --release --features std --example player_benchmark -- inline
+cargo run --release --features std --example player_benchmark -- fifo
+```
+
+[`benchmarks/scheduler_compare`](benchmarks/scheduler_compare) runs the
+workload head to head with hsm.rs's queued `HSM::dispatch` (from a sibling
+`hsm/hsm.rs` checkout, one no-op effect per transition, mirroring the sml.rs
+actions). It is a separate workspace so hsm.rs stays out of this crate's
+dependency gates:
+
+```bash
+cargo run --release --manifest-path benchmarks/scheduler_compare/Cargo.toml
+```
+
+Medians of 7 runs of 1.1 million events on an Apple M3 Max with Rust 1.98
+(2026-11-01):
+
+| Path | ns/event |
+|---|---:|
+| Owned machine, `Machine::process_event_async` (no scheduler) | 1.9 |
+| `InlineScheduler` | 5.0 |
+| `FifoScheduler<1024>` | 15.9 |
+| hsm.rs `dispatch`, current-thread runtime | 263.7 |
+| hsm.rs `dispatch`, 2 workers, caller is a task | 258.8 |
+
+Both sml.rs schedulers run the event in the calling thread, like hsm.rs's
+`dispatch`; the difference is the per-event cost of the queue and dispatch.
 
 Reproduce both comparisons, including alternating order, raw samples, platform,
 and toolchain capture, with:
