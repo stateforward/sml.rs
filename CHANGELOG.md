@@ -4,7 +4,7 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 2.0.0 - Unreleased
+## 2.0.0 - 2026-11-02
 
 This is a major release; see the [2.0 migration guide](docs/migrating-to-2.0.md).
 
