@@ -62,21 +62,45 @@ impl Observer for () {}
 
 /// Runs around each event a generated machine processes.
 ///
-/// `before_step` sees the event before the machine does; `after_step` runs
-/// once the event has run to completion, before a scheduler resolves the
-/// caller's completion. Both receive the machine's context and its
-/// [`Logger`] slot, so one hook type can journal each step and drain the
-/// outputs a context collected. The hook is a separate slot rather than a
-/// [`Logger`] method because the logger only sees static names, never the
-/// context or the event payload.
-pub trait StepHook<C, L, E> {
+/// `before_step` sees the input event before the machine does. After the
+/// event has run to completion, the generated step drains what the step
+/// emitted from the context through [`Emit`] and hands each output to
+/// `output`, then calls `after_step` with a [`Step`](crate::Step) summary, all
+/// before a scheduler resolves the caller's completion. The hook never sees
+/// the context: an owner journals the input, collects the outputs as data, and
+/// acts on them. Both callbacks receive the [`Logger`] slot so one hook type
+/// can attach the step's trace. The hook is its own slot because a logger only
+/// receives static names, never an event payload or an output.
+pub trait StepHook<L, E> {
+    /// What one step emits, drained from a context implementing
+    /// [`Emit<Self::Output>`](Emit).
+    type Output;
     /// Whether generated machines call this hook. Only the `()` hook sets it
     /// to `false`, which removes the calls and their arguments entirely.
     const ACTIVE: bool = true;
     /// Called before `event` enters processing.
-    fn before_step(&mut self, _context: &mut C, _logger: &mut L, _event: &E) {}
-    /// Called after the event has run to completion.
-    fn after_step(&mut self, _context: &mut C, _logger: &mut L, _step: crate::Step) {}
+    fn before_step(&mut self, _logger: &mut L, _event: &E) {}
+    /// Called once per output the step emitted, in emit order.
+    fn output(&mut self, _logger: &mut L, _output: Self::Output) {}
+    /// Called after the event has run to completion and its outputs drained.
+    fn after_step(&mut self, _logger: &mut L, _step: crate::Step) {}
+}
+
+/// A context that buffers what its actions emit, drained after each step.
+///
+/// Actions push outputs into the context; the generated step drains them into
+/// the [`StepHook`] after run-to-completion. A context that emits must be
+/// paired with a hook whose `Output` matches; with the default `()` hook
+/// nothing is drained, so such a buffer would only grow. Every context
+/// implements `Emit<()>` as a no-op.
+pub trait Emit<O> {
+    /// Removes each buffered output, in emit order, and passes it to `sink`.
+    fn drain_outputs(&mut self, sink: impl FnMut(O));
+}
+
+impl<C: ?Sized> Emit<()> for C {
+    #[inline]
+    fn drain_outputs(&mut self, _sink: impl FnMut(())) {}
 }
 
 /// Selects the generated event-routing path.
@@ -581,7 +605,7 @@ pub trait PolicyParts: policy_parts::Sealed {
     /// Testing slot.
     type Testing: Testing;
     /// Step-hook slot. Generated machines require it to implement
-    /// [`StepHook<Context, Logger, Events>`](StepHook).
+    /// [`StepHook<Logger, Events>`](StepHook).
     type StepHook;
     /// Deferred queue slot.
     type DeferQueue<E>: Queue<E>;

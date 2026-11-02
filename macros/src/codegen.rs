@@ -1551,10 +1551,17 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let step_hook_bound: syn::WherePredicate = parse_quote! {
         <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook:
             ::sml::StepHook<
-                #context_type_ident,
                 <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
                 #events_type_name #event_type_generics
             >
+    };
+    let emit_bound: syn::WherePredicate = parse_quote! {
+        #context_type_ident: ::sml::Emit<
+            <<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
+                <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_type_name #event_type_generics
+            >>::Output
+        >
     };
     let unscheduled_bound: syn::WherePredicate = parse_quote! {
         #policy_type_ident: ::sml::Policies<Scheduler = ()>
@@ -1563,6 +1570,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         let predicates = &mut machine_impl_generics.make_where_clause().predicates;
         predicates.push(unscheduled_bound.clone());
         predicates.push(step_hook_bound.clone());
+        predicates.push(emit_bound.clone());
     }
     let (machine_impl_generics, _, machine_impl_where_clause) =
         machine_impl_generics.split_for_impl();
@@ -1570,7 +1578,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     step_generics
         .make_where_clause()
         .predicates
-        .push(step_hook_bound.clone());
+        .extend([step_hook_bound.clone(), emit_bound.clone()]);
     let (step_impl_generics, _, step_where_clause) = step_generics.split_for_impl();
     let external_event_conversions: Vec<_> = external_events
         .iter()
@@ -1894,7 +1902,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #step_where_clause
         {
             let event: #events_type_name #event_type_generics = event.into();
-            if !<#step_hook_type as ::sml::StepHook<#context_type_ident, #logger_type, #events_type_name #event_type_generics>>::ACTIVE {
+            if !<#step_hook_type as ::sml::StepHook<#logger_type, #events_type_name #event_type_generics>>::ACTIVE {
                 return Self::__sml_accepted(
                     self.__sml_process_event_unlocked(#temporary_context_call event)#step_await,
                 );
@@ -1902,7 +1910,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             let event_name = ::sml::EventName::name(&event);
             {
                 let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
-                ::sml::StepHook::before_step(hook, &mut self.context, logger, &event);
+                ::sml::StepHook::before_step(hook, logger, &event);
             }
             let result = Self::__sml_accepted(
                 self.__sml_process_event_unlocked(#temporary_context_call event)#step_await,
@@ -1913,7 +1921,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 terminated: self.is_terminated(),
             };
             let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
-            ::sml::StepHook::after_step(hook, &mut self.context, logger, step);
+            ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+            });
+            ::sml::StepHook::after_step(hook, logger, step);
             result
         }
 
@@ -2031,12 +2042,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
             ::sml::Terminated for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         where
-            #policy_type_ident: ::sml::Policies,
-            <#policy_type_ident as ::sml::Policies>::Scheduler: ::sml::Schedule<#core_type>,
+            #policy_type_ident: ::sml::Policies<Scheduler = ()>,
+            <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
         {
             #[inline(always)]
             fn is_terminated(&self) -> bool {
-                <<#policy_type_ident as ::sml::Policies>::Scheduler as ::sml::Schedule<#core_type>>::is_terminated(&self.core)
+                self.core.is_terminated()
             }
         }
 
@@ -2064,7 +2076,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
                 ::sml::SyncMachineStep for #core_type
             where
-                #step_hook_bound
+                #step_hook_bound,
+                #emit_bound
             {
                 type Event = #events_type_name #event_type_generics;
 
@@ -2084,7 +2097,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             where
                 #policy_type_ident: ::sml::Policies,
                 <#policy_type_ident as ::sml::Policies>::Scheduler: ::sml::Queued<#core_type>,
-                #step_hook_bound
+                #step_hook_bound,
+                #emit_bound
             {
                 /// Queues `event` now and resolves to its acceptance once it
                 /// has run to completion. Dropping the completion does not
@@ -2129,6 +2143,36 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
     };
     let testing_accessors = quote! {
+        /// Returns true when the active state has the same variant as
+        /// `expected`. State payloads are intentionally ignored, matching
+        /// `sml.cpp`'s state-identity query.
+        #[inline(always)]
+        pub fn is(&self, expected: &#states_type_name <#state_lifetimes>) -> bool {
+            self.core.state == *expected
+        }
+
+        /// Returns true when the machine is in its terminal `X` state.
+        #[inline(always)]
+        pub fn is_terminated(&self) -> bool {
+            self.core.is_terminated()
+        }
+
+        /// Invokes a visitor for the currently active state.
+        #[inline(always)]
+        pub fn visit_current_state<R>(
+            &self,
+            visitor: impl FnOnce(&#states_type_name <#state_lifetimes>) -> R
+        ) -> R {
+            visitor(&self.core.state)
+        }
+
+        /// Visits each static typed event payload with a transition from the
+        /// current state. Guards and context are not observed.
+        #[inline(always)]
+        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+            self.core.__sml_visit_current_events(visitor)
+        }
+
         /// Borrows the configured logger.
         #[inline(always)]
         pub fn logger(&self) -> &<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
@@ -2236,37 +2280,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
     };
 
-    let public_state_api = quote! {
-        /// Returns true when the active state has the same variant as
-        /// `expected`. State payloads are intentionally ignored, matching
-        /// `sml.cpp`'s state-identity query.
-        #[inline(always)]
-        pub fn is(&self, expected: &#states_type_name <#state_lifetimes>) -> bool {
-            self.core.state == *expected
-        }
-
-        /// Returns true when the machine is in its terminal `X` state.
-        #[inline(always)]
-        pub fn is_terminated(&self) -> bool {
-            self.core.is_terminated()
-        }
-
-        /// Invokes a visitor for the currently active state.
-        #[inline(always)]
-        pub fn visit_current_state<R>(
-            &self,
-            visitor: impl FnOnce(&#states_type_name <#state_lifetimes>) -> R
-        ) -> R {
-            visitor(&self.core.state)
-        }
-
-        /// Visits each static typed event payload with a transition from the
-        /// current state. Guards and context are not observed.
-        #[inline(always)]
-        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-            self.core.__sml_visit_current_events(visitor)
-        }
-    };
 
     let states_attr_list = &sm.states_attr;
     let events_attr_list = &sm.events_attr;
@@ -2605,7 +2618,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #policy_type_ident: ::sml::Policies<Scheduler = ()>,
         {
             #public_initialize
-            #public_state_api
 
             /// Processes an event to run-to-completion.
             ///

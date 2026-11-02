@@ -34,20 +34,12 @@ pub trait Schedule<M: Terminated>: Scheduler {
     /// runs the machine's initial entry here, as `sml.cpp` does on
     /// construction.
     fn cell(self, machine: M) -> Self::Cell<M>;
-
-    /// Reports whether the machine in `cell` reached its terminal `X` state.
-    fn is_terminated(cell: &Self::Cell<M>) -> bool;
 }
 
 impl<M: Terminated> Schedule<M> for () {
     #[inline]
     fn cell(self, machine: M) -> M {
         machine
-    }
-
-    #[inline]
-    fn is_terminated(cell: &M) -> bool {
-        cell.is_terminated()
     }
 }
 
@@ -119,7 +111,8 @@ pub struct Step {
     pub terminated: bool,
 }
 
-impl<C, L, E> StepHook<C, L, E> for () {
+impl<L, E> StepHook<L, E> for () {
+    type Output = ();
     const ACTIVE: bool = false;
 }
 
@@ -181,10 +174,6 @@ mod shared {
             InlineCell {
                 machine: Arc::new(Mutex::new(machine)),
             }
-        }
-
-        fn is_terminated(cell: &InlineCell<M>) -> bool {
-            lock(&cell.machine).is_terminated()
         }
     }
 
@@ -313,10 +302,6 @@ mod shared {
                     }),
                 }),
             }
-        }
-
-        fn is_terminated(cell: &FifoCell<M, N>) -> bool {
-            lock(&cell.shared.queue).terminated
         }
     }
 
@@ -533,11 +518,15 @@ mod task {
     use crate::utility::QueueFull;
     use core::future::Future;
     use core::pin::Pin;
-    use core::sync::atomic::{AtomicBool, Ordering};
     use core::task::{Context, Poll};
     use std::boxed::Box;
-    use std::sync::Arc;
-    use tokio::sync::{mpsc, oneshot};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+    use std::vec::Vec;
+    use tokio::sync::{mpsc, oneshot, Semaphore};
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     /// Runs the machine on a dedicated Tokio task.
     ///
@@ -549,11 +538,15 @@ mod task {
     ///
     /// The default scheduler spawns on the runtime current at construction,
     /// like `tokio::spawn`; [`TokioScheduler::new`] names a runtime instead.
-    /// A step runs synchronously on a runtime worker, so a long step occupies
-    /// that worker for its duration.
+    /// [`TokioScope::scheduler`] places the machine in a scope, and
+    /// [`TokioScheduler::owning`] makes it the scope's owner. A step runs
+    /// synchronously on a runtime worker, so a long step occupies that worker
+    /// for its duration.
     #[derive(Clone, Debug, Default)]
     pub struct TokioScheduler {
         handle: Option<tokio::runtime::Handle>,
+        scope: Option<TokioScope>,
+        owns: Option<TokioScope>,
     }
 
     impl TokioScheduler {
@@ -562,28 +555,147 @@ mod task {
         pub const fn new(handle: tokio::runtime::Handle) -> Self {
             Self {
                 handle: Some(handle),
+                scope: None,
+                owns: None,
+            }
+        }
+
+        /// Makes the machine the owner of `scope`: once the machine reaches
+        /// `X`, or its own scope ends it, `scope` ends every machine in it.
+        #[must_use]
+        pub fn owning(mut self, scope: TokioScope) -> Self {
+            self.owns = Some(scope);
+            self
+        }
+    }
+
+    /// A group of machines that one owner bounds and ends together.
+    ///
+    /// Each machine in a scope keeps its own task and its own FIFO queue, so
+    /// one machine's slow step never delays a sibling's queue. The scope caps
+    /// how many of its machines run a step at once; a step waits for a slot in
+    /// FIFO order, so machines take turns and a busy machine cannot starve
+    /// the others. Ending the scope ends every machine in it: each stops
+    /// taking events, its queued and later callers resolve to `false`, and a
+    /// machine that owns a scope of its own ends that scope too. Scopes nest
+    /// through owners: a host machine owns the scope its project machines run
+    /// in, and each project machine owns the scope of its own children.
+    #[derive(Clone)]
+    pub struct TokioScope {
+        inner: Arc<ScopeInner>,
+    }
+
+    impl core::fmt::Debug for TokioScope {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("TokioScope").finish_non_exhaustive()
+        }
+    }
+
+    struct ScopeInner {
+        running: Semaphore,
+        members: Mutex<Members>,
+    }
+
+    struct Members {
+        ended: bool,
+        machines: Vec<Box<dyn Member>>,
+    }
+
+    // A machine in a scope, held weakly so a machine whose handles are all
+    // dropped still stops.
+    trait Member: Send {
+        fn alive(&self) -> bool;
+        fn end(&self);
+    }
+
+    impl<M> Member for mpsc::WeakUnboundedSender<Message<M>> {
+        fn alive(&self) -> bool {
+            self.strong_count() > 0
+        }
+
+        fn end(&self) {
+            if let Some(events) = self.upgrade() {
+                // A task that already stopped no longer needs to be told.
+                events.send(Message::End).ok();
             }
         }
     }
 
+    impl TokioScope {
+        /// Creates a scope in which at most `max_running` machines run a step
+        /// at once (at least one).
+        #[must_use]
+        pub fn new(max_running: usize) -> Self {
+            Self {
+                inner: Arc::new(ScopeInner {
+                    running: Semaphore::new(max_running.clamp(1, Semaphore::MAX_PERMITS)),
+                    members: Mutex::new(Members {
+                        ended: false,
+                        machines: Vec::new(),
+                    }),
+                }),
+            }
+        }
+
+        /// A scheduler that runs its machine in this scope, spawned on the
+        /// runtime current at construction.
+        #[must_use]
+        pub fn scheduler(&self) -> TokioScheduler {
+            TokioScheduler {
+                handle: None,
+                scope: Some(self.clone()),
+                owns: None,
+            }
+        }
+
+        /// Ends every machine in this scope. Machines placed in it afterwards
+        /// never start.
+        pub fn end(&self) {
+            let machines = {
+                let mut members = lock(&self.inner.members);
+                if members.ended {
+                    return;
+                }
+                members.ended = true;
+                core::mem::take(&mut members.machines)
+            };
+            // Wakes steps waiting for a slot; they stop instead of running.
+            self.inner.running.close();
+            for machine in machines {
+                machine.end();
+            }
+        }
+
+        // Registers a machine; false once the scope has ended.
+        fn join(&self, machine: Box<dyn Member>) -> bool {
+            let mut members = lock(&self.inner.members);
+            if members.ended {
+                return false;
+            }
+            members.machines.retain(|member| member.alive());
+            members.machines.push(machine);
+            true
+        }
+    }
+
     // A queued event, type-erased so the cell does not name the event type.
-    type Request<M> = (
-        Box<dyn FnOnce(&mut M) -> bool + Send>,
-        oneshot::Sender<bool>,
-    );
+    type Job<M> = Box<dyn FnOnce(&mut M) -> bool + Send>;
+
+    enum Message<M> {
+        Run(Job<M>, oneshot::Sender<bool>),
+        End,
+    }
 
     /// Shared storage for a [`TokioScheduler`] machine: the queue into its
-    /// task and the task's terminal flag.
+    /// task.
     pub struct TokioCell<M> {
-        events: mpsc::UnboundedSender<Request<M>>,
-        terminated: Arc<AtomicBool>,
+        events: mpsc::UnboundedSender<Message<M>>,
     }
 
     impl<M> Clone for TokioCell<M> {
         fn clone(&self) -> Self {
             Self {
                 events: self.events.clone(),
-                terminated: Arc::clone(&self.terminated),
             }
         }
     }
@@ -598,28 +710,70 @@ mod task {
         const RUN_TO_COMPLETION: bool = true;
     }
 
+    // Runs one step under the scope's cap; `None` once the scope has ended.
+    async fn step<M>(scope: Option<&TokioScope>, machine: &mut M, job: impl FnOnce(&mut M) -> bool) -> Option<bool> {
+        let slot = match scope {
+            Some(scope) => Some(scope.inner.running.acquire().await.ok()?),
+            None => None,
+        };
+        let accepted = job(machine);
+        drop(slot);
+        Some(accepted)
+    }
+
     async fn run<M: SyncMachineStep>(
         mut machine: M,
-        mut events: mpsc::UnboundedReceiver<Request<M>>,
-        terminated: Arc<AtomicBool>,
+        mut events: mpsc::UnboundedReceiver<Message<M>>,
+        scope: Option<TokioScope>,
+        owns: Option<TokioScope>,
     ) {
-        let _ = machine.start();
-        let mut stopped = machine.is_terminated();
-        terminated.store(stopped, Ordering::Release);
-        if stopped {
+        let started = step(scope.as_ref(), &mut machine, |machine| {
+            machine.start();
+            !machine.is_terminated()
+        })
+        .await;
+        let mut running = started == Some(true);
+        if !running {
             events.close();
         }
-        // The task ends once every handle is gone and the queue is empty.
-        while let Some((job, reply)) = events.recv().await {
-            let accepted = !stopped && job(&mut machine);
-            if !stopped && machine.is_terminated() {
-                stopped = true;
-                terminated.store(true, Ordering::Release);
-                // Already-queued events still drain, each resolving `false`.
-                events.close();
+        // The task ends once every handle is gone and the queue is empty, or
+        // once the machine stopped and its queue drained.
+        while let Some(message) = events.recv().await {
+            match message {
+                Message::End => {
+                    running = false;
+                    events.close();
+                }
+                Message::Run(job, reply) => {
+                    let accepted = if running {
+                        match step(scope.as_ref(), &mut machine, job).await {
+                            Some(accepted) => accepted,
+                            None => {
+                                running = false;
+                                events.close();
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    if running && machine.is_terminated() {
+                        running = false;
+                        // Already-queued events still drain, each resolving `false`.
+                        events.close();
+                    }
+                    // A caller that dropped its completion no longer wants the result.
+                    reply.send(accepted).ok();
+                }
             }
-            // A caller that dropped its completion no longer wants the result.
-            reply.send(accepted).ok();
+            if !running {
+                if let Some(owned) = &owns {
+                    owned.end();
+                }
+            }
+        }
+        if let Some(owned) = owns {
+            owned.end();
         }
     }
 
@@ -630,21 +784,24 @@ mod task {
     {
         fn cell(self, machine: M) -> TokioCell<M> {
             let (sender, receiver) = mpsc::unbounded_channel();
-            let terminated = Arc::new(AtomicBool::new(false));
-            let task = run(machine, receiver, Arc::clone(&terminated));
+            if let Some(scope) = &self.scope {
+                if !scope.join(Box::new(sender.downgrade())) {
+                    // The scope already ended: the machine never starts and
+                    // every event resolves `false`.
+                    if let Some(owned) = &self.owns {
+                        owned.end();
+                    }
+                    drop(receiver);
+                    return TokioCell { events: sender };
+                }
+            }
+            let task = run(machine, receiver, self.scope, self.owns);
             // The task is detached: it owns the machine and stops on its own.
             drop(match self.handle {
                 Some(handle) => handle.spawn(task),
                 None => tokio::spawn(task),
             });
-            TokioCell {
-                events: sender,
-                terminated,
-            }
-        }
-
-        fn is_terminated(cell: &TokioCell<M>) -> bool {
-            cell.terminated.load(Ordering::Acquire)
+            TokioCell { events: sender }
         }
     }
 
@@ -662,9 +819,7 @@ mod task {
                 return Poll::Ready(false);
             };
             // A closed reply means the task stopped before running the event.
-            Pin::new(reply)
-                .poll(cx)
-                .map(|accepted| accepted.unwrap_or(false))
+            Pin::new(reply).poll(cx).map(|accepted| accepted.unwrap_or(false))
         }
     }
 
@@ -677,9 +832,8 @@ mod task {
 
         fn submit(cell: &TokioCell<M>, event: M::Event) -> TokioCompletion {
             let (reply, receiver) = oneshot::channel();
-            let job: Box<dyn FnOnce(&mut M) -> bool + Send> =
-                Box::new(move |machine: &mut M| machine.step(event));
-            let queued = cell.events.send((job, reply)).is_ok();
+            let job: Job<M> = Box::new(move |machine: &mut M| machine.step(event));
+            let queued = cell.events.send(Message::Run(job, reply)).is_ok();
             TokioCompletion {
                 reply: queued.then_some(receiver),
             }
@@ -692,7 +846,7 @@ mod task {
 }
 
 #[cfg(feature = "tokio")]
-pub use task::{TokioCell, TokioCompletion, TokioScheduler};
+pub use task::{TokioCell, TokioCompletion, TokioScheduler, TokioScope};
 
 #[cfg(test)]
 mod tests {

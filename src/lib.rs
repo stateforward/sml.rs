@@ -73,7 +73,7 @@ mod scheduler;
 pub mod utility;
 
 pub use policy::{
-    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger, NoPolicy,
+    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, Emit, EventName, JumpTable, Logger, NoPolicy,
     Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts, ProcessQueue, Queue,
     QueuePolicy, RawMutex, StateName, StepHook, SwitchStm, Testing, TestingAccess, TestingPolicy,
     ThreadSafe, ThreadSafety,
@@ -82,7 +82,7 @@ pub use policy::{
 pub use scheduler::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineScheduler};
 pub use scheduler::{Queued, Schedule, Scheduler, Step, StrictOrdering, SyncMachineStep};
 #[cfg(feature = "tokio")]
-pub use scheduler::{TokioCell, TokioCompletion, TokioScheduler};
+pub use scheduler::{TokioCell, TokioCompletion, TokioScheduler, TokioScope};
 
 /// Marker and name access for a static typed event payload.
 ///
