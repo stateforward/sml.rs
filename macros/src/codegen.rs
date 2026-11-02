@@ -1875,6 +1875,12 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
         core.__sml_step(#temporary_context_call event)#step_await
     };
+    let step_hook_type = quote! {
+        <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook
+    };
+    let logger_type = quote! {
+        <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger
+    };
     let step_process = quote! {
         /// Runs one event to completion between the step hook's callbacks.
         /// An event no transition handles is not accepted; guard, action,
@@ -1888,16 +1894,19 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #step_where_clause
         {
             let event: #events_type_name #event_type_generics = event.into();
+            if !<#step_hook_type as ::sml::StepHook<#context_type_ident, #logger_type, #events_type_name #event_type_generics>>::ACTIVE {
+                return Self::__sml_accepted(
+                    self.__sml_process_event_unlocked(#temporary_context_call event)#step_await,
+                );
+            }
             let event_name = ::sml::EventName::name(&event);
             {
                 let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
                 ::sml::StepHook::before_step(hook, &mut self.context, logger, &event);
             }
-            let result = match self.__sml_process_event_unlocked(#temporary_context_call event)#step_await {
-                Ok(_) => Ok(true),
-                Err(#error_type_name::InvalidEvent | #error_type_name::TransitionsFailed) => Ok(false),
-                Err(error) => Err(error),
-            };
+            let result = Self::__sml_accepted(
+                self.__sml_process_event_unlocked(#temporary_context_call event)#step_await,
+            );
             let step = ::sml::Step {
                 event: event_name,
                 accepted: matches!(result, Ok(true)),
@@ -1906,6 +1915,17 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
             ::sml::StepHook::after_step(hook, &mut self.context, logger, step);
             result
+        }
+
+        /// Maps a processing result to acceptance: no handling transition is
+        /// `Ok(false)`, a failure stays an error.
+        #[inline(always)]
+        fn __sml_accepted<S>(result: Result<S, #error_type>) -> Result<bool, #error_type> {
+            match result {
+                Ok(_) => Ok(true),
+                Err(#error_type_name::InvalidEvent | #error_type_name::TransitionsFailed) => Ok(false),
+                Err(error) => Err(error),
+            }
         }
     };
     let unlocked_process = quote! {

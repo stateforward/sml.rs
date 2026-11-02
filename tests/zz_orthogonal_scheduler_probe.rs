@@ -32,7 +32,9 @@ impl DualStateMachineContext for Recorder {
 }
 
 sml_policies!(Fifo { scheduler: FifoScheduler<4> });
-sml_policies!(Testing { testing: sml::TestingPolicy });
+sml_policies!(Testing {
+    testing: sml::TestingPolicy
+});
 
 fn ready<F: Future>(future: F) -> Option<F::Output> {
     let mut future = pin!(future);

@@ -70,6 +70,9 @@ impl Observer for () {}
 /// [`Logger`] method because the logger only sees static names, never the
 /// context or the event payload.
 pub trait StepHook<C, L, E> {
+    /// Whether generated machines call this hook. Only the `()` hook sets it
+    /// to `false`, which removes the calls and their arguments entirely.
+    const ACTIVE: bool = true;
     /// Called before `event` enters processing.
     fn before_step(&mut self, _context: &mut C, _logger: &mut L, _event: &E) {}
     /// Called after the event has run to completion.

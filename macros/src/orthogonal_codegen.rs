@@ -523,6 +523,18 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             #step_hook_bound
         {
             let event: #events_name = event.into();
+            if !<<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
+                T,
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name,
+            >>::ACTIVE
+            {
+                return match self.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize {
+                    Ok(_) => Ok(true),
+                    Err(#error_name::InvalidEvent | #error_name::TransitionsFailed) => Ok(false),
+                    Err(error) => Err(error),
+                };
+            }
             let event_name = ::sml::EventName::name(&event);
             {
                 let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);

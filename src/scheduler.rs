@@ -119,7 +119,9 @@ pub struct Step {
     pub terminated: bool,
 }
 
-impl<C, L, E> StepHook<C, L, E> for () {}
+impl<C, L, E> StepHook<C, L, E> for () {
+    const ACTIVE: bool = false;
+}
 
 #[cfg(feature = "std")]
 mod shared {

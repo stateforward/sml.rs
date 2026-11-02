@@ -105,7 +105,10 @@ fn unscheduled_composites_keep_the_testing_accessors() {
     assert!(job.state() == &ProbeJobStates::ProbeWork);
     assert!(job.child_is_active());
     let _: &Ctx = job.context();
-    assert!(sml::Machine::process_event(&mut job, ProbeJobEvents::from(Stop)));
+    assert!(sml::Machine::process_event(
+        &mut job,
+        ProbeJobEvents::from(Stop)
+    ));
     assert!(job.is_terminated());
 
     let mut tree: ProbeTreeStateMachine<Ctx, Testing> =

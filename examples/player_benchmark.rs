@@ -84,8 +84,10 @@ fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
-fn process_with_policy<P: Policies<Scheduler = ()>>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents)
-where
+fn process_with_policy<P: Policies<Scheduler = ()>>(
+    sm: &mut PlayerStateMachine<Context, P>,
+    event: PlayerEvents,
+) where
     PlayerStateMachine<Context, P>: Machine<PlayerEvents>,
 {
     let _ = Machine::process_event(sm, event);
@@ -197,14 +199,19 @@ where
 }
 
 #[cfg(feature = "std")]
-sml_policies!(InlinePolicies { scheduler: InlineScheduler });
+sml_policies!(InlinePolicies {
+    scheduler: InlineScheduler
+});
 #[cfg(feature = "std")]
 sml_policies!(FifoPolicies { scheduler: FifoScheduler<1024> });
 #[cfg(feature = "tokio")]
-sml_policies!(TokioPolicies { scheduler: sml::TokioScheduler });
+sml_policies!(TokioPolicies {
+    scheduler: sml::TokioScheduler
+});
 
 // Awaits each event's completion before sending the next through a
 // scheduled machine, so the rate includes the scheduler's per-event cost.
+#[cfg(feature = "std")]
 macro_rules! scheduled_run {
     ($sm:expr) => {{
         let sm = $sm;
@@ -230,6 +237,7 @@ macro_rules! scheduled_run {
     }};
 }
 
+#[cfg(feature = "std")]
 #[allow(
     clippy::cast_precision_loss,
     reason = "benchmark throughput is intentionally reported as a floating-point rate"

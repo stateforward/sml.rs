@@ -205,7 +205,10 @@ mod task {
     use super::{journaled, lock, step, CounterStateMachine, Push, Recorder, Stop, Unknown};
     use sml::{sml_policies, Terminated, TokioScheduler};
 
-    sml_policies!(Tokio { scheduler: TokioScheduler, step_hook: super::Journal });
+    sml_policies!(Tokio {
+        scheduler: TokioScheduler,
+        step_hook: super::Journal
+    });
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
