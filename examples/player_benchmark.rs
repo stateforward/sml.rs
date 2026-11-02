@@ -1,6 +1,8 @@
 //! CD-player throughput workload matching `sml.cpp/benchmark/simple/sml_player_sm.hpp`.
 
 use sml::{sml, BranchStm, Dispatch, Machine, Policies, PolicyBundle, SwitchStm};
+#[cfg(feature = "std")]
+use sml::{sml_policies, FifoScheduler, InlineScheduler};
 use std::time::Instant;
 
 pub struct OpenClose;
@@ -82,7 +84,10 @@ fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
-fn process_with_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
+fn process_with_policy<P: Policies<Scheduler = ()>>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents)
+where
+    PlayerStateMachine<Context, P>: Machine<PlayerEvents>,
+{
     let _ = Machine::process_event(sm, event);
 }
 
@@ -140,7 +145,10 @@ async fn run_async(sm: &mut PlayerStateMachine<Context>) {
     }
 }
 
-fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
+fn run_policy<P: Policies<Scheduler = ()>>(sm: &mut PlayerStateMachine<Context, P>)
+where
+    PlayerStateMachine<Context, P>: Machine<PlayerEvents>,
+{
     for _ in 0..1_000_000 {
         process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
@@ -171,18 +179,105 @@ fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
     clippy::cast_precision_loss,
     reason = "benchmark throughput is intentionally reported as a floating-point rate"
 )]
-fn run_policy_benchmark<P: Policies>(label: &str, policy: P) {
+fn run_policy_benchmark<P: Policies<Scheduler = ()>>(label: &str, policy: P)
+where
+    PlayerStateMachine<Context, P>: Machine<PlayerEvents>,
+{
     let mut sm = PlayerStateMachine::new_with_policy(Context, policy);
     let start = Instant::now();
     run_policy(&mut sm);
     let elapsed = start.elapsed();
 
-    assert!(matches!(sm.state(), PlayerStates::Empty));
+    assert!(sm.is(&PlayerStates::Empty));
     println!(
         "{label} {} ns total; {:.3} ns/event",
         elapsed.as_nanos(),
         elapsed.as_nanos() as f64 / 11_000_000.0
     );
+}
+
+#[cfg(feature = "std")]
+sml_policies!(InlinePolicies { scheduler: InlineScheduler });
+#[cfg(feature = "std")]
+sml_policies!(FifoPolicies { scheduler: FifoScheduler<1024> });
+#[cfg(feature = "tokio")]
+sml_policies!(TokioPolicies { scheduler: sml::TokioScheduler });
+
+// Awaits each event's completion before sending the next through a
+// scheduled machine, so the rate includes the scheduler's per-event cost.
+macro_rules! scheduled_run {
+    ($sm:expr) => {{
+        let sm = $sm;
+        let mut accepted = 0_usize;
+        for _ in 0..1_000_000 {
+            for event in [
+                PlayerEvents::OpenClose(OpenClose),
+                PlayerEvents::OpenClose(OpenClose),
+                PlayerEvents::CdDetected(CdDetected),
+                PlayerEvents::Play(Play),
+                PlayerEvents::Pause(Pause),
+                PlayerEvents::EndPause(EndPause),
+                PlayerEvents::Pause(Pause),
+                PlayerEvents::Stop(Stop),
+                PlayerEvents::Stop(Stop),
+                PlayerEvents::OpenClose(OpenClose),
+                PlayerEvents::OpenClose(OpenClose),
+            ] {
+                accepted += usize::from(sm.process_event_async(event).await);
+            }
+        }
+        assert_eq!(accepted, 11_000_000);
+    }};
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark throughput is intentionally reported as a floating-point rate"
+)]
+fn report(label: &str, start: Instant) {
+    let elapsed = start.elapsed();
+    println!(
+        "{label} {} ns total; {:.3} ns/event",
+        elapsed.as_nanos(),
+        elapsed.as_nanos() as f64 / 11_000_000.0
+    );
+}
+
+#[cfg(feature = "std")]
+fn run_scheduled(mode: &str) -> bool {
+    let start = Instant::now();
+    match mode {
+        "inline" => smol::block_on(async {
+            scheduled_run!(PlayerStateMachine::new_with_policy(
+                Context,
+                InlinePolicies::default()
+            ));
+        }),
+        "fifo" => smol::block_on(async {
+            scheduled_run!(PlayerStateMachine::new_with_policy(
+                Context,
+                FifoPolicies::default()
+            ));
+        }),
+        #[cfg(feature = "tokio")]
+        "tokio" => tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap_or_else(|error| panic!("tokio runtime: {}", error))
+            .block_on(async {
+                scheduled_run!(PlayerStateMachine::new_with_policy(
+                    Context,
+                    TokioPolicies::default()
+                ));
+            }),
+        _ => return false,
+    }
+    report(mode, start);
+    true
+}
+
+#[cfg(not(feature = "std"))]
+const fn run_scheduled(_mode: &str) -> bool {
+    false
 }
 
 #[allow(
@@ -203,6 +298,9 @@ fn main() {
         run_policy_benchmark("custom", CustomPolicies::default());
         return;
     }
+    if run_scheduled(&mode) {
+        return;
+    }
 
     let mut sm = PlayerStateMachine::new(Context);
     let async_mode = mode == "async";
@@ -214,7 +312,7 @@ fn main() {
     }
     let elapsed = start.elapsed();
 
-    assert!(matches!(sm.state(), PlayerStates::Empty));
+    assert!(sm.is(&PlayerStates::Empty));
     println!(
         "{} ns total; {:.3} ns/event",
         elapsed.as_nanos(),

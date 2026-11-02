@@ -19,14 +19,14 @@ the default `NoPolicy` path.
 
 ```toml
 [dependencies]
-sml = { package = "stateforward-sml", version = "1.5" }
+sml = { package = "stateforward-sml", version = "2.0" }
 ```
 
 The crate has no default features and works on `no_std` targets. Enable
 `graphviz` only when build-time diagram generation is wanted:
 
 ```toml
-sml = { package = "stateforward-sml", version = "1.5", features = ["graphviz"] }
+sml = { package = "stateforward-sml", version = "2.0", features = ["graphviz"] }
 ```
 
 The runtime and procedural-macro crates both forbid unsafe Rust at the source
@@ -139,25 +139,27 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 <!-- public methods emitted by the flat, orthogonal, and composite generators -->
 
-All generated machines provide construction, context access, event processing,
-and termination queries. The state API follows the machine shape:
+All generated machines provide construction, event processing, state identity
+queries, visitors, and termination queries, matching the public surface of
+`sml.cpp`'s `sm`. Getters that lend out the state, the context, or a policy
+slot require `TestingPolicy`:
 
 <!-- public event-processing traits from src/lib.rs -->
 
-Synchronous flat and composite machines implement `Machine<E>` with
-`process_event` and `process_event_async`. Both report event acceptance as
-`bool`, matching the `sml.cpp` `co_sm` contract. The latter returns an
-allocation-free ready future after the uncontended inline run-to-completion fast
-path. Detailed Rust errors remain available from the generated machine's
-inherent `process_event` method. Async callbacks are a separate concern.
-Orthogonal, async-callback, and temporary-context machines retain their
-shape-specific inherent processing APIs.
+The inherent `process_event` returns `Result<bool, Error>`: `Ok(true)` when a
+transition handled the event, `Ok(false)` when none did, and `Err` when a
+guard, action, or bounded queue failed. Synchronous flat and composite
+machines also implement `Machine<E>` with `process_event` and
+`process_event_async`, both reporting acceptance as `bool`; the latter returns
+an allocation-free ready future. Async callbacks are a separate concern from
+scheduling: an async-callback machine's inherent `process_event` is itself
+`async`.
 
-| Shape | Main state API |
-|---|---|
-| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Orthogonal | `states()`, `state(region)`, `is_region(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Composite | Parent state methods plus typed child state, active, setter, visitor, and `set_current_states(...)` with `TestingPolicy` |
+| Shape | Public state API | With `TestingPolicy` |
+|---|---|---|
+| Flat | `is(...)`, `visit_current_state(...)`, `visit_current_events(...)` | `state()`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Orthogonal | `is(...)`, `is_region(...)`, `visit_current_events(...)` | `states()`, `state(region)`, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
+| Composite | Parent and typed child identity, active, and visitor queries | Typed child state getters and setters, `context()`, `logger()`, `observer()`, `set_current_states(...)` |
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
@@ -202,8 +204,9 @@ payload state returns that payload value instead.
 Generated machines take an optional policy bundle:
 
 ```rust
-use sml::{sml, sml_policies, Logger, PolicyBundle, TestingPolicy};
+use sml::{sml, sml_policies, Logger, TestingPolicy};
 
+#[derive(Default)]
 struct Trace;
 impl Logger for Trace {}
 
@@ -214,17 +217,7 @@ sml_policies!(TestPolicies {
 
 // The default constructor remains the zero-cost NoPolicy path. A custom
 // bundle is supplied explicitly:
-let machine = MyStateMachine::new_with_policy(
-    context,
-    TestPolicies::new(
-        Trace,
-        (),
-        (),
-        TestingPolicy,
-        sml::DefaultQueuePolicy,
-        sml::DefaultQueuePolicy,
-    ),
-);
+let machine = MyStateMachine::new_with_policy(context, TestPolicies::default());
 ```
 
 `NoPolicy` is the default and all of its slots are zero-sized. Its generated
@@ -252,8 +245,8 @@ no-op and adds no allocation. A custom lock must keep its guard scoped to the
 lock state itself; generated machines may mutate the other policy slots while
 the guard is held.
 
-`TestingPolicy` opts a machine into the `set_current_states` helper;
-production `NoPolicy` machines do not expose that state mutation method. The
+`TestingPolicy` opts a machine into the state, context, and policy getters
+and the `set_current_states` helper; production machines do not expose them. The
 capability marker is sealed, so a custom production policy cannot opt itself
 into state mutation. Flat machines pass one state; orthogonal machines pass
 one state per region.
@@ -271,6 +264,51 @@ directly.
 These policies are for the machine's owner to configure and query its own
 machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
+
+### Schedulers
+
+The `scheduler` slot decides who runs a machine's events. The default `()`
+keeps the owned machine above. A queued scheduler turns the generated machine
+into a cloneable handle that many tasks can call through `&self`:
+
+```rust
+use sml::{sml_policies, TokioScheduler};
+
+sml_policies!(Shared { scheduler: TokioScheduler });
+
+let machine = MyStateMachine::new_with_policy(context, Shared::default());
+let handle = machine.clone();
+tokio::spawn(async move { handle.process_event_async(Start).await });
+let accepted: bool = machine.process_event_async(Stop).await;
+```
+
+`process_event_async` queues the event before it returns and resolves to its
+acceptance once the event has run to completion, including the machine's own
+`process`/`defer` queues and completion transitions. Dropping the completion
+does not cancel the event. `try_process_event` returns `QueueFull` instead of
+waiting when a bounded queue has no room. Events run in FIFO order, one at a
+time, which is `sml.cpp`'s `strict_ordering_scheduler_contract`
+(`StrictOrdering`). Once the machine reaches `X`, queued and later events
+resolve to `false`. A queued machine runs its initial entry when constructed,
+as `sml.cpp` does.
+
+| Scheduler | Feature | Runs an event |
+|---|---|---|
+| `InlineScheduler` | `std` | In the caller, under the machine's lock, before `process_event_async` returns |
+| `FifoScheduler<N>` | `std` | `sml.cpp`'s draining model: a caller that finds the machine idle runs its event and drains what others queued meanwhile; a caller that finds it busy, including a re-entrant action, only queues. `N` bounds the queue (power of two) |
+| `TokioScheduler` | `tokio` | On a dedicated task that owns the machine; callers only queue, and no lock is held across `.await` |
+
+Queued schedulers drive synchronous machines without a temporary context. A
+scheduled machine exposes only `process_event_async`, `try_process_event`,
+`Terminated`, and `Clone`.
+
+The `step_hook` slot runs around each event with the machine's context and
+logger: `StepHook::before_step` sees the event, and `after_step` receives a
+`Step` (event name, acceptance, termination) once the event has run to
+completion and before the caller's completion resolves. An owner uses it to
+journal each step and drain the outputs its context collected. It is a
+separate slot because `Logger` only receives static names, never the context
+or the event payload.
 
 ## State and event data
 
@@ -399,7 +437,8 @@ the 25 programs under `../sml.cpp/example` in
 - [Capability parity matrix](docs/sml-cpp-parity.md)
 - [Example-by-example translation audit](docs/sml-cpp-examples.md)
 - [Migrating from 0.8 to 1.0](docs/migrating-to-1.0.md)
-- [1.x stability policy](docs/stability.md)
+- [Migrating from 1.x to 2.0](docs/migrating-to-2.0.md)
+- [Stability policy](docs/stability.md)
 
 Rust-specific mappings, including trait methods instead of inline lambdas,
 context fields instead of type-based dependency injection, `Result` instead of

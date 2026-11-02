@@ -243,26 +243,31 @@ Call `initialize()` once after construction to run initial entry behavior and
 anonymous-transition stabilization. Normal event processing automatically
 stabilizes subsequent anonymous and completion transitions.
 
-`state()` borrows the generated state enum, while `is(&States::Idle)` performs
-the payload-insensitive state identity check corresponding to `sm.is("idle"_s)`
-in C++.
+`is(&States::Idle)` performs the payload-insensitive state identity check
+corresponding to `sm.is("idle"_s)` in C++. As in `sml.cpp`, a machine does not
+lend out its state or context: `state()`, `context()`, `context_mut()`, and the
+policy-slot getters require a `TestingPolicy` policy.
 
 Prefix a callback with `async` in a guard or action position to generate an
 async machine, for example `[async ready] / async send`. Rust futures provide
 the coroutine behavior directly.
 
-Generated synchronous flat machines without a temporary call-scoped context
-implement `Machine<E>`. Generic callers can use `process_event` directly or
-await `process_event_async` for the same run-to-completion operation. Both
-report event acceptance as `bool`, matching the `sml.cpp` `co_sm` contract; the
-generated machine's inherent `process_event` retains the detailed Rust
-`Result`. The async trait entry point is an allocation-free future using the
-uncontended inline RTC fast path. This is independent of async guards and
-actions. Generic callers pass the generated event enum; inherent methods also
-accept external event types that convert into that enum. Orthogonal, composite,
-async-callback, and temporary-context machines retain their shape-specific
-inherent processing APIs. A scheduler-backed `co_sm` adapter for pending RTC
-completion remains separate work.
+The inherent `process_event` returns `Result<bool, Error>`: `Ok(true)` when a
+transition handled the event, `Ok(false)` when none did, and `Err` when a
+guard, action, or bounded queue failed. Generated synchronous flat machines
+without a temporary call-scoped context implement `Machine<E>`. Generic callers
+can use `process_event` directly or await `process_event_async` for the same
+run-to-completion operation; both report acceptance as `bool`, matching the
+`sml.cpp` `co_sm` contract. The trait's async entry point is an
+allocation-free ready future. This is independent of async guards and actions.
+Generic callers pass the generated event enum; inherent methods also accept
+external event types that convert into that enum.
+
+A `scheduler` policy (see [Schedulers](../README.md#schedulers)) turns a
+synchronous machine without a temporary context into a cloneable handle whose
+`process_event_async(&self, event)` queues the event at call time and resolves
+to its acceptance once it has run to completion: the `sml.cpp` `co_sm`
+behavior, chosen per machine through its policy rather than a wrapper type.
 
 Generated synchronous composite machines without a temporary context or an
 orthogonal node also implement `Machine<Events>`, with `State` set to the parent (root) states enum.
@@ -298,8 +303,9 @@ replay feeds the inputs into a fresh machine and checks it does the same.
 - **What happened:** a `Logger` policy (see [Policies](../README.md#policies))
   receives every process, guard, action, and state change inside one
   `process_event`, in order: child-table transitions, completions, `defer` and
-  `process(...)` re-dispatch, and `exception<E>` recovery included. The owner
-  reads it through the public `logger()`/`logger_mut()` after the step. The
+  `process(...)` re-dispatch, and `exception<E>` recovery included. A
+  `step_hook` policy receives the logger, the context, and the input event
+  around each step, so the owner journals there. The
   callbacks pass static names, never payloads, so the trace stays
   allocation-free; payloads live in the journaled input.
 - **Replay:** process each journaled input in a fresh machine with the same
@@ -360,8 +366,8 @@ The generated parent owns both state values and one unified context. While
 parent only when the child has no matching transition. Leaving and re-entering
 the child resets it to its initial state by default. Mark the child's initial
 state as `*"idle"_s(H)` to retain shallow history across re-entry, exactly as
-in `sml.cpp`. `child_state()`, `is_child(...)`, and
-`child_is_active()` expose typed composite queries. Parent and child lifecycle
+in `sml.cpp`. `is_child(...)` and `child_is_active()` expose typed composite
+queries; `child_state()` requires `TestingPolicy`. Parent and child lifecycle
 rows and unexpected handlers participate in the same child-first ordering.
 Sync or async guards/actions are supported. A parent anonymous transition from
 `state<Sub>` becomes eligible only after the child reaches `X`, matching

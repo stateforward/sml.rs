@@ -497,8 +497,112 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         let thread_safe = &self.thread_safe;
         let core = &mut self.core;
         let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-        core.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize
+        core.__sml_step(#temporary_context_call event)#await_stabilize
     };
+    let step_hook_bound = quote! {
+        <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook:
+            ::sml::StepHook<
+                T,
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name
+            >
+    };
+    let core_type = quote! { #core_name<T, #policy_name> };
+    let step_process = quote! {
+        /// Runs one event to completion between the step hook's callbacks.
+        /// An event no transition handles is not accepted; guard, action,
+        /// and queue failures are errors.
+        #[inline]
+        #async_keyword fn __sml_step<EventInput>(
+            &mut self,
+            #temporary_context_parameter
+            event: EventInput,
+        ) -> Result<bool, #generated_error>
+        where
+            EventInput: Into<#events_name>,
+            #step_hook_bound
+        {
+            let event: #events_name = event.into();
+            let event_name = ::sml::EventName::name(&event);
+            {
+                let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+                ::sml::StepHook::before_step(hook, &mut self.context, logger, &event);
+            }
+            let result = match self.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize {
+                Ok(_) => Ok(true),
+                Err(#error_name::InvalidEvent | #error_name::TransitionsFailed) => Ok(false),
+                Err(error) => Err(error),
+            };
+            let step = ::sml::Step {
+                event: event_name,
+                accepted: matches!(result, Ok(true)),
+                terminated: self.is_terminated(),
+            };
+            let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+            ::sml::StepHook::after_step(hook, &mut self.context, logger, step);
+            result
+        }
+    };
+    let schedulable = !is_async_machine && machine.temporary_context_type.is_none();
+    let scheduled_api = schedulable.then(|| {
+        quote! {
+            impl<T: #context_name, #policy_name: ::sml::Policies> ::sml::SyncMachineStep for #core_type
+            where
+                #step_hook_bound
+            {
+                type Event = #events_name;
+
+                #[inline]
+                fn start(&mut self) -> bool {
+                    self.__sml_initialize_unlocked().is_ok()
+                }
+
+                #[inline]
+                fn step(&mut self, event: Self::Event) -> bool {
+                    matches!(self.__sml_step(event), Ok(true))
+                }
+            }
+
+            impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+            where
+                #policy_name: ::sml::Policies,
+                <#policy_name as ::sml::Policies>::Scheduler: ::sml::Queued<#core_type>,
+                #step_hook_bound
+            {
+                /// Queues `event` now and resolves to its acceptance once it
+                /// has run to completion. Dropping the completion does not
+                /// cancel the event.
+                pub fn process_event_async<E: Into<#events_name>>(
+                    &self,
+                    event: E,
+                ) -> <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion {
+                    <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::submit(
+                        &self.core,
+                        event.into(),
+                    )
+                }
+
+                /// Queues `event` unless the scheduler's bounded queue is full.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`QueueFull`](::sml::utility::QueueFull) without
+                /// queuing the event when the queue has no room.
+                pub fn try_process_event<E: Into<#events_name>>(
+                    &self,
+                    event: E,
+                ) -> Result<
+                    <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion,
+                    ::sml::utility::QueueFull,
+                > {
+                    <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::try_submit(
+                        &self.core,
+                        event.into(),
+                    )
+                }
+            }
+        }
+    });
 
     let core_struct = quote! {
         struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
@@ -518,19 +622,11 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let public_api = quote! {
         /// Enters each initial state and runs anonymous `completion<_>`
         /// transitions until all regions reach stable states.
-        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<&[#states_name; #region_count], #generated_error> {
+        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<(), #generated_error> {
             let thread_safe = &self.thread_safe;
             let core = &mut self.core;
             let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize
-        }
-
-        #[inline(always)]
-        pub fn states(&self) -> &[#states_name; #region_count] { &self.core.states }
-
-        #[inline(always)]
-        pub fn state(&self, region: usize) -> Option<&#states_name> {
-            self.core.states.get(region)
+            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ())
         }
 
         /// Visits each static typed event payload with a transition from any
@@ -540,57 +636,76 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             self.core.__sml_visit_current_events(visitor)
         }
 
-        #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-            ::sml::PolicyParts::logger(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-            ::sml::PolicyParts::observer(&self.core.policy)
-        }
-
-        #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
-        }
-
-        /// Replaces all active orthogonal region states for a testing policy.
-        pub fn set_current_states(
-            &mut self,
-            states: [#states_name; #region_count],
-        ) -> [#states_name; #region_count]
-        where
-            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
-                ::sml::TestingAccess,
-        {
-            self.core.states_exit_skip.fill(false);
-            core::mem::replace(&mut self.core.states, states)
-        }
-
+        /// Returns true when every region's active state has the same
+        /// variant as the matching `expected` state.
         #[inline(always)]
         pub fn is(&self, expected: &[#states_name; #region_count]) -> bool {
             self.core.states == *expected
         }
 
+        /// Returns true when `region`'s active state has the same variant as
+        /// `expected`.
         #[inline(always)]
         pub fn is_region(&self, region: usize, expected: &#states_name) -> bool {
             self.core.states.get(region).is_some_and(|state| state == expected)
         }
 
+        /// Returns true when every region is terminated.
         #[inline(always)]
         pub fn is_terminated(&self) -> bool {
             self.core.states.iter().all(|state| matches!(state, #states_name::X))
         }
+    };
 
+    let testing_api = quote! {
+        /// Returns every region's active state.
+        #[inline(always)]
+        pub fn states(&self) -> &[#states_name; #region_count] { &self.core.states }
+
+        /// Returns `region`'s active state.
+        #[inline(always)]
+        pub fn state(&self, region: usize) -> Option<&#states_name> {
+            self.core.states.get(region)
+        }
+
+        /// Borrows the configured logger.
+        #[inline(always)]
+        pub fn logger(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger(&self.core.policy)
+        }
+
+        /// Mutably borrows the configured logger.
+        #[inline(always)]
+        pub fn logger_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
+            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
+        }
+
+        /// Borrows the configured observer.
+        #[inline(always)]
+        pub fn observer(&self) -> &<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer(&self.core.policy)
+        }
+
+        /// Mutably borrows the configured observer.
+        #[inline(always)]
+        pub fn observer_mut(&mut self) -> &mut <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
+            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
+        }
+
+        /// Replaces all active orthogonal region states.
+        pub fn set_current_states(
+            &mut self,
+            states: [#states_name; #region_count],
+        ) -> [#states_name; #region_count] {
+            self.core.states_exit_skip.fill(false);
+            core::mem::replace(&mut self.core.states, states)
+        }
+
+        /// Returns the current context.
         #[inline(always)]
         pub fn context(&self) -> &T { &self.core.context }
 
+        /// Returns the current context as a mutable reference.
         #[inline(always)]
         pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
     };
@@ -655,7 +770,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         where
             #policy_name: ::sml::Policies,
         {
-            core: #core_name<T, #policy_name>,
+            core: <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Scheduler>::Cell<#core_type>,
             thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
         }
 
@@ -810,6 +925,8 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
                 #unlocked_process_event_body
             }
 
+            #step_process
+
             #[inline(always)]
             fn is(&self, expected: &[#states_name; #region_count]) -> bool {
                 self.states == *expected
@@ -839,49 +956,112 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
-            #public_api
-
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::Policies,
+            <#policy_name as ::sml::Policies>::Scheduler: ::sml::Schedule<#core_type>,
+        {
             #[inline(always)]
             pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
-                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                let (policy, thread_safe, scheduler) = ::sml::Policies::into_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {
-                    core: #core_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_name {
                         states: [#(#initial_states),*],
                         states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
+        }
 
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::Policies<Scheduler = ()>,
+        {
+            #public_api
+
+            /// Processes an event to run-to-completion.
+            ///
+            /// Returns `Ok(true)` when a transition handled the event,
+            /// `Ok(false)` when none did, and `Err` when a guard, action, or
+            /// bounded queue failed.
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
                 #temporary_context_parameter
                 event: EventInput,
-            ) -> Result<&[#states_name; #region_count], #generated_error>
+            ) -> Result<bool, #generated_error>
             where
                 EventInput: Into<#events_name>,
+                #step_hook_bound
             {
                 #process_event_body
             }
         }
 
-        impl<T: #context_name, #policy_name: ::sml::Policies>
-            ::sml::Terminated for #machine_name<T, #policy_name> {
-            #[inline(always)]
-            fn is_terminated(&self) -> bool { self.core.is_terminated() }
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::Policies<Scheduler = ()>,
+            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
+        {
+            #testing_api
         }
+
+        #scheduled_api
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> ::sml::Terminated for #core_type {
+            #[inline(always)]
+            fn is_terminated(&self) -> bool {
+                self.states.iter().all(|state| matches!(state, #states_name::X))
+            }
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name> ::sml::Terminated for #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::Policies,
+            <#policy_name as ::sml::Policies>::Scheduler: ::sml::Schedule<#core_type>,
+        {
+            #[inline(always)]
+            fn is_terminated(&self) -> bool {
+                <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Schedule<#core_type>>::is_terminated(&self.core)
+            }
+        }
+
+        /// A scheduled machine is a handle: clones share one machine.
+        impl<T: #context_name, #policy_name> Clone for #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::Policies,
+            <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
+            <#policy_name as ::sml::Policies>::ThreadSafe: Clone,
+        {
+            fn clone(&self) -> Self {
+                Self {
+                    core: self.core.clone(),
+                    thread_safe: self.thread_safe.clone(),
+                }
+            }
+        }
+
         impl<T: #context_name> #machine_name<T, ::sml::NoPolicy> {
             #[inline(always)]
             pub fn new(context: T) -> Self {
                 let policy: ::sml::NoPolicy = core::default::Default::default();
-                let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                let (policy, thread_safe, ()) = ::sml::Policies::into_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {

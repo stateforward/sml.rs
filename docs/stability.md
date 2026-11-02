@@ -1,6 +1,10 @@
 # Stability policy
 
-Version 1.1 establishes the following compatibility contract for subsequent
+Version 2.0 narrows the generated public API for scheduler policies; see the
+[2.0 migration guide](migrating-to-2.0.md). The contract below carries over to
+`2.x` releases.
+
+Version 1.1 established the following compatibility contract for subsequent
 `1.x` releases. Version 1.1 intentionally corrects the newly introduced
 `Machine<E>` contract from 1.0 before known downstream adoption; see the
 [1.1 migration guide](migrating-to-1.1.md).
@@ -34,5 +38,5 @@ other public API, and verifies that an unrelated public removal still fails.
   library APIs.
 
 Security fixes may reject previously accepted unsound behavior. MSRV increases
-are announced in the changelog and require a minor release during the 1.x
+are announced in the changelog and require a minor release during the 1.x and 2.x
 series.

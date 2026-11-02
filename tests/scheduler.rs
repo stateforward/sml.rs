@@ -199,3 +199,62 @@ fn inline_runs_each_event_under_the_shared_lock() {
         ]
     );
 }
+
+#[cfg(feature = "tokio")]
+mod task {
+    use super::{journaled, lock, step, CounterStateMachine, Push, Recorder, Stop, Unknown};
+    use sml::{sml_policies, Terminated, TokioScheduler};
+
+    sml_policies!(Tokio { scheduler: TokioScheduler, step_hook: super::Journal });
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .unwrap_or_else(|error| panic!("tokio runtime: {}", error))
+    }
+
+    #[test]
+    fn a_dedicated_task_runs_events_queued_from_many_tasks_in_order() {
+        let runtime = runtime();
+        let (policy, steps) = journaled(|journal| Tokio::default().with_step_hook(journal));
+        let accepted = runtime.block_on(async move {
+            let machine = CounterStateMachine::new_with_policy(Recorder::default(), policy);
+            // Queued at call time: the order of these calls is the run order,
+            // whichever task awaits first.
+            let first = machine.process_event_async(Push(1));
+            let second = machine.clone().process_event_async(Push(2));
+            drop(machine.process_event_async(Push(3)));
+            let rejected = machine.process_event_async(Unknown);
+            let joined = tokio::spawn(second);
+            let accepted = (
+                first.await,
+                joined.await.unwrap_or(false),
+                rejected.await,
+                machine.process_event_async(Stop).await,
+                machine.process_event_async(Push(4)).await,
+                Terminated::is_terminated(&machine),
+            );
+            accepted
+        });
+        assert_eq!(accepted, (true, true, false, true, false, true));
+        let seen: Vec<_> = lock(&steps).iter().map(|(_, seen)| seen.clone()).collect();
+        assert_eq!(seen, vec![vec![1], vec![2], vec![3], vec![], vec![]]);
+        assert_eq!(
+            lock(&steps).last().map(|(step, _)| *step),
+            Some(step("Stop", true, true))
+        );
+    }
+
+    #[test]
+    fn an_explicit_runtime_handle_hosts_the_machine_task() {
+        let runtime = runtime();
+        let policy = Tokio::default().with_scheduler(TokioScheduler::new(runtime.handle().clone()));
+        let machine = CounterStateMachine::new_with_policy(Recorder::default(), policy);
+        let completion = machine.try_process_event(Push(5));
+        assert_eq!(
+            runtime.block_on(async move { completion.ok()?.await.then_some(()) }),
+            Some(())
+        );
+    }
+}

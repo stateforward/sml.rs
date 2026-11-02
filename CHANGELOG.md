@@ -4,6 +4,59 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.0 - Unreleased
+
+A scheduler policy turns a generated machine into a shared handle that many
+tasks can call. To make that possible, generated machines no longer hand out
+references to their state, context, or policy slots outside `TestingPolicy`,
+matching `sml.cpp`'s public `sm` surface. See the
+[2.0 migration guide](docs/migrating-to-2.0.md).
+
+### Added
+
+- A `scheduler` policy slot (`Scheduler`, `Schedule`, `Queued`,
+  `StrictOrdering`, `SyncMachineStep`). The default `()` keeps the owned
+  `&mut self` machine. With a queued scheduler the generated machine is a
+  cloneable handle: `process_event_async(&self, event)` queues the event at
+  call time and resolves to its acceptance once it has run to completion, and
+  `try_process_event` reports `QueueFull` instead of waiting. Dropping the
+  completion does not cancel the event. Events run in FIFO order, one at a
+  time, each to completion; after `X`, queued and later events resolve to
+  `false`. A queued machine runs its initial entry when it is constructed.
+- `InlineScheduler` (std): runs the event under the machine's lock before
+  `process_event_async` returns.
+- `FifoScheduler<N>` (std): the `sml.cpp` draining model on a bounded
+  power-of-two queue. A caller that finds the machine idle runs its event and
+  drains what others queued meanwhile; callers that find it busy, including a
+  re-entrant action, only queue.
+- `TokioScheduler` (`tokio` feature): a dedicated task owns the machine and
+  runs queued events; callers only queue, and no lock is held across `.await`.
+- A `step_hook` policy slot (`StepHook`, `Step`): `before_step` sees each
+  event and `after_step` runs once it has run to completion, both with the
+  machine's context and logger, so an owner can journal each step and drain
+  the outputs its context collected.
+- `PolicyBundle::with_scheduler` and `with_step_hook`; `sml_policies!`
+  accepts `scheduler:` and `step_hook:`.
+
+### Changed
+
+- **Breaking:** the inherent `process_event` returns `Result<bool, Error>`:
+  `Ok(true)` when a transition handled the event, `Ok(false)` when none did
+  (formerly `Err(InvalidEvent)` or `Err(TransitionsFailed)`), and `Err` for
+  guard, action, and queue failures. `initialize` returns `Result<(), Error>`.
+- **Breaking:** `state()`, `states()`, typed child state getters,
+  `context()`, `context_mut()`, `logger()`, `logger_mut()`, `observer()`, and
+  `observer_mut()` require a `TestingPolicy` policy. `is(...)`, region and
+  child identity queries, `is_terminated()`, and the visitors stay public.
+- **Breaking:** the generated machine's storage depends on the scheduler
+  slot, so code generic over a machine's policy needs
+  `P: sml::Policies<Scheduler = ()>` to process events on the owned machine.
+- **Breaking:** `PolicyBundle` and `PolicyBundleParts` gain trailing
+  scheduler and step-hook parameters (defaulted); `Policies` gains
+  `type Scheduler`; `PolicyParts` gains `type StepHook` and `step_hook_mut`;
+  `Policies::into_parts` returns the scheduler as a third element.
+- The workspace uses Cargo's version 2 feature resolver.
+
 ## 1.5.0 - 2026-10-31
 
 ### Added
