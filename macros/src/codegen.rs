@@ -2280,7 +2280,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
     };
 
-
     let states_attr_list = &sm.states_attr;
     let events_attr_list = &sm.events_attr;
     // A derived `PartialEq` in `events_attr` replaces the variant-only

@@ -1,8 +1,10 @@
 //! Composite machines (single-child and multi-child generators) with
-//! a queued scheduler policy and the testing-only accessor surface.
+//! a queued scheduler policy and the testing-only accessor surface. A
+//! scheduled handle exposes no state queries, so termination is observed as
+//! later events going unaccepted.
 #![cfg(feature = "std")]
 
-use sml::{sml, sml_policies, FifoScheduler, Terminated};
+use sml::{sml, sml_policies, FifoScheduler};
 use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
@@ -77,9 +79,9 @@ fn single_child_composite_runs_on_a_fifo_scheduler() {
     assert!(ready(clone.try_process_event(Start).expect("room")));
     assert!(ready(handle.process_event_async(Step)));
     assert!(!ready(handle.process_event_async(Start)));
-    assert!(!Terminated::is_terminated(&handle));
     assert!(ready(handle.process_event_async(Stop)));
-    assert!(Terminated::is_terminated(&clone));
+    assert!(!ready(clone.process_event_async(Stop)));
+    assert!(!ready(clone.process_event_async(Start)));
 }
 
 #[test]
@@ -92,7 +94,8 @@ fn multi_child_composite_runs_on_a_fifo_scheduler() {
     assert!(ready(handle.process_event_async(Other)));
     assert!(ready(handle.process_event_async(Other)));
     assert!(ready(handle.process_event_async(Stop)));
-    assert!(Terminated::is_terminated(&clone));
+    assert!(!ready(clone.process_event_async(Stop)));
+    assert!(!ready(clone.process_event_async(Start)));
 }
 
 #[test]
@@ -116,7 +119,10 @@ fn unscheduled_composites_keep_the_testing_accessors() {
     tree.initialize().expect("initialize");
     assert_eq!(tree.process_event(Start), Ok(true));
     assert!(tree.state() == &ProbeTreeStates::ProbeLeft);
+    assert!(tree.is(&ProbeTreeStates::ProbeLeft));
+    assert!(tree.probe_left_is_active());
     let _: &Ctx = tree.context();
+    assert!(!sml::Terminated::is_terminated(&tree));
 
     let mut plain = ProbeJobStateMachine::new(Ctx);
     plain.initialize().expect("initialize");
@@ -196,7 +202,8 @@ fn async_and_temporary_context_composites_process_events() {
         assert_eq!(machine.process_event(AsyncChildGo).await, Ok(true));
     });
 
-    let mut machine = ProbeTempParentStateMachine::new(Ctx);
+    let mut machine: ProbeTempParentStateMachine<Ctx, Testing> =
+        ProbeTempParentStateMachine::new_with_policy(Ctx, Testing::default());
     let mut temporary = 0;
     machine.initialize(&mut temporary).expect("initialize");
     assert_eq!(machine.process_event(&mut temporary, TempEnter), Ok(true));
@@ -210,5 +217,5 @@ fn orthogonal_root_composite_runs_on_a_fifo_scheduler() {
     let handle: ProbeOrthoRootStateMachine<Ctx, Fifo> =
         ProbeOrthoRootStateMachine::new_with_policy(Ctx, Fifo::default());
     assert!(ready(handle.process_event_async(Broadcast)));
-    assert!(Terminated::is_terminated(&handle));
+    assert!(!ready(handle.process_event_async(Broadcast)));
 }

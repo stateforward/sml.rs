@@ -795,7 +795,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
             core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ())
         }
-
+    };
+    let testing_api = quote! {
         #[inline(always)]
         pub fn visit_current_state<R>(
             &self,
@@ -834,8 +835,7 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
 
         #[inline(always)]
         pub fn is_terminated(&self) -> bool { self.core.is_terminated() }
-    };
-    let testing_api = quote! {
+
         #[inline(always)]
         pub fn state(&self) -> &#parent_states_name { &self.core.state }
 
@@ -2901,6 +2901,8 @@ fn generate_multi_code(
     };
     let public_api = quote! {
         #public_initialize
+    };
+    let testing_api = quote! {
         #public_root_state_api
 
         /// Visits each static typed event payload with a transition from an
@@ -2918,8 +2920,7 @@ fn generate_multi_code(
         pub fn is_terminated(&self) -> bool {
             self.core.is_terminated()
         }
-    };
-    let testing_api = quote! {
+
         #testing_root_state_api
         #(#child_testing_api)*
 
@@ -5300,6 +5301,25 @@ fn guard_contains_async(guard: &GuardExpression) -> bool {
     }
 }
 
+/// The step-hook where-clause predicates: the policy's hook observes
+/// `events_name` steps with its logger, and the context `T` emits the hook's
+/// outputs.
+fn composite_hook_bound(policy_name: &Ident, events_name: &Ident) -> TokenStream {
+    quote! {
+        <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook:
+            ::sml::StepHook<
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name
+            >,
+        T: ::sml::Emit<
+            <<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name
+            >>::Output
+        >
+    }
+}
+
 /// The `sml::Machine<Events>` implementation of a synchronous composite
 /// machine without a temporary context.
 fn composite_machine_impl(
@@ -5309,17 +5329,13 @@ fn composite_machine_impl(
     events_name: &Ident,
     parent_states_name: &Ident,
 ) -> TokenStream {
+    let hook_bound = composite_hook_bound(policy_name, events_name);
     quote! {
         impl<T: #context_name, #policy_name> ::sml::Machine<#events_name>
             for #machine_name<T, #policy_name>
         where
             #policy_name: ::sml::Policies<Scheduler = ()>,
-            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook:
-                ::sml::StepHook<
-                    T,
-                    <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
-                    #events_name
-                >,
+            #hook_bound
         {
             type State = #parent_states_name;
 
@@ -5382,14 +5398,7 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
         schedulable,
     } = input;
     let core_type = quote! { #core_name<T, #policy_name> };
-    let hook_bound = quote! {
-        <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook:
-            ::sml::StepHook<
-                T,
-                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
-                #events_name
-            >
-    };
+    let hook_bound = composite_hook_bound(policy_name, events_name);
     let step_method = quote! {
         /// Runs one event to completion between the step hook's callbacks.
         /// An event no transition handles is not accepted; guard, action,
@@ -5406,7 +5415,6 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
         {
             let event: #events_name = event.into();
             if !<<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
-                T,
                 <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
                 #events_name,
             >>::ACTIVE
@@ -5420,7 +5428,7 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
             let event_name = ::sml::EventName::name(&event);
             {
                 let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
-                ::sml::StepHook::before_step(hook, &mut self.context, logger, &event);
+                ::sml::StepHook::before_step(hook, logger, &event);
             }
             let result = match self.__sml_process_event_unlocked(#temporary_context_call event)#await_stabilize {
                 Ok(_) => Ok(true),
@@ -5433,7 +5441,10 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
                 terminated: self.is_terminated(),
             };
             let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
-            ::sml::StepHook::after_step(hook, &mut self.context, logger, step);
+            ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+            });
+            ::sml::StepHook::after_step(hook, logger, step);
             result
         }
     };
@@ -5509,12 +5520,13 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name> ::sml::Terminated for #machine_name<T, #policy_name>
         where
-            #policy_name: ::sml::Policies,
-            <#policy_name as ::sml::Policies>::Scheduler: ::sml::Schedule<#core_type>,
+            #policy_name: ::sml::Policies<Scheduler = ()>,
+            <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+                ::sml::TestingAccess,
         {
             #[inline(always)]
             fn is_terminated(&self) -> bool {
-                <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Schedule<#core_type>>::is_terminated(&self.core)
+                self.core.is_terminated()
             }
         }
 

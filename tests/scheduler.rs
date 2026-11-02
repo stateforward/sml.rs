@@ -2,7 +2,7 @@
 //! and run to completion one at a time.
 #![cfg(feature = "std")]
 
-use sml::{sml, sml_policies, FifoScheduler, InlineScheduler, Step, StepHook, Terminated};
+use sml::{sml, sml_policies, Emit, FifoScheduler, InlineScheduler, Step, StepHook};
 use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -67,16 +67,29 @@ impl CounterStateMachineContext for Recorder {
 
 type Journaled = Arc<Mutex<Vec<(Step, Vec<u32>)>>>;
 
-/// Journals each step and drains the context's output.
+/// Journals each step with the outputs it emitted.
 #[derive(Default)]
 pub struct Journal {
     steps: Journaled,
+    emitted: Vec<u32>,
 }
 
-impl<L> StepHook<Recorder, L, CounterEvents> for Journal {
-    fn after_step(&mut self, context: &mut Recorder, _logger: &mut L, step: Step) {
-        let drained = core::mem::take(&mut context.seen);
-        lock(&self.steps).push((step, drained));
+impl Emit<u32> for Recorder {
+    fn drain_outputs(&mut self, sink: impl FnMut(u32)) {
+        self.seen.drain(..).for_each(sink);
+    }
+}
+
+impl<L> StepHook<L, CounterEvents> for Journal {
+    type Output = u32;
+
+    fn output(&mut self, _logger: &mut L, output: u32) {
+        self.emitted.push(output);
+    }
+
+    fn after_step(&mut self, _logger: &mut L, step: Step) {
+        let emitted = core::mem::take(&mut self.emitted);
+        lock(&self.steps).push((step, emitted));
     }
 }
 
@@ -168,9 +181,8 @@ fn fifo_queues_reentrant_events_bounded_and_waits_for_room() {
 #[test]
 fn fifo_resolves_pending_events_false_once_terminated() {
     let machine = CounterStateMachine::new_with_policy(Recorder::default(), Fifo::default());
-    assert!(!Terminated::is_terminated(&machine));
+    assert_eq!(ready(machine.process_event_async(Push(5))), Some(true));
     assert_eq!(ready(machine.process_event_async(Stop)), Some(true));
-    assert!(Terminated::is_terminated(&machine));
     assert_eq!(ready(machine.process_event_async(Push(1))), Some(false));
     assert_eq!(
         machine.try_process_event(Push(1)).ok().and_then(ready),
@@ -190,7 +202,6 @@ fn inline_runs_each_event_under_the_shared_lock() {
         machine.try_process_event(Push(4)).ok().and_then(ready),
         Some(false)
     );
-    assert!(Terminated::is_terminated(&machine));
     assert_eq!(
         *lock(&steps),
         vec![
@@ -203,7 +214,10 @@ fn inline_runs_each_event_under_the_shared_lock() {
 #[cfg(feature = "tokio")]
 mod task {
     use super::{journaled, lock, step, CounterStateMachine, Push, Recorder, Stop, Unknown};
-    use sml::{sml_policies, Terminated, TokioScheduler};
+    use sml::{sml, sml_policies, TokioScheduler, TokioScope};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     sml_policies!(Tokio {
         scheduler: TokioScheduler,
@@ -212,7 +226,8 @@ mod task {
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(4)
+            .enable_time()
             .build()
             .unwrap_or_else(|error| panic!("tokio runtime: {}", error))
     }
@@ -230,19 +245,17 @@ mod task {
             drop(machine.process_event_async(Push(3)));
             let rejected = machine.process_event_async(Unknown);
             let joined = tokio::spawn(second);
-            let accepted = (
+            (
                 first.await,
                 joined.await.unwrap_or(false),
                 rejected.await,
                 machine.process_event_async(Stop).await,
                 machine.process_event_async(Push(4)).await,
-                Terminated::is_terminated(&machine),
-            );
-            accepted
+            )
         });
-        assert_eq!(accepted, (true, true, false, true, false, true));
-        let seen: Vec<_> = lock(&steps).iter().map(|(_, seen)| seen.clone()).collect();
-        assert_eq!(seen, vec![vec![1], vec![2], vec![3], vec![], vec![]]);
+        assert_eq!(accepted, (true, true, false, true, false));
+        let emitted: Vec<_> = lock(&steps).iter().map(|(_, seen)| seen.clone()).collect();
+        assert_eq!(emitted, vec![vec![1], vec![2], vec![3], vec![], vec![]]);
         assert_eq!(
             lock(&steps).last().map(|(step, _)| *step),
             Some(step("Stop", true, true))
@@ -259,5 +272,121 @@ mod task {
             runtime.block_on(async move { completion.ok()?.await.then_some(()) }),
             Some(())
         );
+    }
+
+    pub struct Work;
+    pub struct Halt;
+
+    sml! {
+        Worker {
+            *Idle + event<Work> / work = Idle,
+            Idle + event<Halt> = X,
+        }
+    }
+
+    /// Counts how many workers run a step at once.
+    #[derive(Default)]
+    pub struct Gauge {
+        running: AtomicUsize,
+        most: AtomicUsize,
+    }
+
+    pub struct Busy(Arc<Gauge>);
+
+    impl WorkerStateMachineContext for Busy {
+        fn work(&mut self, _event: &Work) -> Result<(), ()> {
+            let running = self.0.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.0.most.fetch_max(running, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            self.0.running.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    sml_policies!(Scoped {
+        scheduler: TokioScheduler
+    });
+
+    fn worker(scheduler: TokioScheduler, gauge: &Arc<Gauge>) -> WorkerStateMachine<Busy, Scoped> {
+        WorkerStateMachine::new_with_policy(
+            Busy(Arc::clone(gauge)),
+            Scoped::default().with_scheduler(scheduler),
+        )
+    }
+
+    #[test]
+    fn a_scope_caps_how_many_of_its_machines_step_at_once() {
+        let runtime = runtime();
+        let gauge = Arc::new(Gauge::default());
+        let all = runtime.block_on(async {
+            let scope = TokioScope::new(1);
+            let machines: Vec<_> = (0..3).map(|_| worker(scope.scheduler(), &gauge)).collect();
+            let completions: Vec<_> = machines
+                .iter()
+                .flat_map(|machine| (0..3).map(move |_| machine.process_event_async(Work)))
+                .collect();
+            let mut all = true;
+            for completion in completions {
+                all &= completion.await;
+            }
+            all
+        });
+        assert!(all);
+        assert_eq!(gauge.most.load(Ordering::SeqCst), 1);
+    }
+
+    async fn ended(machine: &WorkerStateMachine<Busy, Scoped>) -> bool {
+        // Ending reaches each nested scope through its owner's task.
+        for _ in 0..200 {
+            if !machine.process_event_async(Work).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    #[test]
+    fn an_owner_reaching_x_ends_its_scope_and_every_nested_scope() {
+        let runtime = runtime();
+        let gauge = Arc::new(Gauge::default());
+        let outcome = runtime.block_on(async {
+            let hosted = TokioScope::new(4);
+            let project_scope = TokioScope::new(2);
+            let host = worker(TokioScheduler::default().owning(hosted.clone()), &gauge);
+            let project = worker(hosted.scheduler().owning(project_scope.clone()), &gauge);
+            let child = worker(project_scope.scheduler(), &gauge);
+            let before = (
+                project.process_event_async(Work).await,
+                child.process_event_async(Work).await,
+            );
+            let halted = host.process_event_async(Halt).await;
+            let after = (
+                host.process_event_async(Work).await,
+                ended(&project).await,
+                ended(&child).await,
+            );
+            // A machine placed in an ended scope never starts.
+            let late = worker(project_scope.scheduler(), &gauge);
+            (before, halted, after, late.process_event_async(Work).await)
+        });
+        assert_eq!(outcome, ((true, true), true, (false, true, true), false));
+    }
+
+    #[test]
+    fn ending_a_scope_skips_machines_whose_handles_are_gone() {
+        let runtime = runtime();
+        let gauge = Arc::new(Gauge::default());
+        let accepted = runtime.block_on(async {
+            let scope = TokioScope::new(2);
+            drop(worker(scope.scheduler(), &gauge));
+            let kept = worker(scope.scheduler(), &gauge);
+            let first = kept.process_event_async(Work).await;
+            scope.end();
+            scope.end();
+            (first, ended(&kept).await)
+        });
+        assert_eq!(accepted, (true, true));
+        assert!(format!("{:?}", TokioScope::new(0)).starts_with("TokioScope"));
     }
 }

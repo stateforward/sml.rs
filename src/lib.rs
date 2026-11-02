@@ -73,10 +73,10 @@ mod scheduler;
 pub mod utility;
 
 pub use policy::{
-    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, Emit, EventName, JumpTable, Logger, NoPolicy,
-    Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts, ProcessQueue, Queue,
-    QueuePolicy, RawMutex, StateName, StepHook, SwitchStm, Testing, TestingAccess, TestingPolicy,
-    ThreadSafe, ThreadSafety,
+    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, Emit, EventName, JumpTable, Logger,
+    NoPolicy, Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts, ProcessQueue,
+    Queue, QueuePolicy, RawMutex, StateName, StepHook, SwitchStm, Testing, TestingAccess,
+    TestingPolicy, ThreadSafe, ThreadSafety,
 };
 #[cfg(feature = "std")]
 pub use scheduler::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineScheduler};

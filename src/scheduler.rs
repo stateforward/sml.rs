@@ -488,7 +488,7 @@ mod shared {
 
             let stop = <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 0);
             assert_eq!(poll(stop), Poll::Ready(true));
-            assert!(<FifoScheduler<2> as Schedule<Recorder>>::is_terminated(&cell));
+            assert!(lock(&cell.shared.queue).terminated);
         }
 
         #[test]
@@ -500,7 +500,7 @@ mod shared {
             assert!(lock(&clone.machine).started);
             let stop = <InlineScheduler as Queued<Recorder>>::submit(&cell, 0);
             assert_eq!(poll(stop), Poll::Ready(true));
-            assert!(<InlineScheduler as Schedule<Recorder>>::is_terminated(&cell));
+            assert!(crate::Terminated::is_terminated(&*lock(&cell.machine)));
             let refused = <InlineScheduler as Queued<Recorder>>::try_submit(&cell, 1);
             assert_eq!(refused.ok().map(poll), Some(Poll::Ready(false)));
         }
@@ -711,7 +711,11 @@ mod task {
     }
 
     // Runs one step under the scope's cap; `None` once the scope has ended.
-    async fn step<M>(scope: Option<&TokioScope>, machine: &mut M, job: impl FnOnce(&mut M) -> bool) -> Option<bool> {
+    async fn step<M>(
+        scope: Option<&TokioScope>,
+        machine: &mut M,
+        job: impl FnOnce(&mut M) -> bool,
+    ) -> Option<bool> {
         let slot = match scope {
             Some(scope) => Some(scope.inner.running.acquire().await.ok()?),
             None => None,
@@ -735,6 +739,7 @@ mod task {
         let mut running = started == Some(true);
         if !running {
             events.close();
+            end_owned(owns.as_ref());
         }
         // The task ends once every handle is gone and the queue is empty, or
         // once the machine stopped and its queue drained.
@@ -762,16 +767,21 @@ mod task {
                         // Already-queued events still drain, each resolving `false`.
                         events.close();
                     }
+                    if !running {
+                        end_owned(owns.as_ref());
+                    }
                     // A caller that dropped its completion no longer wants the result.
                     reply.send(accepted).ok();
                 }
             }
             if !running {
-                if let Some(owned) = &owns {
-                    owned.end();
-                }
+                end_owned(owns.as_ref());
             }
         }
+        end_owned(owns.as_ref());
+    }
+
+    fn end_owned(owns: Option<&TokioScope>) {
         if let Some(owned) = owns {
             owned.end();
         }
@@ -788,9 +798,7 @@ mod task {
                 if !scope.join(Box::new(sender.downgrade())) {
                     // The scope already ended: the machine never starts and
                     // every event resolves `false`.
-                    if let Some(owned) = &self.owns {
-                        owned.end();
-                    }
+                    end_owned(self.owns.as_ref());
                     drop(receiver);
                     return TokioCell { events: sender };
                 }
@@ -819,7 +827,9 @@ mod task {
                 return Poll::Ready(false);
             };
             // A closed reply means the task stopped before running the event.
-            Pin::new(reply).poll(cx).map(|accepted| accepted.unwrap_or(false))
+            Pin::new(reply)
+                .poll(cx)
+                .map(|accepted| accepted.unwrap_or(false))
         }
     }
 
@@ -897,16 +907,19 @@ mod tests {
 
     #[test]
     fn the_unit_scheduler_and_hook_keep_the_owned_machine() {
-        let mut machine = <() as Schedule<Recorder>>::cell((), Recorder::default());
-        assert!(!<() as Schedule<Recorder>>::is_terminated(&machine));
-        assert!(!<() as StepHook<Recorder, (), u8>>::ACTIVE);
-        StepHook::<Recorder, (), u8>::before_step(&mut (), &mut machine, &mut (), &1);
+        let machine = <() as Schedule<Recorder>>::cell((), Recorder::default());
+        assert!(!<() as StepHook<(), u8>>::ACTIVE);
+        StepHook::<(), u8>::before_step(&mut (), &mut (), &1);
+        StepHook::<(), u8>::output(&mut (), &mut (), ());
         let step = Step {
             event: "event",
             accepted: true,
             terminated: false,
         };
-        StepHook::<Recorder, (), u8>::after_step(&mut (), &mut machine, &mut (), step);
+        StepHook::<(), u8>::after_step(&mut (), &mut (), step);
+        let mut context = Recorder::default();
+        crate::Emit::<()>::drain_outputs(&mut context, |()| {});
+        assert!(!machine.is_terminated());
         assert!(machine.seen.is_empty());
 
         let (mut parts, (), ()) = Policies::into_parts(NoPolicy::default());
@@ -922,7 +935,8 @@ mod tests {
             DefaultQueuePolicy,
             DefaultQueuePolicy,
         );
-        let (mut parts, (), ()) = Policies::into_parts(bundle.with_scheduler(()).with_step_hook(()));
+        let (mut parts, (), ()) =
+            Policies::into_parts(bundle.with_scheduler(()).with_step_hook(()));
         let ((), ()) = {
             let (hook, logger) = PolicyParts::step_hook_mut(&mut parts);
             (*hook, *logger)

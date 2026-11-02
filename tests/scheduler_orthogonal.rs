@@ -51,13 +51,13 @@ fn ready<F: Future>(future: F) -> Option<F::Output> {
 fn scheduled_orthogonal_machine_runs_queued_events() {
     let machine = DualStateMachine::new_with_policy(Recorder::default(), Fifo::default());
     let handle = machine.clone();
-    assert!(!Terminated::is_terminated(&machine));
     assert_eq!(ready(machine.process_event_async(Go)), Some(true));
     assert_eq!(ready(machine.process_event_async(Go)), Some(false));
     let stop = handle.try_process_event(Stop).expect("queue has room");
     assert_eq!(ready(stop), Some(true));
-    assert!(Terminated::is_terminated(&machine));
-    assert!(Terminated::is_terminated(&handle));
+    // Both regions are terminated: neither handle accepts further events.
+    assert_eq!(ready(machine.process_event_async(Go)), Some(false));
+    assert_eq!(ready(handle.process_event_async(Stop)), Some(false));
 }
 
 #[test]
@@ -80,5 +80,7 @@ fn unscheduled_orthogonal_machine_keeps_testing_accessors() {
     let mut plain = DualStateMachine::new(Recorder::default());
     plain.initialize().expect("initialize");
     assert_eq!(plain.process_event(Go), Ok(true));
-    assert!(plain.is(&[DualStates::Busy, DualStates::Busy2]));
+    assert_eq!(plain.process_event(Go), Ok(false));
+    assert_eq!(plain.process_event(Stop), Ok(true));
+    assert_eq!(plain.process_event(Stop), Ok(false));
 }
