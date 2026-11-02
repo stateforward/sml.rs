@@ -65,7 +65,8 @@ impl<M> Schedule<M> for () {
 /// not cancel it: it still runs, and only its result is discarded. Use
 /// [`Queued::try_submit`] to learn at once that the queue is full. Once the
 /// machine reaches `X`, queued and later events resolve to `false` without
-/// running.
+/// running. A machine whose initialization failed is closed the same way:
+/// every event resolves to `false` without running.
 pub trait Queued<M: SyncMachineStep>: Schedule<M> + StrictOrdering {
     /// Resolves to the event's acceptance after it has run to completion.
     type Completion: core::future::Future<Output = bool>;
@@ -149,12 +150,15 @@ mod shared {
     /// Shared storage for an [`InlineScheduler`] machine.
     pub struct InlineCell<M> {
         machine: Arc<Mutex<M>>,
+        // False when initialization failed; the handle then accepts nothing.
+        started: bool,
     }
 
     impl<M> Clone for InlineCell<M> {
         fn clone(&self) -> Self {
             Self {
                 machine: Arc::clone(&self.machine),
+                started: self.started,
             }
         }
     }
@@ -175,9 +179,10 @@ mod shared {
 
     impl<M: SyncMachineStep> Schedule<M> for InlineScheduler {
         fn cell(self, mut machine: M) -> InlineCell<M> {
-            let _ = machine.start();
+            let started = machine.start();
             InlineCell {
                 machine: Arc::new(Mutex::new(machine)),
+                started,
             }
         }
     }
@@ -188,7 +193,7 @@ mod shared {
         fn submit(cell: &InlineCell<M>, event: M::Event) -> Self::Completion {
             let accepted = {
                 let mut machine = lock(&cell.machine);
-                !machine.is_terminated() && machine.step(event)
+                cell.started && !machine.is_terminated() && machine.step(event)
             };
             core::future::ready(accepted)
         }
@@ -390,8 +395,8 @@ mod shared {
     impl<M: SyncMachineStep, const N: usize> Schedule<M> for FifoScheduler<N> {
         fn cell(self, mut machine: M) -> FifoCell<M, N> {
             let () = Self::VALID_CAPACITY;
-            let _ = machine.start();
-            let terminated = machine.is_terminated();
+            // A machine whose initialization failed is closed like one in `X`.
+            let terminated = !machine.start() || machine.is_terminated();
             FifoCell {
                 shared: Arc::new(FifoShared {
                     machine: Mutex::new(machine),
@@ -728,6 +733,31 @@ mod shared {
             let refused = <InlineScheduler as Queued<Recorder>>::try_submit(&cell, 1);
             assert_eq!(refused.ok().map(poll), Some(Poll::Ready(false)));
         }
+
+        fn failing_start() -> Recorder {
+            let mut recorder = Recorder::default();
+            recorder.fail_start = true;
+            recorder
+        }
+
+        #[test]
+        fn a_failed_start_closes_the_handle() {
+            let inline =
+                <InlineScheduler as Schedule<Recorder>>::cell(InlineScheduler, failing_start());
+            let clone = inline.clone();
+            let refused = <InlineScheduler as Queued<Recorder>>::submit(&clone, 1);
+            assert_eq!(poll(refused), Poll::Ready(false));
+            assert!(lock(&inline.machine).seen.is_empty());
+
+            let fifo =
+                <FifoScheduler<2> as Schedule<Recorder>>::cell(FifoScheduler, failing_start());
+            assert!(lock(&fifo.shared.queue).terminated);
+            let refused = <FifoScheduler<2> as Queued<Recorder>>::submit(&fifo, 1);
+            assert_eq!(poll(refused), Poll::Ready(false));
+            let refused = <FifoScheduler<2> as Queued<Recorder>>::try_submit(&fifo, 2);
+            assert_eq!(refused.ok().map(poll), Some(Poll::Ready(false)));
+            assert!(lock(&fifo.shared.machine).seen.is_empty());
+        }
     }
 }
 
@@ -748,6 +778,7 @@ mod tests {
         pub(super) started: bool,
         pub(super) seen: Vec<u8>,
         stopped: bool,
+        pub(super) fail_start: bool,
     }
 
     impl Terminated for Recorder {
@@ -761,7 +792,7 @@ mod tests {
 
         fn start(&mut self) -> bool {
             self.started = true;
-            true
+            !self.fail_start
         }
 
         fn step(&mut self, event: u8) -> bool {
