@@ -409,7 +409,8 @@ state as `*"idle"_s(H)` to retain shallow history across re-entry, exactly as
 in `sml.cpp`. `is` accepts the child's states enum too, so
 `sm.is(&ParentSubStates::Idle)` checks inside the child (the Rust spelling of
 `sm.is<decltype(sub)>(state)`), while `sm.is(&ParentStates::Sub)` tells
-whether the child is active. Parent and child lifecycle
+whether the child is active. The child query also answers while the child is
+inactive, from the state it retains. Parent and child lifecycle
 rows and unexpected handlers participate in the same child-first ordering.
 Sync or async guards/actions are supported. A parent anonymous transition from
 `state<Sub>` becomes eligible only after the child reaches `X`, matching

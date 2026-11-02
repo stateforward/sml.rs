@@ -174,7 +174,10 @@ shape-specific inherent processing APIs.
 
 `is` compares variants and ignores payloads, matching `sml.cpp`'s
 `sm.is(state)`; `sm.is(&ChildStates::Idle)` is the Rust spelling of
-`sm.is<decltype(sub)>(state)`. The terminal check is `sm.is(&States::X)`. A
+`sm.is<decltype(sub)>(state)`. A child query reports the child's current
+state, or the state it retains while inactive; combine it with
+`sm.is(&ParentStates::Child)` to require that the child is active. The terminal
+check is `sm.is(&States::X)`. A
 child machine may appear only once in a composite tree; the generator already
 rejects a second owner or an overlapping region, so a child states enum names
 exactly one place in the tree.

@@ -62,6 +62,9 @@ enum (an array of them for an orthogonal root), and each child machine's
 states enum (an array for a child with regions). It compares variants and
 ignores payloads, so `sm.is(&ChildStates::Loaded(Loaded(0)))` matches any
 `Loaded` payload; read payloads in `visit_current_states` or in a callback.
+A child query compares the child's stored state, as `is_child` did, so it also
+answers while the child is inactive; add `sm.is(&ParentStates::Child)` when the
+child must be active.
 A child machine may appear only once in a tree, which the generator already
 enforces, so each child states enum names one place.
 
