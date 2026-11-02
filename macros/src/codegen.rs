@@ -1651,11 +1651,20 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         temporary_context_generics.split_for_impl();
     let initialize_uses_temporary_context = sm.temporary_context_type.is_some()
         && (has_anonymous_completion || !entry_actions.is_empty());
-    let initialize_generics = if initialize_uses_temporary_context {
+    let mut initialize_generics = if initialize_uses_temporary_context {
         temporary_context_generics.clone()
     } else {
         syn::Generics::default()
     };
+    // Initialization reports what it emitted to the step hook when the event
+    // type is nameable without the per-call event generics.
+    let reports_start = dispatch_generics.params.is_empty();
+    if reports_start {
+        initialize_generics
+            .make_where_clause()
+            .predicates
+            .extend([step_hook_bound.clone(), emit_bound.clone()]);
+    }
     let (initialize_impl_generics, _, initialize_where_clause) =
         initialize_generics.split_for_impl();
     let completion_origin_clone_arms: Vec<_> = completion_events
@@ -1889,6 +1898,58 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let logger_type = quote! {
         <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger
     };
+    let start_step = quote! {
+        ::sml::Step {
+            event: "initialize",
+            accepted,
+            terminated: self.is_terminated(),
+        }
+    };
+    // Machines whose initialization cannot name the event type hand what
+    // initialization emitted to the hook as its own step before the first
+    // event's step.
+    let leftover_start = (!reports_start).then(|| {
+        quote! {
+            {
+                let accepted = true;
+                let step = #start_step;
+                let mut emitted = false;
+                let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+                ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                    emitted = true;
+                    ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+                });
+                if emitted {
+                    ::sml::StepHook::after_step(hook, logger, step);
+                }
+            }
+        }
+    });
+    let report_start = reports_start.then(|| {
+        quote! {
+            /// Hands what initialization emitted to the step hook as its own
+            /// `initialize` step.
+            #[inline]
+            fn __sml_report_start(&mut self, accepted: bool)
+            where
+                #step_hook_bound,
+                #emit_bound
+            {
+                if !<#step_hook_type as ::sml::StepHook<#logger_type, #events_type_name #event_type_generics>>::ACTIVE {
+                    return;
+                }
+                let step = #start_step;
+                let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+                ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                    ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+                });
+                ::sml::StepHook::after_step(hook, logger, step);
+            }
+        }
+    });
+    let report_initialize = reports_start.then(|| {
+        quote! { core.__sml_report_start(result.is_ok()); }
+    });
     let step_process = quote! {
         /// Runs one event to completion between the step hook's callbacks.
         /// An event no transition handles is not accepted; guard, action,
@@ -1907,6 +1968,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                     self.__sml_process_event_unlocked(#temporary_context_call event)#step_await,
                 );
             }
+            #leftover_start
             let event_name = ::sml::EventName::name(&event);
             {
                 let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
@@ -2000,7 +2062,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             let thread_safe = &self.thread_safe;
             let core = &mut self.core;
             let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-            core.__sml_initialize_unlocked(#initialize_call)#completion_await.map(|_| ())
+            let result = core.__sml_initialize_unlocked(#initialize_call)#completion_await.map(|_| ());
+            #report_initialize
+            result
         }
     };
 
@@ -2083,7 +2147,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
                 #[inline]
                 fn start(&mut self) -> bool {
-                    self.__sml_initialize_unlocked().is_ok()
+                    let accepted = self.__sml_initialize_unlocked().is_ok();
+                    self.__sml_report_start(accepted);
+                    accepted
                 }
 
                 #[inline]
@@ -2444,6 +2510,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #queued_dispatch
             #unlocked_process
             #step_process
+            #report_start
 
             #[inline(always)]
             fn __sml_log_process_event(

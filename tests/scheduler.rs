@@ -80,7 +80,7 @@ impl Emit<u32> for Recorder {
     }
 }
 
-impl<L> StepHook<L, CounterEvents> for Journal {
+impl<L, E> StepHook<L, E> for Journal {
     type Output = u32;
 
     fn output(&mut self, _logger: &mut L, output: u32) {
@@ -142,6 +142,7 @@ fn fifo_runs_an_idle_machines_event_before_returning() {
     assert_eq!(
         *lock(&steps),
         vec![
+            (step("initialize", true, false), vec![]),
             (step("Push", true, false), vec![7]),
             (step("Again", true, false), vec![99]),
             (step("Unknown", false, false), vec![]),
@@ -166,7 +167,10 @@ fn fifo_queues_reentrant_events_bounded_and_waits_for_room() {
     // Four events fit the queue; the fifth is refused without being queued.
     assert_eq!(*lock(&reentry.tried), vec![true, true, true, true, false]);
     let seen: Vec<_> = lock(&steps).iter().map(|(_, seen)| seen.clone()).collect();
-    assert_eq!(seen, vec![vec![1], vec![10], vec![11], vec![12], vec![13]]);
+    assert_eq!(
+        seen,
+        vec![vec![], vec![1], vec![10], vec![11], vec![12], vec![13]]
+    );
 
     // The async entry point waited for room instead; the machine is idle now,
     // so polling it runs the event.
@@ -205,10 +209,67 @@ fn inline_runs_each_event_under_the_shared_lock() {
     assert_eq!(
         *lock(&steps),
         vec![
+            (step("initialize", true, false), vec![]),
             (step("Push", true, false), vec![3]),
             (step("Stop", true, true), vec![]),
         ]
     );
+}
+
+sml! {
+    Greeter {
+        *Idle + on_entry<_> / greet,
+        Idle + event<Push> / record = Idle,
+    }
+}
+
+/// Emits `0` when it enters `Idle` and each pushed value afterwards.
+#[derive(Default)]
+pub struct Greetings(Vec<u32>);
+
+impl GreeterStateMachineContext for Greetings {
+    fn greet(&mut self) -> Result<(), ()> {
+        self.0.push(0);
+        Ok(())
+    }
+
+    fn record(&mut self, event: &Push) -> Result<(), ()> {
+        self.0.push(event.0);
+        Ok(())
+    }
+}
+
+impl Emit<u32> for Greetings {
+    fn drain_outputs(&mut self, sink: impl FnMut(u32)) {
+        self.0.drain(..).for_each(sink);
+    }
+}
+
+sml_policies!(Hooked { step_hook: Journal });
+
+#[test]
+fn initialization_reports_what_it_emitted_as_its_own_step() {
+    let (policy, steps) = journaled(|journal| Hooked::default().with_step_hook(journal));
+    let mut machine = GreeterStateMachine::new_with_policy(Greetings::default(), policy);
+    assert_eq!(machine.initialize(), Ok(()));
+    assert_eq!(machine.process_event(Push(5)), Ok(true));
+    assert_eq!(
+        *lock(&steps),
+        vec![
+            (step("initialize", true, false), vec![0]),
+            // The self-transition re-enters `Idle`, so `greet` runs again.
+            (step("Push", true, false), vec![5, 0]),
+        ]
+    );
+
+    // A queued machine initializes when constructed.
+    let (policy, steps) = journaled(|journal| Fifo::default().with_step_hook(journal));
+    let machine = GreeterStateMachine::new_with_policy(Greetings::default(), policy);
+    assert_eq!(
+        *lock(&steps),
+        vec![(step("initialize", true, false), vec![0])]
+    );
+    assert_eq!(ready(machine.process_event_async(Push(6))), Some(true));
 }
 
 #[cfg(feature = "tokio")]
@@ -255,7 +316,10 @@ mod task {
         });
         assert_eq!(accepted, (true, true, false, true, false));
         let emitted: Vec<_> = lock(&steps).iter().map(|(_, seen)| seen.clone()).collect();
-        assert_eq!(emitted, vec![vec![1], vec![2], vec![3], vec![], vec![]]);
+        assert_eq!(
+            emitted,
+            vec![vec![], vec![1], vec![2], vec![3], vec![], vec![]]
+        );
         assert_eq!(
             lock(&steps).last().map(|(step, _)| *step),
             Some(step("Stop", true, true))

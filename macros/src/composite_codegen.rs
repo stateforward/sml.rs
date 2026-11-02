@@ -786,14 +786,14 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             &parent_states_name,
         )
     });
+    let init_hook_bound = composite_hook_bound(&policy_name, &events_name);
     let public_api = quote! {
         /// Enters the initial parent and child states and runs anonymous
         /// `completion<_>` transitions until the machine reaches a stable state.
-        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<(), #generated_error> {
-            let thread_safe = &self.thread_safe;
-            let core = &mut self.core;
-            let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ())
+        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<(), #generated_error>
+       where
+           #init_hook_bound
+       {            let thread_safe = &self.thread_safe;            let core = &mut self.core;            let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);            let result = core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ());            core.__sml_report_start(result.is_ok());            result
         }
     };
     let testing_api = quote! {
@@ -2808,6 +2808,7 @@ fn generate_multi_code(
     } else {
         quote! { &#parent_states_name }
     };
+    let init_hook_bound = composite_hook_bound(&policy_name, &events_name);
     let public_initialize = if root_region_count.is_some() {
         quote! {
             /// Enters each initial parent and child state and runs anonymous
@@ -2815,11 +2816,10 @@ fn generate_multi_code(
             pub #async_keyword fn initialize(
                 &mut self,
                 #temporary_context_parameter
-            ) -> Result<(), #generated_error> {
-                let thread_safe = &self.thread_safe;
-                let core = &mut self.core;
-                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-                core.initialize(#temporary_context_call)#await_stabilize.map(|_| ())
+            ) -> Result<(), #generated_error>
+           where
+               #init_hook_bound
+           {                let thread_safe = &self.thread_safe;                let core = &mut self.core;                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);                let result = core.initialize(#temporary_context_call)#await_stabilize.map(|_| ());                core.__sml_report_start(result.is_ok());                result
             }
         }
     } else {
@@ -2829,11 +2829,10 @@ fn generate_multi_code(
             pub #async_keyword fn initialize(
                 &mut self,
                 #temporary_context_parameter
-            ) -> Result<(), #generated_error> {
-                let thread_safe = &self.thread_safe;
-                let core = &mut self.core;
-                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-                core.initialize(#temporary_context_call)#await_stabilize.map(|_| ())
+            ) -> Result<(), #generated_error>
+           where
+               #init_hook_bound
+           {                let thread_safe = &self.thread_safe;                let core = &mut self.core;                let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);                let result = core.initialize(#temporary_context_call)#await_stabilize.map(|_| ());                core.__sml_report_start(result.is_ok());                result
             }
         }
     };
@@ -5447,6 +5446,32 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
             ::sml::StepHook::after_step(hook, logger, step);
             result
         }
+
+        /// Hands what initialization emitted to the step hook as its own
+        /// `initialize` step.
+        #[inline]
+        fn __sml_report_start(&mut self, accepted: bool)
+        where
+            #hook_bound
+        {
+            if !<<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name,
+            >>::ACTIVE
+            {
+                return;
+            }
+            let step = ::sml::Step {
+                event: "initialize",
+                accepted,
+                terminated: self.is_terminated(),
+            };
+            let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+            ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+            });
+            ::sml::StepHook::after_step(hook, logger, step);
+        }
     };
     let scheduled_api = schedulable.then(|| {
         quote! {
@@ -5459,7 +5484,9 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
 
                 #[inline]
                 fn start(&mut self) -> bool {
-                    #start
+                    let accepted = { #start };
+                    self.__sml_report_start(accepted);
+                    accepted
                 }
 
                 #[inline]

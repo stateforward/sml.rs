@@ -561,6 +561,32 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             ::sml::StepHook::after_step(hook, logger, step);
             result
         }
+
+        /// Hands what initialization emitted to the step hook as its own
+        /// `initialize` step.
+        #[inline]
+        fn __sml_report_start(&mut self, accepted: bool)
+        where
+            #step_hook_bound
+        {
+            if !<<<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::StepHook as ::sml::StepHook<
+                <<#policy_name as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger,
+                #events_name,
+            >>::ACTIVE
+            {
+                return;
+            }
+            let step = ::sml::Step {
+                event: "initialize",
+                accepted,
+                terminated: self.is_terminated(),
+            };
+            let (hook, logger) = ::sml::PolicyParts::step_hook_mut(&mut self.policy);
+            ::sml::Emit::drain_outputs(&mut self.context, |output| {
+                ::sml::StepHook::output(&mut *hook, &mut *logger, output);
+            });
+            ::sml::StepHook::after_step(hook, logger, step);
+        }
     };
     let schedulable = !is_async_machine && machine.temporary_context_type.is_none();
     let scheduled_api = schedulable.then(|| {
@@ -573,7 +599,9 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
 
                 #[inline]
                 fn start(&mut self) -> bool {
-                    self.__sml_initialize_unlocked().is_ok()
+                    let accepted = self.__sml_initialize_unlocked().is_ok();
+                    self.__sml_report_start(accepted);
+                    accepted
                 }
 
                 #[inline]
@@ -641,11 +669,16 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     let public_api = quote! {
         /// Enters each initial state and runs anonymous `completion<_>`
         /// transitions until all regions reach stable states.
-        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<(), #generated_error> {
+        pub #async_keyword fn initialize(&mut self, #temporary_context_parameter) -> Result<(), #generated_error>
+        where
+            #step_hook_bound
+        {
             let thread_safe = &self.thread_safe;
             let core = &mut self.core;
             let _sml_thread_guard = ::sml::ThreadSafety::lock(thread_safe);
-            core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ())
+            let result = core.__sml_initialize_unlocked(#temporary_context_call)#await_stabilize.map(|_| ());
+            core.__sml_report_start(result.is_ok());
+            result
         }
     };
 

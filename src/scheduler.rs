@@ -269,6 +269,63 @@ mod shared {
         }
     }
 
+    // Resolves its event's caller to `false` unless the step completed, so a
+    // panicking step never leaves a caller waiting.
+    struct Pending(Option<Arc<Ticket>>);
+
+    impl Pending {
+        // Runs `job` unless the machine already terminated; returns its
+        // acceptance and whether the machine is now terminated.
+        fn run<M: SyncMachineStep, const N: usize>(
+            mut self,
+            cell: &FifoCell<M, N>,
+            job: impl FnOnce(&mut M) -> bool,
+            terminated: bool,
+        ) -> (bool, bool)
+        where
+            M::Event: Send + 'static,
+        {
+            let outcome = if terminated {
+                (false, true)
+            } else {
+                cell.run(job)
+            };
+            if let Some(ticket) = self.0.take() {
+                ticket.resolve(outcome.0);
+            }
+            outcome
+        }
+    }
+
+    impl Drop for Pending {
+        fn drop(&mut self) {
+            if let Some(ticket) = self.0.take() {
+                ticket.resolve(false);
+            }
+        }
+    }
+
+    // Clears `draining` when a step panics, so the next caller drains.
+    struct Unwinding<'a, Q: Draining>(&'a Mutex<Q>);
+
+    trait Draining {
+        fn stop_draining(&mut self);
+    }
+
+    impl<M, const N: usize> Draining for FifoQueue<M, N> {
+        fn stop_draining(&mut self) {
+            self.draining = false;
+        }
+    }
+
+    impl<Q: Draining> Drop for Unwinding<'_, Q> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                lock(self.0).stop_draining();
+            }
+        }
+    }
+
     impl<const N: usize> FifoScheduler<N> {
         const VALID_CAPACITY: () = assert!(
             N > 1 && N.is_power_of_two(),
@@ -321,7 +378,7 @@ mod shared {
             if queue.terminated {
                 return Offer::Done(false);
             }
-            if queue.draining || !queue.events.is_empty() {
+            if queue.draining {
                 if queue.events.len() == N {
                     if let Some(waker) = waker {
                         queue.room.push(waker.clone());
@@ -337,15 +394,32 @@ mod shared {
                 return Offer::Queued(ticket);
             }
             queue.draining = true;
+            let job: Job<M> = Box::new(move |machine: &mut M| machine.step(event));
+            if let Some((older, older_ticket)) = queue.events.pop() {
+                // A drainer unwound from a panicking step and left events
+                // queued; they are older than this one, so it queues behind
+                // them in the slot the pop freed.
+                let ticket = Arc::new(Ticket::default());
+                if queue.events.defer((job, Arc::clone(&ticket))).is_err() {
+                    ticket.resolve(false);
+                }
+                drop(queue);
+                self.drain(older, Some(older_ticket));
+                return Offer::Queued(ticket);
+            }
             drop(queue);
-            Offer::Done(self.drain(event))
+            Offer::Done(self.drain(job, None))
         }
 
         // Runs `first`, then every event queued meanwhile, and leaves the
         // machine idle. Only the caller that set `draining` gets here, so the
-        // machine lock is never contended.
-        fn drain(&self, first: M::Event) -> bool {
-            let (accepted, mut terminated) = self.run(move |machine: &mut M| machine.step(first));
+        // machine lock is never contended. A panicking step unwinds through
+        // the caller draining at that moment; the guards resolve the
+        // panicking event's caller to `false` and hand draining to the next
+        // caller, which runs what is still queued first.
+        fn drain(&self, first: Job<M>, ticket: Option<Arc<Ticket>>) -> bool {
+            let _unwinding = Unwinding(&self.shared.queue);
+            let (accepted, mut terminated) = Pending(ticket).run(self, first, false);
             loop {
                 let (next, room) = {
                     let mut queue = lock(&self.shared.queue);
@@ -362,14 +436,7 @@ mod shared {
                 let Some((job, ticket)) = next else {
                     return accepted;
                 };
-                let result = if terminated {
-                    false
-                } else {
-                    let (result, now_terminated) = self.run(job);
-                    terminated = now_terminated;
-                    result
-                };
-                ticket.resolve(result);
+                terminated = Pending(Some(ticket)).run(self, job, terminated).1;
             }
         }
 
@@ -460,7 +527,9 @@ mod shared {
     #[cfg(test)]
     mod tests {
         use super::super::tests::{poll, Recorder};
-        use super::{lock, FifoScheduler, InlineScheduler, Queued, Schedule, StrictOrdering};
+        use super::{
+            lock, FifoScheduler, InlineScheduler, Queued, Schedule, StrictOrdering, SyncMachineStep,
+        };
         use core::task::Poll;
         extern crate std;
         use std::boxed::Box;
@@ -490,7 +559,10 @@ mod shared {
             });
             assert_eq!(ran, Some(true));
 
-            assert!(cell.drain(9));
+            assert!(cell.drain(
+                Box::new(|machine: &mut Recorder| SyncMachineStep::step(machine, 9)),
+                None
+            ));
             assert_eq!(poll(first.as_mut()), Poll::Ready(true));
             assert_eq!(poll(waiting.as_mut()), Poll::Ready(true));
             assert_eq!(lock(&cell.shared.machine).seen, [1, 9, 2, 3]);
@@ -498,6 +570,31 @@ mod shared {
             let stop = <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 0);
             assert_eq!(poll(stop), Poll::Ready(true));
             assert!(lock(&cell.shared.queue).terminated);
+        }
+
+        #[test]
+        fn a_panicking_step_hands_draining_to_the_next_caller() {
+            let cell =
+                <FifoScheduler<2> as Schedule<Recorder>>::cell(FifoScheduler, Recorder::default());
+            lock(&cell.shared.queue).draining = true;
+            let mut panicked = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 7));
+            let mut later = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 8));
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cell.drain(
+                    Box::new(|machine: &mut Recorder| SyncMachineStep::step(machine, 1)),
+                    None,
+                )
+            }));
+            assert!(unwound.is_err());
+            assert!(!lock(&cell.shared.queue).draining);
+            assert_eq!(poll(panicked.as_mut()), Poll::Ready(false));
+            assert_eq!(poll(later.as_mut()), Poll::Pending);
+
+            // The next caller drains: the event left queued runs before its own.
+            let next = <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 2);
+            assert_eq!(poll(next), Poll::Ready(true));
+            assert_eq!(poll(later.as_mut()), Poll::Ready(true));
+            assert_eq!(lock(&cell.shared.machine).seen, [1, 8, 2]);
         }
 
         #[test]
@@ -900,6 +997,9 @@ mod tests {
         }
 
         fn step(&mut self, event: u8) -> bool {
+            if event == 7 {
+                std::panic::resume_unwind(std::boxed::Box::new("a step panicked"));
+            }
             self.seen.push(event);
             self.stopped = event == 0;
             true
