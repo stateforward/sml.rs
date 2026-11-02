@@ -50,7 +50,7 @@ fn main() {
     let mut sm: BatteryStateMachine<Context, TestingPolicies> =
         BatteryStateMachine::new_with_policy(Context, TestingPolicies::default());
 
-    assert!(matches!(sm.state(), &BatteryStates::Idle));
+    assert!(sm.is(&BatteryStates::Idle));
 
     let r = sm.process_event(BatteryEvents::Charge);
     assert!(matches!(r, Ok(&BatteryStates::Charging)));
@@ -66,7 +66,7 @@ fn main() {
 
     let r = sm.process_event(BatteryEvents::Charge);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Charged));
+    assert!(sm.is(&BatteryStates::Charged));
 
     let r = sm.process_event(BatteryEvents::Discharge);
     assert!(matches!(r, Ok(&BatteryStates::Discharging)));
@@ -76,7 +76,7 @@ fn main() {
 
     let r = sm.process_event(BatteryEvents::Discharge);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Discharged));
+    assert!(sm.is(&BatteryStates::Discharged));
 
     sm.set_current_states(BatteryStates::Idle);
     let r = sm.process_event(BatteryEvents::FaultDetected);
@@ -100,17 +100,17 @@ fn main() {
 
     let r = sm.process_event(BatteryEvents::Charge);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::Discharge);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::ChargeComplete);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert!(sm.is(&BatteryStates::Fault));
 
     let r = sm.process_event(BatteryEvents::DischargeComplete);
     assert!(matches!(r, Err(BatteryError::InvalidEvent)));
-    assert!(matches!(sm.state(), &BatteryStates::Fault));
+    assert!(sm.is(&BatteryStates::Fault));
 }

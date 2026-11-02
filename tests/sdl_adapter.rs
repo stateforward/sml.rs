@@ -32,15 +32,15 @@ sml! {
 )]
 #[derive(Default)]
 struct Context {
-    initialized: bool,
-    space_pressed: bool,
-    mouse_pressed: bool,
-    quit: bool,
+    initialized: core::cell::Cell<bool>,
+    space_pressed: core::cell::Cell<bool>,
+    mouse_pressed: core::cell::Cell<bool>,
+    quit: core::cell::Cell<bool>,
 }
 
-impl Sdl2StateMachineContext for Context {
+impl Sdl2StateMachineContext for &Context {
     fn initialize(&mut self) -> Result<(), ()> {
-        self.initialized = true;
+        self.initialized.set(true);
         Ok(())
     }
 
@@ -49,30 +49,30 @@ impl Sdl2StateMachineContext for Context {
     }
 
     fn space_pressed(&mut self, _: &KeyUp) -> Result<(), ()> {
-        self.space_pressed = true;
+        self.space_pressed.set(true);
         Ok(())
     }
 
     fn mouse_pressed(&mut self, event: &MouseButtonUp) -> Result<(), ()> {
         let _ = event.0;
-        self.mouse_pressed = true;
+        self.mouse_pressed.set(true);
         Ok(())
     }
 
     fn quit(&mut self, event: &Quit) -> Result<(), ()> {
         let _ = event.0;
-        self.quit = true;
+        self.quit.set(true);
         Ok(())
     }
 }
 
-type Handler = fn(&mut Sdl2StateMachine<Context>, &SdlEvent) -> bool;
+type Handler<'a> = fn(&mut Sdl2StateMachine<&'a Context>, &SdlEvent) -> bool;
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn key_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+fn key_up(machine: &mut Sdl2StateMachine<&Context>, event: &SdlEvent) -> bool {
     machine.process_event(KeyUp(*event)).is_ok()
 }
 
@@ -80,7 +80,7 @@ fn key_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn mouse_button_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+fn mouse_button_up(machine: &mut Sdl2StateMachine<&Context>, event: &SdlEvent) -> bool {
     machine.process_event(MouseButtonUp(*event)).is_ok()
 }
 
@@ -88,14 +88,19 @@ fn mouse_button_up(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) ->
     clippy::trivially_copy_pass_by_ref,
     reason = "the adapter callback signature mirrors the public callback contract"
 )]
-fn quit(machine: &mut Sdl2StateMachine<Context>, event: &SdlEvent) -> bool {
+fn quit(machine: &mut Sdl2StateMachine<&Context>, event: &SdlEvent) -> bool {
     machine.process_event(Quit(*event)).is_ok()
 }
 
 #[test]
 fn sdl_runtime_ids_dispatch_into_native_orthogonal_regions() {
-    let handlers: [Handler; 3] = [key_up, mouse_button_up, quit];
-    let mut machine = Sdl2StateMachine::new(Context::default());
+    let context = Context::default();
+    let handlers: [Handler<'_>; 3] = [
+        |machine, event| key_up(machine, event),
+        |machine, event| mouse_button_up(machine, event),
+        |machine, event| quit(machine, event),
+    ];
+    let mut machine = Sdl2StateMachine::new(&context);
     machine.initialize().unwrap();
     let mut dispatch = DispatchTable::new(&mut machine, SDL_KEYUP, &handlers);
 
@@ -111,9 +116,9 @@ fn sdl_runtime_ids_dispatch_into_native_orthogonal_regions() {
         dispatch.dispatch(&SdlEvent { key: 0 }, SDL_QUIT),
         Some(true)
     );
-    assert!(dispatch.machine().is_terminated());
-    assert!(dispatch.machine().context().initialized);
-    assert!(dispatch.machine().context().space_pressed);
-    assert!(dispatch.machine().context().mouse_pressed);
-    assert!(dispatch.machine().context().quit);
+    assert!(dispatch.machine().is(&[Sdl2States::X, Sdl2States::X]));
+    assert!(context.initialized.get());
+    assert!(context.space_pressed.get());
+    assert!(context.mouse_pressed.get());
+    assert!(context.quit.get());
 }

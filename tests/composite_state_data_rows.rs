@@ -36,10 +36,10 @@ sml! {
 
 #[derive(Default)]
 struct DataRowsContext {
-    log: Vec<String>,
+    log: core::cell::RefCell<Vec<String>>,
 }
 
-impl DataRowsStateMachineContext for DataRowsContext {
+impl DataRowsStateMachineContext for &DataRowsContext {
     fn make(&mut self, event: &Input) -> Result<Data, Fault> {
         Ok(Data(event.value))
     }
@@ -53,12 +53,12 @@ impl DataRowsStateMachineContext for DataRowsContext {
     }
 
     fn take_one(&mut self, data: &Data, _: &Input) -> Result<(), Fault> {
-        self.log.push(format!("take_one {}", data.0));
+        self.log.borrow_mut().push(format!("take_one {}", data.0));
         Ok(())
     }
 
     fn take_other(&mut self, data: &Data, _: &Input) -> Result<(), Fault> {
-        self.log.push(format!("take_other {}", data.0));
+        self.log.borrow_mut().push(format!("take_other {}", data.0));
         if data.0 == 3 {
             Err(Fault)
         } else {
@@ -67,44 +67,50 @@ impl DataRowsStateMachineContext for DataRowsContext {
     }
 
     fn poke_one(&mut self, data: &Data, _: &Poke) -> Result<(), Fault> {
-        self.log.push(format!("poke_one {}", data.0));
+        self.log.borrow_mut().push(format!("poke_one {}", data.0));
         Ok(())
     }
 
     fn poke_other(&mut self, data: &Data, _: &Poke) -> Result<(), Fault> {
-        self.log.push(format!("poke_other {}", data.0));
+        self.log.borrow_mut().push(format!("poke_other {}", data.0));
         Ok(())
     }
 
     fn recover_one(&mut self, data: &Data, _: &Fault) -> Result<(), Fault> {
-        self.log.push(format!("recover_one {}", data.0));
+        self.log
+            .borrow_mut()
+            .push(format!("recover_one {}", data.0));
         Ok(())
     }
 
     fn recover_other(&mut self, data: &Data, _: &Fault) -> Result<(), Fault> {
-        self.log.push(format!("recover_other {}", data.0));
+        self.log
+            .borrow_mut()
+            .push(format!("recover_other {}", data.0));
         Ok(())
     }
 }
 
 #[test]
 fn two_level_child_data_state_rows_on_one_trigger_each_read_the_data() {
-    let mut machine = DataRowsStateMachine::new(DataRowsContext::default());
+    let context = DataRowsContext::default();
+    let mut machine = DataRowsStateMachine::new(&context);
     machine.process_event(Input { value: 1 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
     machine.process_event(Input { value: 2 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
-    assert_eq!(machine.context().log, ["take_one 1", "take_other 2"]);
+    assert_eq!(*context.log.borrow(), ["take_one 1", "take_other 2"]);
 }
 
 #[test]
 fn two_level_child_data_state_exception_rows_read_the_data() {
     // The fault from a completion row is caught by the first of two exception
     // rows on the same data-carrying state (the stabilize fault fix).
-    let mut machine = DataRowsStateMachine::new(DataRowsContext::default());
+    let context = DataRowsContext::default();
+    let mut machine = DataRowsStateMachine::new(&context);
     machine.process_event(Input { value: 3 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
-    assert_eq!(machine.context().log, ["take_other 3", "recover_one 3"]);
+    assert_eq!(*context.log.borrow(), ["take_other 3", "recover_one 3"]);
 }
 
 pub struct EnterOther;
@@ -130,10 +136,10 @@ sml! {
 
 #[derive(Default)]
 struct MultiDataContext {
-    log: Vec<String>,
+    log: core::cell::RefCell<Vec<String>>,
 }
 
-impl MultiDataRowsStateMachineContext for MultiDataContext {
+impl MultiDataRowsStateMachineContext for &MultiDataContext {
     fn multi_make(&mut self, event: &Input) -> Result<Data, ()> {
         Ok(Data(event.value))
     }
@@ -143,22 +149,23 @@ impl MultiDataRowsStateMachineContext for MultiDataContext {
     }
 
     fn multi_one(&mut self, data: &Data, _: &Input) -> Result<(), ()> {
-        self.log.push(format!("one {}", data.0));
+        self.log.borrow_mut().push(format!("one {}", data.0));
         Ok(())
     }
 
     fn multi_other(&mut self, data: &Data, _: &Input) -> Result<(), ()> {
-        self.log.push(format!("other {}", data.0));
+        self.log.borrow_mut().push(format!("other {}", data.0));
         Ok(())
     }
 }
 
 #[test]
 fn multi_child_data_state_rows_on_one_trigger_each_read_the_data() {
-    let mut machine = MultiDataRowsStateMachine::new(MultiDataContext::default());
+    let context = MultiDataContext::default();
+    let mut machine = MultiDataRowsStateMachine::new(&context);
     machine.process_event(Input { value: 1 }).unwrap();
     assert!(machine.is(&MultiDataRowsStates::Idle));
     machine.process_event(Input { value: 5 }).unwrap();
     assert!(machine.is(&MultiDataRowsStates::Idle));
-    assert_eq!(machine.context().log, ["one 1", "other 5"]);
+    assert_eq!(*context.log.borrow(), ["one 1", "other 5"]);
 }

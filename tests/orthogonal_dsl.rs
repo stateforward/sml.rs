@@ -1,4 +1,21 @@
+mod support;
+
 use sml::sml;
+
+/// Returns whether root region `$region` is in a state matching `$pattern`.
+macro_rules! region_is {
+    ($machine:expr, $region:expr, $pattern:pat) => {{
+        let mut index = 0;
+        let mut matched = false;
+        $machine.visit_current_states(|state| {
+            if index == $region {
+                matched = matches!(state, $pattern);
+            }
+            index += 1;
+        });
+        matched
+    }};
+}
 
 pub struct E1;
 pub struct E2;
@@ -23,15 +40,15 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    actions: usize,
-    entries: usize,
-    unexpected: usize,
-    completions: usize,
-    initializations: usize,
+    actions: core::cell::Cell<usize>,
+    entries: core::cell::Cell<usize>,
+    unexpected: core::cell::Cell<usize>,
+    completions: core::cell::Cell<usize>,
+    initializations: core::cell::Cell<usize>,
 }
-impl OrthogonalStateMachineContext for Context {
+impl OrthogonalStateMachineContext for &Context {
     fn initialize_region_one(&mut self) -> Result<(), ()> {
-        self.initializations += 1;
+        self.initializations.set(self.initializations.get() + 1);
         Ok(())
     }
 
@@ -40,61 +57,62 @@ impl OrthogonalStateMachineContext for Context {
     }
 
     fn region_one(&mut self, _event: &E1) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn region_two(&mut self, _event: &E1) -> Result<(), ()> {
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     fn entered_s1(&mut self) -> Result<(), ()> {
-        self.entries += 1;
+        self.entries.set(self.entries.get() + 1);
         Ok(())
     }
 
     fn reset_region_one(&mut self, _event: &Reset) -> Result<(), ()> {
-        self.unexpected += 1;
+        self.unexpected.set(self.unexpected.get() + 1);
         Ok(())
     }
 
     fn unknown_region_two(&mut self) -> Result<(), ()> {
-        self.unexpected += 1;
+        self.unexpected.set(self.unexpected.get() + 1);
         Ok(())
     }
 
     fn stabilize_region_two(&mut self) -> Result<(), ()> {
-        self.completions += 1;
+        self.completions.set(self.completions.get() + 1);
         Ok(())
     }
 }
 
 #[test]
 fn events_are_broadcast_to_all_orthogonal_regions() {
-    let mut sm = OrthogonalStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = OrthogonalStateMachine::new(&context);
 
     assert!(sm.is(&[OrthogonalStates::Boot, OrthogonalStates::Idle2]));
     sm.initialize().unwrap();
     assert!(sm.is(&[OrthogonalStates::Idle, OrthogonalStates::Idle2]));
-    assert_eq!(sm.context().initializations, 1);
+    assert_eq!(context.initializations.get(), 1);
     sm.process_event(E1).unwrap();
     assert!(sm.is(&[OrthogonalStates::S1, OrthogonalStates::Idle2]));
-    assert_eq!(sm.context().actions, 2);
-    assert_eq!(sm.context().entries, 1);
+    assert_eq!(context.actions.get(), 2);
+    assert_eq!(context.entries.get(), 1);
 
     // Specific and wildcard unexpected handlers are independently broadcast.
     sm.process_event(Reset).unwrap();
-    assert_eq!(sm.context().unexpected, 2);
+    assert_eq!(context.unexpected.get(), 2);
     assert!(sm.is(&[OrthogonalStates::S1, OrthogonalStates::Idle2]));
 
     // E2 advances both active regions, just like sml.cpp.
     sm.process_event(E2).unwrap();
     assert!(sm.is(&[OrthogonalStates::X, OrthogonalStates::S3]));
-    assert_eq!(sm.context().completions, 1);
+    assert_eq!(context.completions.get(), 1);
 
     sm.process_event(E3).unwrap();
-    assert!(sm.is_terminated());
+    assert!(sm.is(&[OrthogonalStates::X, OrthogonalStates::X]));
 }
 
 pub struct AsyncEvent;
@@ -108,10 +126,10 @@ sml! {
 
 #[derive(Default)]
 struct AsyncContext {
-    actions: usize,
+    actions: support::SyncCell<usize>,
 }
 
-impl AsyncOrthogonalStateMachineContext for AsyncContext {
+impl AsyncOrthogonalStateMachineContext for &AsyncContext {
     async fn async_allowed(&self, _event: &AsyncEvent) -> Result<bool, ()> {
         core::future::ready(()).await;
         Ok(true)
@@ -119,13 +137,13 @@ impl AsyncOrthogonalStateMachineContext for AsyncContext {
 
     async fn async_left(&mut self, _event: &AsyncEvent) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 
     async fn async_right(&mut self, _event: &AsyncEvent) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.actions += 1;
+        self.actions.set(self.actions.get() + 1);
         Ok(())
     }
 }
@@ -133,10 +151,11 @@ impl AsyncOrthogonalStateMachineContext for AsyncContext {
 #[test]
 fn async_orthogonal_callbacks_are_awaited_in_every_region() {
     smol::block_on(async {
-        let mut sm = AsyncOrthogonalStateMachine::new(AsyncContext::default());
+        let context = AsyncContext::default();
+        let mut sm = AsyncOrthogonalStateMachine::new(&context);
         sm.process_event(AsyncEvent).await.unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().actions, 2);
+        assert!(sm.is(&[AsyncOrthogonalStates::X, AsyncOrthogonalStates::X]));
+        assert_eq!(context.actions.get(), 2);
     });
 }
 
@@ -156,28 +175,29 @@ sml! {
 
 #[derive(Default)]
 struct OriginContext {
-    ids: [u32; 2],
+    ids: core::cell::RefCell<[u32; 2]>,
 }
 
-impl OriginOrthogonalStateMachineContext for OriginContext {
+impl OriginOrthogonalStateMachineContext for &OriginContext {
     fn capture_left(&mut self, event: &Origin) -> Result<(), ()> {
-        self.ids[0] = event.id;
+        self.ids.borrow_mut()[0] = event.id;
         Ok(())
     }
 
     fn capture_right(&mut self, event: &Origin) -> Result<(), ()> {
-        self.ids[1] = event.id;
+        self.ids.borrow_mut()[1] = event.id;
         Ok(())
     }
 }
 
 #[test]
 fn orthogonal_completion_borrows_the_shared_origin_event() {
-    let mut sm = OriginOrthogonalStateMachine::new(OriginContext::default());
+    let context = OriginContext::default();
+    let mut sm = OriginOrthogonalStateMachine::new(&context);
     sm.process_event(Origin { id: 42 }).unwrap();
 
-    assert!(sm.is_terminated());
-    assert_eq!(sm.context().ids, [42, 42]);
+    assert!(sm.is(&[OriginOrthogonalStates::X, OriginOrthogonalStates::X]));
+    assert_eq!(*context.ids.borrow(), [42, 42]);
 }
 
 pub struct CustomEvent;
@@ -218,8 +238,8 @@ fn orthogonal_callbacks_preserve_custom_error_types() {
             CustomFailure::Left
         ))
     ));
-    assert!(machine.is_region(0, &CustomErrorOrthogonalStates::Left));
-    assert!(machine.is_region(1, &CustomErrorOrthogonalStates::Right));
+    assert!(region_is!(machine, 0, CustomErrorOrthogonalStates::Left));
+    assert!(region_is!(machine, 1, CustomErrorOrthogonalStates::Right));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -257,16 +277,18 @@ impl PayloadOrthogonalStateMachineContext for PayloadContext {
 fn orthogonal_regions_store_and_inject_typed_state_payloads() {
     let mut machine = PayloadOrthogonalStateMachine::new(PayloadContext);
     machine.process_event(Load).unwrap();
-    assert!(matches!(
-        machine.state(0),
-        Some(PayloadOrthogonalStates::Loaded(Loaded(40)))
+    assert!(region_is!(
+        machine,
+        0,
+        PayloadOrthogonalStates::Loaded(Loaded(40))
     ));
-    assert!(machine.is_region(1, &PayloadOrthogonalStates::X));
+    assert!(region_is!(machine, 1, PayloadOrthogonalStates::X));
 
     machine.process_event(Bump(2)).unwrap();
-    assert!(matches!(
-        machine.state(0),
-        Some(PayloadOrthogonalStates::Loaded(Loaded(42)))
+    assert!(region_is!(
+        machine,
+        0,
+        PayloadOrthogonalStates::Loaded(Loaded(42))
     ));
 }
 
@@ -291,40 +313,39 @@ sml! {
 
 #[derive(Default)]
 struct PayloadLifecycleContext {
-    observations: Vec<u32>,
+    observations: core::cell::RefCell<Vec<u32>>,
 }
 
-impl PayloadLifecycleOrthogonalStateMachineContext for PayloadLifecycleContext {
+impl PayloadLifecycleOrthogonalStateMachineContext for &PayloadLifecycleContext {
     fn entered_initial(&mut self, state: &InitialPayload) -> Result<(), ()> {
-        self.observations.push(state.0);
+        self.observations.borrow_mut().push(state.0);
         Ok(())
     }
 
     fn exited_initial(&mut self, state: &InitialPayload) -> Result<(), ()> {
-        self.observations.push(state.0 + 1);
+        self.observations.borrow_mut().push(state.0 + 1);
         Ok(())
     }
 
     fn entered_ready(&mut self, state: &ReadyPayload) -> Result<(), ()> {
-        self.observations.push(state.0 + 2);
+        self.observations.borrow_mut().push(state.0 + 2);
         Ok(())
     }
 }
 
 #[test]
 fn orthogonal_payloads_support_default_initial_targets_and_lifecycle() {
-    let mut machine =
-        PayloadLifecycleOrthogonalStateMachine::new(PayloadLifecycleContext::default());
+    let context = PayloadLifecycleContext::default();
+    let mut machine = PayloadLifecycleOrthogonalStateMachine::new(&context);
     machine.initialize().unwrap();
     machine.process_event(PayloadAdvance).unwrap();
 
-    assert!(matches!(
-        machine.state(0),
-        Some(PayloadLifecycleOrthogonalStates::ReadyPayload(
-            ReadyPayload(0)
-        ))
+    assert!(region_is!(
+        machine,
+        0,
+        PayloadLifecycleOrthogonalStates::ReadyPayload(ReadyPayload(0))
     ));
-    assert_eq!(machine.context().observations, [0, 1, 2]);
+    assert_eq!(*context.observations.borrow(), [0, 1, 2]);
 }
 
 pub struct AsyncPayloadEvent;
@@ -351,9 +372,10 @@ fn async_orthogonal_actions_can_produce_state_payloads() {
     smol::block_on(async {
         let mut machine = AsyncPayloadOrthogonalStateMachine::new(AsyncPayloadContext);
         machine.process_event(AsyncPayloadEvent).await.unwrap();
-        assert!(matches!(
-            machine.state(0),
-            Some(AsyncPayloadOrthogonalStates::AsyncPayload(AsyncPayload(7)))
+        assert!(region_is!(
+            machine,
+            0,
+            AsyncPayloadOrthogonalStates::AsyncPayload(AsyncPayload(7))
         ));
     });
 }
@@ -407,7 +429,7 @@ fn orthogonal_callbacks_reborrow_mutable_temporary_context() {
         .process_event(&mut temporary, TemporaryEvent)
         .unwrap();
     assert_eq!(temporary, 15);
-    assert!(machine.is_terminated());
+    assert!(machine.is(&[TemporaryOrthogonalStates::X, TemporaryOrthogonalStates::X]));
 }
 
 pub struct OrthogonalEvalEvent;
@@ -421,12 +443,12 @@ sml! {
 
 #[derive(Default)]
 struct EvalContext {
-    calls: Vec<&'static str>,
+    calls: support::SyncRefCell<Vec<&'static str>>,
 }
 
-impl EvalOrthogonalStateMachineContext for EvalContext {
+impl EvalOrthogonalStateMachineContext for &EvalContext {
     fn before_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
-        self.calls.push("before");
+        self.calls.borrow_mut().push("before");
         Ok(())
     }
 
@@ -435,18 +457,18 @@ impl EvalOrthogonalStateMachineContext for EvalContext {
     }
 
     fn conditional_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
-        self.calls.push("conditional");
+        self.calls.borrow_mut().push("conditional");
         Ok(())
     }
 
     fn after_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
-        self.calls.push("after");
+        self.calls.borrow_mut().push("after");
         Ok(())
     }
 
     async fn async_before_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.calls.push("async before");
+        self.calls.borrow_mut().push("async before");
         Ok(())
     }
 
@@ -457,7 +479,7 @@ impl EvalOrthogonalStateMachineContext for EvalContext {
 
     async fn async_conditional_eval(&mut self, _: &OrthogonalEvalEvent) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.calls.push("async conditional");
+        self.calls.borrow_mut().push("async conditional");
         Ok(())
     }
 }
@@ -465,10 +487,11 @@ impl EvalOrthogonalStateMachineContext for EvalContext {
 #[test]
 fn orthogonal_eval_preserves_action_position_and_async_callbacks() {
     smol::block_on(async {
-        let mut machine = EvalOrthogonalStateMachine::new(EvalContext::default());
+        let context = EvalContext::default();
+        let mut machine = EvalOrthogonalStateMachine::new(&context);
         machine.process_event(OrthogonalEvalEvent).await.unwrap();
         assert_eq!(
-            machine.context().calls,
+            *context.calls.borrow(),
             [
                 "before",
                 "conditional",
@@ -511,16 +534,16 @@ impl DeferOrthogonalStateMachineContext for QueueContext {}
 fn orthogonal_process_dispatches_after_installing_the_target_state() {
     let mut machine = ProcessOrthogonalStateMachine::new(QueueContext);
     machine.process_event(QueueStart).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&[ProcessOrthogonalStates::X, ProcessOrthogonalStates::X]));
 }
 
 #[test]
 fn orthogonal_defer_retries_owned_events_after_a_state_change() {
     let mut machine = DeferOrthogonalStateMachine::new(QueueContext);
     machine.process_event(QueueDeferred).unwrap();
-    assert!(machine.is_region(0, &DeferOrthogonalStates::Locked));
+    assert!(region_is!(machine, 0, DeferOrthogonalStates::Locked));
     machine.process_event(QueueUnlock).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&[DeferOrthogonalStates::X, DeferOrthogonalStates::X]));
 }
 
 pub struct AsyncQueueStart;
@@ -567,7 +590,10 @@ fn async_orthogonal_process_uses_allocation_free_iterative_dispatch() {
     smol::block_on(async {
         let mut machine = AsyncProcessOrthogonalStateMachine::new(AsyncQueueContext);
         machine.process_event(AsyncQueueStart).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&[
+            AsyncProcessOrthogonalStates::X,
+            AsyncProcessOrthogonalStates::X
+        ]));
     });
 }
 
@@ -577,7 +603,7 @@ fn async_orthogonal_defer_retries_after_awaited_state_change() {
         let mut machine = AsyncDeferOrthogonalStateMachine::new(AsyncQueueContext);
         machine.process_event(AsyncQueueDeferred).await.unwrap();
         machine.process_event(AsyncQueueUnlock).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&[AsyncDeferOrthogonalStates::X, AsyncDeferOrthogonalStates::X]));
     });
 }
 
@@ -598,11 +624,11 @@ sml! {
 
 #[derive(Default)]
 struct ExceptionOrthogonalContext {
-    code: Option<u32>,
-    wildcard: bool,
+    code: support::SyncCell<Option<u32>>,
+    wildcard: support::SyncCell<bool>,
 }
 
-impl ExceptionOrthogonalStateMachineContext for ExceptionOrthogonalContext {
+impl ExceptionOrthogonalStateMachineContext for &ExceptionOrthogonalContext {
     async fn fail_orthogonal(&mut self, _: &OrthogonalFail) -> Result<(), OrthogonalFailure> {
         core::future::ready(()).await;
         Err(OrthogonalFailure(42))
@@ -610,12 +636,12 @@ impl ExceptionOrthogonalStateMachineContext for ExceptionOrthogonalContext {
 
     async fn recover_typed(&mut self, error: &OrthogonalFailure) -> Result<(), OrthogonalFailure> {
         core::future::ready(()).await;
-        self.code = Some(error.0);
+        self.code.set(Some(error.0));
         Ok(())
     }
 
     fn recover_wildcard(&mut self) -> Result<(), OrthogonalFailure> {
-        self.wildcard = true;
+        self.wildcard.set(true);
         Ok(())
     }
 }
@@ -623,11 +649,11 @@ impl ExceptionOrthogonalStateMachineContext for ExceptionOrthogonalContext {
 #[test]
 fn orthogonal_exception_rows_route_typed_async_and_wildcard_failures() {
     smol::block_on(async {
-        let mut machine =
-            ExceptionOrthogonalStateMachine::new(ExceptionOrthogonalContext::default());
+        let context = ExceptionOrthogonalContext::default();
+        let mut machine = ExceptionOrthogonalStateMachine::new(&context);
         machine.process_event(OrthogonalFail).await.unwrap();
-        assert!(machine.is_terminated());
-        assert_eq!(machine.context().code, Some(42));
-        assert!(machine.context().wildcard);
+        assert!(machine.is(&[ExceptionOrthogonalStates::X, ExceptionOrthogonalStates::X]));
+        assert_eq!(context.code.get(), Some(42));
+        assert!(context.wildcard.get());
     });
 }

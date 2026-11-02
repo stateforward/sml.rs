@@ -5,6 +5,21 @@
 
 use sml::sml;
 
+/// Returns whether root region `$region` is in a state matching `$pattern`.
+macro_rules! region_is {
+    ($machine:expr, $region:expr, $pattern:pat) => {{
+        let mut index = 0;
+        let mut matched = false;
+        $machine.visit_current_states(|state| {
+            if index == $region {
+                matched = matches!(state, $pattern);
+            }
+            index += 1;
+        });
+        matched
+    }};
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault;
 
@@ -14,17 +29,17 @@ pub struct Poke {
 
 #[derive(Default)]
 struct ExitContext {
-    log: Vec<&'static str>,
-    fail_work: bool,
+    log: core::cell::RefCell<Vec<&'static str>>,
+    fail_work: core::cell::Cell<bool>,
 }
 
 impl ExitContext {
-    fn push(&mut self, entry: &'static str) {
-        self.log.push(entry);
+    fn push(&self, entry: &'static str) {
+        self.log.borrow_mut().push(entry);
     }
 
-    fn act(&mut self, fail: bool) -> Result<(), Fault> {
-        self.log.push("action");
+    fn act(&self, fail: bool) -> Result<(), Fault> {
+        self.log.borrow_mut().push("action");
         if fail {
             Err(Fault)
         } else {
@@ -51,7 +66,7 @@ sml! {
     }
 }
 
-impl CompletionExitStateMachineContext for ExitContext {
+impl CompletionExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -71,18 +86,19 @@ impl CompletionExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_completion_fault_recovered_by_the_parent_exits_the_child_once() {
-    let mut machine = CompletionExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = CompletionExitStateMachine::new(&context);
     machine.process_event(Go { fail: true }).unwrap();
     assert!(machine.is(&CompletionExitStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
     // The next cycle pairs one entry with one exit.
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     assert!(machine.is(&CompletionExitStates::Idle));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -100,7 +116,7 @@ sml! {
     }
 }
 
-impl EventExitStateMachineContext for ExitContext {
+impl EventExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -120,19 +136,20 @@ impl EventExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_event_fault_recovered_by_the_parent_exits_the_child_once() {
-    let mut machine = EventExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = EventExitStateMachine::new(&context);
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: true }).unwrap();
     assert!(machine.is(&EventExitStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: false }).unwrap();
-    assert!(machine.is_child(&EventExitEventExitKidStates::Done));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert!(machine.is(&EventExitEventExitKidStates::Done));
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -151,7 +168,7 @@ sml! {
     }
 }
 
-impl SameLevelExitStateMachineContext for ExitContext {
+impl SameLevelExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -171,23 +188,24 @@ impl SameLevelExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_event_fault_recovered_by_a_same_level_row_exits_the_source_once() {
-    let mut machine = SameLevelExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = SameLevelExitStateMachine::new(&context);
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: true }).unwrap();
-    assert!(machine.is_child(&SameLevelExitSameLevelExitKidStates::Recovered));
+    assert!(machine.is(&SameLevelExitSameLevelExitKidStates::Recovered));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
     // Leave and re-enter the child: the next cycle pairs one entry with one
     // exit.
     machine.process_event(Poke { fail: false }).unwrap();
     assert!(machine.is(&SameLevelExitStates::Idle));
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: false }).unwrap();
-    assert!(machine.is_child(&SameLevelExitSameLevelExitKidStates::Done));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert!(machine.is(&SameLevelExitSameLevelExitKidStates::Done));
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -204,7 +222,7 @@ sml! {
 
 pub struct Halt;
 
-impl OrthogonalExitStateMachineContext for ExitContext {
+impl OrthogonalExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -224,26 +242,21 @@ impl OrthogonalExitStateMachineContext for ExitContext {
 
 #[test]
 fn orthogonal_event_fault_recovered_by_a_region_row_exits_the_source_once() {
-    let mut machine = OrthogonalExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = OrthogonalExitStateMachine::new(&context);
     machine.initialize().unwrap();
     machine.process_event(Poke { fail: true }).unwrap();
-    assert!(matches!(
-        machine.state(0),
-        Some(OrthogonalExitStates::LeftRecovered)
-    ));
+    assert!(region_is!(machine, 0, OrthogonalExitStates::LeftRecovered));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
     // Re-enter the region state: the next cycle pairs one entry with one exit.
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: false }).unwrap();
-    assert!(matches!(
-        machine.state(0),
-        Some(OrthogonalExitStates::LeftDone)
-    ));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert!(region_is!(machine, 0, OrthogonalExitStates::LeftDone));
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -264,7 +277,7 @@ sml! {
     }
 }
 
-impl TreeExitStateMachineContext for ExitContext {
+impl TreeExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -284,17 +297,18 @@ impl TreeExitStateMachineContext for ExitContext {
 
 #[test]
 fn tree_completion_fault_recovered_by_the_root_exits_the_leaf_once() {
-    let mut machine = TreeExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = TreeExitStateMachine::new(&context);
     machine.process_event(Go { fail: true }).unwrap();
     assert!(machine.is(&TreeExitStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     assert!(machine.is(&TreeExitStates::Idle));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -314,7 +328,7 @@ sml! {
     }
 }
 
-impl RegionExitStateMachineContext for ExitContext {
+impl RegionExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -324,7 +338,7 @@ impl RegionExitStateMachineContext for ExitContext {
         Ok(())
     }
     fn work(&mut self) -> Result<(), Fault> {
-        self.act(self.fail_work)
+        self.act(self.fail_work.get())
     }
     fn recover(&mut self, _: &Fault) -> Result<(), Fault> {
         self.push("recover");
@@ -334,23 +348,24 @@ impl RegionExitStateMachineContext for ExitContext {
 
 #[test]
 fn orthogonal_node_completion_fault_recovered_by_the_parent_exits_the_region_once() {
-    let mut machine = RegionExitStateMachine::new(ExitContext {
-        fail_work: true,
+    let context = ExitContext {
+        fail_work: core::cell::Cell::new(true),
         ..ExitContext::default()
-    });
+    };
+    let mut machine = RegionExitStateMachine::new(&context);
     machine.process_event(Go { fail: true }).unwrap();
     assert!(machine.is(&RegionExitStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
-    machine.context_mut().log.clear();
-    machine.context_mut().fail_work = false;
+    context.log.borrow_mut().clear();
+    context.fail_work.set(false);
     // The next cycle pairs one entry with one exit.
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: false }).unwrap();
     assert!(machine.is(&RegionExitStates::Idle));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 sml! {
@@ -363,7 +378,7 @@ sml! {
     }
 }
 
-impl FlatExitStateMachineContext for ExitContext {
+impl FlatExitStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -383,19 +398,20 @@ impl FlatExitStateMachineContext for ExitContext {
 
 #[test]
 fn flat_event_fault_recovery_exits_the_source_once() {
-    let mut machine = FlatExitStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = FlatExitStateMachine::new(&context);
     machine.process_event(Poke { fail: false }).unwrap();
     machine.process_event(Poke { fail: true }).unwrap();
     assert!(machine.is(&FlatExitStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Poke { fail: false }).unwrap();
     machine.process_event(Poke { fail: false }).unwrap();
     assert!(machine.is(&FlatExitStates::Idle));
-    assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+    assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
 }
 
 pub struct Leave;
@@ -422,7 +438,7 @@ sml! {
     }
 }
 
-impl ReNestStateMachineContext for ExitContext {
+impl ReNestStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -447,21 +463,22 @@ impl ReNestStateMachineContext for ExitContext {
 
 #[test]
 fn reentering_a_nested_child_after_an_ancestor_recovery_pairs_its_hooks() {
-    let mut machine = ReNestStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = ReNestStateMachine::new(&context);
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Poke { fail: true }).unwrap();
     assert!(machine.is(&ReNestStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["entry", "exit", "action", "recover"]
     );
     for _ in 0..2 {
-        machine.context_mut().log.clear();
+        context.log.borrow_mut().clear();
         machine.process_event(Go { fail: false }).unwrap();
         machine.process_event(Go { fail: false }).unwrap();
         machine.process_event(Poke { fail: false }).unwrap();
-        assert_eq!(machine.context().log, ["entry", "exit", "action"]);
+        assert_eq!(*context.log.borrow(), ["entry", "exit", "action"]);
         machine.process_event(Leave).unwrap();
         assert!(machine.is(&ReNestStates::Idle));
     }
@@ -469,14 +486,15 @@ fn reentering_a_nested_child_after_an_ancestor_recovery_pairs_its_hooks() {
 
 #[test]
 fn leaving_an_orthogonal_node_exits_its_nested_child() {
-    let mut machine = ReNestStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = ReNestStateMachine::new(&context);
     for _ in 0..2 {
-        machine.context_mut().log.clear();
+        context.log.borrow_mut().clear();
         machine.process_event(Go { fail: false }).unwrap();
         machine.process_event(Go { fail: false }).unwrap();
         machine.process_event(Leave).unwrap();
         assert!(machine.is(&ReNestStates::Idle));
-        assert_eq!(machine.context().log, ["entry", "exit"]);
+        assert_eq!(*context.log.borrow(), ["entry", "exit"]);
     }
 }
 
@@ -501,7 +519,7 @@ sml! {
     }
 }
 
-impl InitNestStateMachineContext for ExitContext {
+impl InitNestStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -517,14 +535,15 @@ impl InitNestStateMachineContext for ExitContext {
 
 #[test]
 fn entering_an_orthogonal_node_enters_a_nested_initial_child() {
-    let mut machine = InitNestStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = InitNestStateMachine::new(&context);
     for _ in 0..2 {
-        machine.context_mut().log.clear();
+        context.log.borrow_mut().clear();
         machine.process_event(Go { fail: false }).unwrap();
-        assert_eq!(machine.context().log, ["entry"]);
+        assert_eq!(*context.log.borrow(), ["entry"]);
         machine.process_event(Leave).unwrap();
         assert!(machine.is(&InitNestStates::Idle));
-        assert_eq!(machine.context().log, ["entry", "exit"]);
+        assert_eq!(*context.log.borrow(), ["entry", "exit"]);
     }
 }
 
@@ -544,7 +563,7 @@ sml! {
     }
 }
 
-impl RootNestStateMachineContext for ExitContext {
+impl RootNestStateMachineContext for &ExitContext {
     fn entered(&mut self) -> Result<(), Fault> {
         self.push("entry");
         Ok(())
@@ -560,12 +579,13 @@ impl RootNestStateMachineContext for ExitContext {
 
 #[test]
 fn initializing_an_orthogonal_root_enters_a_nested_initial_child_once() {
-    let mut machine = RootNestStateMachine::new(ExitContext::default());
+    let context = ExitContext::default();
+    let mut machine = RootNestStateMachine::new(&context);
     machine.initialize().unwrap();
-    assert_eq!(machine.context().log, ["entry"]);
+    assert_eq!(*context.log.borrow(), ["entry"]);
     machine.process_event(Leave).unwrap();
-    assert!(machine.is_region(0, &RootNestStates::LeftIdle));
-    assert_eq!(machine.context().log, ["entry", "exit"]);
+    assert!(region_is!(machine, 0, RootNestStates::LeftIdle));
+    assert_eq!(*context.log.borrow(), ["entry", "exit"]);
 }
 
 // Leaving an orthogonal node exits each region in turn. When a later
@@ -574,8 +594,8 @@ fn initializing_an_orthogonal_root_enters_a_nested_initial_child_once() {
 
 #[derive(Default)]
 struct TeardownContext {
-    log: Vec<&'static str>,
-    exit_failures: u32,
+    log: core::cell::RefCell<Vec<&'static str>>,
+    exit_failures: core::cell::Cell<u32>,
 }
 
 sml! {
@@ -596,45 +616,46 @@ sml! {
     }
 }
 
-impl TeardownStateMachineContext for TeardownContext {
+impl TeardownStateMachineContext for &TeardownContext {
     fn a_entered(&mut self) -> Result<(), Fault> {
-        self.log.push("a entry");
+        self.log.borrow_mut().push("a entry");
         Ok(())
     }
     fn a_exited(&mut self) -> Result<(), Fault> {
-        self.log.push("a exit");
+        self.log.borrow_mut().push("a exit");
         Ok(())
     }
     fn b_entered(&mut self) -> Result<(), Fault> {
-        self.log.push("b entry");
+        self.log.borrow_mut().push("b entry");
         Ok(())
     }
     fn b_exited(&mut self) -> Result<(), Fault> {
-        if self.exit_failures > 0 {
-            self.exit_failures -= 1;
-            self.log.push("b exit failed");
+        if self.exit_failures.get() > 0 {
+            self.exit_failures.set(self.exit_failures.get() - 1);
+            self.log.borrow_mut().push("b exit failed");
             return Err(Fault);
         }
-        self.log.push("b exit");
+        self.log.borrow_mut().push("b exit");
         Ok(())
     }
     fn recover(&mut self, _: &Fault) -> Result<(), Fault> {
-        self.log.push("recover");
+        self.log.borrow_mut().push("recover");
         Ok(())
     }
 }
 
 #[test]
 fn a_failed_region_exit_recovered_by_an_ancestor_does_not_exit_its_peers_again() {
-    let mut machine = TeardownStateMachine::new(TeardownContext {
-        exit_failures: 1,
+    let context = TeardownContext {
+        exit_failures: core::cell::Cell::new(1),
         ..TeardownContext::default()
-    });
+    };
+    let mut machine = TeardownStateMachine::new(&context);
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Leave).unwrap();
     assert!(machine.is(&TeardownStates::Idle));
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         [
             "a entry",
             "b entry",
@@ -645,11 +666,11 @@ fn a_failed_region_exit_recovered_by_an_ancestor_does_not_exit_its_peers_again()
         ]
     );
     // The next occupancy pairs each entry with one exit.
-    machine.context_mut().log.clear();
+    context.log.borrow_mut().clear();
     machine.process_event(Go { fail: false }).unwrap();
     machine.process_event(Leave).unwrap();
     assert_eq!(
-        machine.context().log,
+        *context.log.borrow(),
         ["a entry", "b entry", "a exit", "b exit"]
     );
 }

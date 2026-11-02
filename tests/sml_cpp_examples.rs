@@ -9,6 +9,21 @@
     reason = "the parity fixtures intentionally exercise generated private types"
 )]
 
+/// Returns whether root region `$region` is in a state matching `$pattern`.
+macro_rules! region_is {
+    ($machine:expr, $region:expr, $pattern:pat) => {{
+        let mut index = 0;
+        let mut matched = false;
+        $machine.visit_current_states(|state| {
+            if index == $region {
+                matched = matches!(state, $pattern);
+            }
+            index += 1;
+        });
+        matched
+    }};
+}
+
 mod hello_world {
     use sml::sml;
 
@@ -28,7 +43,7 @@ mod hello_world {
 
     #[derive(Default)]
     struct Context(usize);
-    impl HelloWorldExampleStateMachineContext for Context {
+    impl HelloWorldExampleStateMachineContext for &mut Context {
         fn is_ack_valid(&self, _: &Ack) -> Result<bool, ()> {
             Ok(true)
         }
@@ -51,13 +66,14 @@ mod hello_world {
 
     #[test]
     fn translated_behavior() {
-        let mut sm = HelloWorldExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = HelloWorldExampleStateMachine::new(&mut context);
         sm.process_event(Release).unwrap();
         sm.process_event(Ack).unwrap();
         sm.process_event(Fin).unwrap();
         sm.process_event(Timeout).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().0, 3);
+        assert!(sm.is(&HelloWorldExampleStates::X));
+        assert_eq!(context.0, 3);
     }
 }
 
@@ -84,7 +100,7 @@ mod transitions {
         exits: usize,
         actions: usize,
     }
-    impl TransitionsExampleStateMachineContext for Context {
+    impl TransitionsExampleStateMachineContext for &mut Context {
         fn anonymous(&mut self) -> Result<(), ()> {
             self.actions += 1;
             Ok(())
@@ -113,20 +129,14 @@ mod transitions {
 
     #[test]
     fn translated_behavior() {
-        let mut sm = TransitionsExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = TransitionsExampleStateMachine::new(&mut context);
         sm.initialize().unwrap();
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(
-            (
-                sm.context().entries,
-                sm.context().exits,
-                sm.context().actions
-            ),
-            (2, 2, 4)
-        );
+        assert!(sm.is(&TransitionsExampleStates::X));
+        assert_eq!((context.entries, context.exits, context.actions), (2, 2, 4));
     }
 }
 
@@ -167,7 +177,7 @@ mod events {
         sm.process_event(E2 { value: true }).unwrap();
         sm.process_event(EventsExampleEvents::E3).unwrap();
         sm.process_event(E4 { value: 42 }).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&EventsExampleStates::X));
     }
 }
 
@@ -200,9 +210,9 @@ mod composite {
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
         sm.process_event(E4).unwrap();
-        assert!(sm.is_child(&CompositeExampleCompositeSubExampleStates::X));
+        assert!(sm.is(&CompositeExampleCompositeSubExampleStates::X));
         sm.process_event(E5).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&CompositeExampleStates::X));
     }
 }
 
@@ -228,7 +238,10 @@ mod orthogonal_regions {
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&[
+            OrthogonalRegionsExampleStates::X,
+            OrthogonalRegionsExampleStates::X
+        ]));
     }
 }
 
@@ -252,7 +265,7 @@ mod actions_guards {
     struct Context {
         actions: usize,
     }
-    impl ActionsGuardsExampleStateMachineContext for Context {
+    impl ActionsGuardsExampleStateMachineContext for &mut Context {
         fn guard_e2(&self, _: &E2) -> Result<bool, ()> {
             Ok(true)
         }
@@ -298,14 +311,15 @@ mod actions_guards {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = ActionsGuardsExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = ActionsGuardsExampleStateMachine::new(&mut context);
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
         sm.process_event(E4).unwrap();
         sm.process_event(E5).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().actions, 6);
+        assert!(sm.is(&ActionsGuardsExampleStates::X));
+        assert_eq!(context.actions, 6);
     }
 }
 
@@ -332,7 +346,7 @@ mod states {
         entries: usize,
         exits: usize,
     }
-    impl StatesExampleStateMachineContext for Context {
+    impl StatesExampleStateMachineContext for &mut Context {
         fn entered(&mut self) -> Result<(), ()> {
             self.entries += 1;
             Ok(())
@@ -344,12 +358,13 @@ mod states {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = StatesExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = StatesExampleStateMachine::new(&mut context);
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!((sm.context().entries, sm.context().exits), (1, 1));
+        assert!(sm.is(&StatesExampleStates::X));
+        assert_eq!((context.entries, context.exits), (1, 1));
     }
 }
 
@@ -375,9 +390,9 @@ mod history {
         sm.process_event(HistoryExampleEvents::E1).unwrap();
         sm.process_event(HistoryExampleEvents::E3).unwrap();
         sm.process_event(HistoryExampleEvents::E4).unwrap();
-        assert!(sm.is_child(&HistoryExampleHistorySubExampleStates::S1));
+        assert!(sm.is(&HistoryExampleHistorySubExampleStates::S1));
         sm.process_event(HistoryExampleEvents::E2).unwrap();
-        assert!(sm.is_child(&HistoryExampleHistorySubExampleStates::X));
+        assert!(sm.is(&HistoryExampleHistorySubExampleStates::X));
     }
 }
 
@@ -396,7 +411,7 @@ mod dependencies {
     struct Context {
         dependency: i32,
     }
-    impl DependenciesExampleStateMachineContext for Context {
+    impl DependenciesExampleStateMachineContext for &mut Context {
         fn dependency_empty(&self, _: &E1) -> Result<bool, ()> {
             Ok(self.dependency == 0)
         }
@@ -410,11 +425,12 @@ mod dependencies {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = DependenciesExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = DependenciesExampleStateMachine::new(&mut context);
         sm.process_event(E1 { i: 0 }).unwrap();
         assert!(sm.process_event(E1 { i: 0 }).is_err());
         sm.process_event(E1 { i: 42 }).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&DependenciesExampleStates::X));
     }
 }
 
@@ -434,7 +450,7 @@ mod testing {
     struct Context {
         value: i32,
     }
-    impl TestingExampleStateMachineContext for Context {
+    impl TestingExampleStateMachineContext for &mut Context {
         fn ready(&self, _: &E3) -> Result<bool, ()> {
             Ok(self.value == 0)
         }
@@ -445,17 +461,18 @@ mod testing {
     }
     #[test]
     fn translated_behavior() {
+        let mut context = Context::default();
         let mut sm: TestingExampleStateMachine<
-            Context,
+            &mut Context,
             sml::Policies<(), (), sml::JumpTable, (), sml::TestingPolicy>,
         > = TestingExampleStateMachine::new_with_policy(
-            Context::default(),
+            &mut context,
             sml::Policies::<(), (), sml::JumpTable, (), sml::TestingPolicy>::default(),
         );
         sm.set_current_states(TestingExampleStates::S2);
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().value, 42);
+        assert!(sm.is(&TestingExampleStates::X));
+        assert_eq!(context.value, 42);
     }
 }
 
@@ -477,10 +494,14 @@ mod visitor {
     fn translated_behavior() {
         let mut sm = VisitorExampleStateMachine::new(Context);
         sm.process_event(E1).unwrap();
-        assert!(sm.visit_current_state(|s| matches!(s, VisitorExampleStates::S1)));
+        let mut in_s1 = false;
+        sm.visit_current_states(|s| in_s1 = matches!(s, VisitorExampleStates::S1));
+        assert!(in_s1);
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.visit_current_state(|s| matches!(s, VisitorExampleStates::X)));
+        let mut visited = Vec::new();
+        sm.visit_current_states(|s| visited.push(matches!(s, VisitorExampleStates::X)));
+        assert_eq!(visited, [true]);
     }
 }
 
@@ -499,7 +520,7 @@ mod logging {
         actions: Cell<usize>,
         transitions: Cell<usize>,
     }
-    impl LoggingExampleStateMachineContext for Context {
+    impl LoggingExampleStateMachineContext for &mut Context {
         fn guard_a(&self, _: &E1) -> Result<bool, ()> {
             Ok(true)
         }
@@ -521,13 +542,14 @@ mod logging {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = LoggingExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = LoggingExampleStateMachine::new(&mut context);
         sm.process_event(E1).unwrap();
         assert_eq!(
             (
-                sm.context().guards.get(),
-                sm.context().actions.get(),
-                sm.context().transitions.get()
+                context.guards.get(),
+                context.actions.get(),
+                context.transitions.get()
             ),
             (2, 1, 1)
         );
@@ -563,7 +585,7 @@ mod data {
     struct Context {
         printed: Vec<i32>,
     }
-    impl DataExampleStateMachineContext for Context {
+    impl DataExampleStateMachineContext for &mut Context {
         fn connect(&mut self, _: &Disconnected, event: &Connect) -> Result<Connected, ()> {
             self.printed.push(event.id);
             Ok(Connected { id: event.id })
@@ -583,13 +605,14 @@ mod data {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = DataExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = DataExampleStateMachine::new(&mut context);
         sm.process_event(Connect { id: 1024 }).unwrap();
         sm.process_event(Interrupt).unwrap();
         sm.process_event(Connect { id: 1025 }).unwrap();
         sm.process_event(Disconnect).unwrap();
-        assert!(sm.is_terminated());
-        assert_eq!(sm.context().printed, [1024, 1025, 1025]);
+        assert!(sm.is(&DataExampleStates::X));
+        assert_eq!(context.printed, [1024, 1025, 1025]);
     }
 }
 
@@ -618,7 +641,7 @@ mod defer_and_process {
         sm.process_event(E2).unwrap();
         assert!(sm.is(&DeferAndProcessExampleStates::S2));
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&DeferAndProcessExampleStates::X));
     }
 }
 
@@ -662,7 +685,7 @@ mod dependency_injection {
             real: 87.0,
         });
         Controller(&mut sm).start();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&DependencyInjectionExampleStates::X));
     }
 }
 
@@ -705,7 +728,7 @@ mod eval {
     sml! { EvalExample { *"idle"_s + event<E1> [guard] / (action, eval [guard] / action, action) = X, } }
     #[derive(Default)]
     struct Context(usize);
-    impl EvalExampleStateMachineContext for Context {
+    impl EvalExampleStateMachineContext for &mut Context {
         fn guard(&self, _: &E1) -> Result<bool, ()> {
             Ok(true)
         }
@@ -716,10 +739,11 @@ mod eval {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = EvalExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = EvalExampleStateMachine::new(&mut context);
         sm.process_event(E1).unwrap();
-        assert_eq!(sm.context().0, 3);
-        assert!(sm.is_terminated());
+        assert!(sm.is(&EvalExampleStates::X));
+        assert_eq!(context.0, 3);
     }
 }
 
@@ -747,7 +771,7 @@ mod euml_emulation {
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&EumlExampleStates::X));
     }
 }
 
@@ -757,7 +781,7 @@ mod in_place {
     sml! { InPlaceExample { *"idle"_s + event<Start> / action = X, } }
     #[derive(Default)]
     struct Context(bool);
-    impl InPlaceExampleStateMachineContext for Context {
+    impl InPlaceExampleStateMachineContext for &mut Context {
         fn action(&mut self, _: &Start) -> Result<(), ()> {
             self.0 = true;
             Ok(())
@@ -765,9 +789,10 @@ mod in_place {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = InPlaceExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = InPlaceExampleStateMachine::new(&mut context);
         sm.process_event(Start).unwrap();
-        assert!(sm.is_terminated() && sm.context().0);
+        assert!(sm.is(&InPlaceExampleStates::X) && context.0);
     }
 }
 
@@ -791,7 +816,7 @@ mod nested {
             machine: NestedOwnedExampleStateMachine::new(Context),
         };
         top.process();
-        assert!(top.machine.is_terminated());
+        assert!(top.machine.is(&NestedOwnedExampleStates::X));
     }
 }
 
@@ -801,9 +826,9 @@ mod arduino {
     sml! { ArduinoSwitcherExample { *"off"_s + event<Pressed> [pressed] / led_on = "on"_s, "on"_s + event<Pressed> [released] / led_off = "off"_s, } }
     #[derive(Default)]
     struct Pins {
-        led: bool,
+        led: core::cell::Cell<bool>,
     }
-    impl ArduinoSwitcherExampleStateMachineContext for Pins {
+    impl ArduinoSwitcherExampleStateMachineContext for &Pins {
         fn pressed(&self, e: &Pressed) -> Result<bool, ()> {
             Ok(e.0)
         }
@@ -811,21 +836,22 @@ mod arduino {
             Ok(!e.0)
         }
         fn led_on(&mut self, _: &Pressed) -> Result<(), ()> {
-            self.led = true;
+            self.led.set(true);
             Ok(())
         }
         fn led_off(&mut self, _: &Pressed) -> Result<(), ()> {
-            self.led = false;
+            self.led.set(false);
             Ok(())
         }
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = ArduinoSwitcherExampleStateMachine::new(Pins::default());
+        let context = Pins::default();
+        let mut sm = ArduinoSwitcherExampleStateMachine::new(&context);
         sm.process_event(Pressed(true)).unwrap();
-        assert!(sm.context().led);
+        assert!(context.led.get());
         sm.process_event(Pressed(false)).unwrap();
-        assert!(!sm.context().led);
+        assert!(!context.led.get());
     }
 }
 
@@ -861,7 +887,7 @@ mod dispatch_table {
         let mut dispatch = DispatchTable::new(&mut sm, 1, &handlers);
         assert_eq!(dispatch.dispatch(&RuntimeEvent, 1), Some(true));
         assert_eq!(dispatch.dispatch(&RuntimeEvent, 2), Some(true));
-        assert!(dispatch.machine().is_terminated());
+        assert!(dispatch.machine().is(&DispatchTableExampleStates::X));
     }
 }
 
@@ -891,7 +917,7 @@ mod error_handling {
         failures: usize,
         unexpected: usize,
     }
-    impl ErrorHandlingExampleStateMachineContext for Context {
+    impl ErrorHandlingExampleStateMachineContext for &mut Context {
         fn fail_specific(&mut self, _: &Event1) -> Result<(), Failure> {
             Err(Failure::Specific)
         }
@@ -920,14 +946,15 @@ mod error_handling {
     }
     #[test]
     fn translated_behavior() {
-        let mut sm = ErrorHandlingExampleStateMachine::new(Context::default());
+        let mut context = Context::default();
+        let mut sm = ErrorHandlingExampleStateMachine::new(&mut context);
         sm.process_event(Event1).unwrap();
         sm.process_event(Event2).unwrap();
         sm.process_event(SomeEvent).unwrap();
         sm.process_event(OtherEvent).unwrap();
-        assert_eq!((sm.context().failures, sm.context().unexpected), (2, 2));
-        assert!(sm.is_region(1, &ErrorHandlingExampleStates::X));
-        assert!(sm.is_region(2, &ErrorHandlingExampleStates::X));
+        assert!(region_is!(sm, 1, ErrorHandlingExampleStates::X));
+        assert!(region_is!(sm, 2, ErrorHandlingExampleStates::X));
+        assert_eq!((context.failures, context.unexpected), (2, 2));
     }
 }
 
@@ -958,7 +985,7 @@ mod plant_uml {
         sm.process_event(E1).unwrap();
         sm.process_event(E2).unwrap();
         sm.process_event(E3).unwrap();
-        assert!(sm.is_terminated());
+        assert!(sm.is(&PlantUmlExampleStates::X));
     }
 }
 
@@ -1017,6 +1044,8 @@ mod sdl2 {
         let _ = dispatch.dispatch(&SdlEvent { key: 32 }, KEY_UP);
         let _ = dispatch.dispatch(&SdlEvent { key: 0 }, MOUSE_UP);
         let _ = dispatch.dispatch(&SdlEvent { key: 0 }, QUIT);
-        assert!(dispatch.machine().is_terminated());
+        assert!(dispatch
+            .machine()
+            .is(&[Sdl2ExampleStates::X, Sdl2ExampleStates::X]));
     }
 }

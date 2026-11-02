@@ -177,7 +177,7 @@ fn run_policy_benchmark<P: Policy>(label: &str, policy: P) {
     run_policy(&mut sm);
     let elapsed = start.elapsed();
 
-    assert!(matches!(sm.state(), PlayerStates::Empty));
+    assert!(sm.is(&PlayerStates::Empty));
     println!(
         "{label} {} ns total; {:.3} ns/event",
         elapsed.as_nanos(),
@@ -214,7 +214,7 @@ fn main() {
     }
     let elapsed = start.elapsed();
 
-    assert!(matches!(sm.state(), PlayerStates::Empty));
+    assert!(sm.is(&PlayerStates::Empty));
     println!(
         "{} ns total; {:.3} ns/event",
         elapsed.as_nanos(),

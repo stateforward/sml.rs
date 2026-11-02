@@ -37,5 +37,5 @@ fn main() {
     let mut machine = QueueMachineStateMachine::new_with_policy(Context, policy);
     machine.process_event(Defer).unwrap();
     machine.process_event(Release).unwrap();
-    assert!(machine.is_terminated());
+    assert!(machine.is(&QueueMachineStates::X));
 }

@@ -1,3 +1,5 @@
+mod support;
+
 use sml::sml;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,12 +22,12 @@ sml! {
 
 #[derive(Default)]
 struct Context {
-    calls: Vec<(&'static str, u32)>,
+    calls: core::cell::RefCell<Vec<(&'static str, u32)>>,
 }
 
-impl CompletionStateMachineContext for Context {
+impl CompletionStateMachineContext for &Context {
     fn origin(&mut self, payload: Payload) -> Result<(), ()> {
-        self.calls.push(("origin", payload.value));
+        self.calls.borrow_mut().push(("origin", payload.value));
         Ok(())
     }
 
@@ -34,19 +36,20 @@ impl CompletionStateMachineContext for Context {
     }
 
     fn first_completion(&mut self, payload: Payload) -> Result<(), ()> {
-        self.calls.push(("first", payload.value));
+        self.calls.borrow_mut().push(("first", payload.value));
         Ok(())
     }
 
     fn second_completion(&mut self, payload: Payload) -> Result<(), ()> {
-        self.calls.push(("second", payload.value));
+        self.calls.borrow_mut().push(("second", payload.value));
         Ok(())
     }
 }
 
 #[test]
 fn completion_transitions_chain_and_preserve_origin_data() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = CompletionStateMachine::new(&context);
 
     let state = sm
         .process_event(CompletionEvents::Go(Payload {
@@ -57,24 +60,26 @@ fn completion_transitions_chain_and_preserve_origin_data() {
 
     assert!(matches!(state, CompletionStates::Done));
     assert_eq!(
-        sm.context().calls,
+        *context.calls.borrow(),
         [("origin", 42), ("first", 42), ("second", 42)]
     );
 }
 
 #[test]
 fn completion_transition_is_specific_to_the_origin_event() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = CompletionStateMachine::new(&context);
 
     let state = sm.process_event(CompletionEvents::Other).unwrap();
 
     assert!(matches!(state, CompletionStates::Step1));
-    assert!(sm.context().calls.is_empty());
+    assert!(context.calls.borrow().is_empty());
 }
 
 #[test]
 fn failed_completion_guard_stops_the_chain_without_failing_origin_event() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut sm = CompletionStateMachine::new(&context);
 
     let state = sm
         .process_event(CompletionEvents::Go(Payload {
@@ -84,7 +89,7 @@ fn failed_completion_guard_stops_the_chain_without_failing_origin_event() {
         .unwrap();
 
     assert!(matches!(state, CompletionStates::Step1));
-    assert_eq!(sm.context().calls, [("origin", 7)]);
+    assert_eq!(*context.calls.borrow(), [("origin", 7)]);
 }
 
 sml! {
@@ -96,19 +101,19 @@ sml! {
 
 #[derive(Default)]
 struct AsyncContext {
-    calls: Vec<&'static str>,
+    calls: support::SyncRefCell<Vec<&'static str>>,
 }
 
-impl AsyncCompletionStateMachineContext for AsyncContext {
+impl AsyncCompletionStateMachineContext for &AsyncContext {
     async fn origin(&mut self) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.calls.push("origin");
+        self.calls.borrow_mut().push("origin");
         Ok(())
     }
 
     async fn complete(&mut self) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.calls.push("completion");
+        self.calls.borrow_mut().push("completion");
         Ok(())
     }
 }
@@ -116,11 +121,12 @@ impl AsyncCompletionStateMachineContext for AsyncContext {
 #[test]
 fn completion_transitions_support_async_actions() {
     smol::block_on(async {
-        let mut sm = AsyncCompletionStateMachine::new(AsyncContext::default());
+        let context = AsyncContext::default();
+        let mut sm = AsyncCompletionStateMachine::new(&context);
         let state = sm.process_event(AsyncCompletionEvents::Go).await.unwrap();
 
         assert!(matches!(state, AsyncCompletionStates::Done));
-        assert_eq!(sm.context().calls, ["origin", "completion"]);
+        assert_eq!(*context.calls.borrow(), ["origin", "completion"]);
     });
 }
 
@@ -167,12 +173,12 @@ sml! {
 
 #[derive(Default)]
 struct BorrowedContext {
-    captured: Option<u32>,
+    captured: core::cell::Cell<Option<u32>>,
 }
 
-impl BorrowedCompletionStateMachineContext for BorrowedContext {
+impl BorrowedCompletionStateMachineContext for &BorrowedContext {
     fn capture_borrowed(&mut self, payload: &Payload) -> Result<(), ()> {
-        self.captured = Some(payload.value);
+        self.captured.set(Some(payload.value));
         Ok(())
     }
 }
@@ -183,14 +189,15 @@ fn completion_transitions_propagate_immutably_borrowed_origin_data() {
         value: 99,
         valid: true,
     };
-    let mut sm = BorrowedCompletionStateMachine::new(BorrowedContext::default());
+    let context = BorrowedContext::default();
+    let mut sm = BorrowedCompletionStateMachine::new(&context);
 
     let state = sm
         .process_event(BorrowedCompletionEvents::Go(&payload))
         .unwrap();
 
     assert!(matches!(state, BorrowedCompletionStates::Done));
-    assert_eq!(sm.context().captured, Some(99));
+    assert_eq!(context.captured.get(), Some(99));
 }
 
 sml! {
@@ -203,24 +210,25 @@ sml! {
 
 #[derive(Default)]
 struct AnonymousContext {
-    calls: Vec<&'static str>,
+    calls: core::cell::RefCell<Vec<&'static str>>,
 }
 
-impl AnonymousCompletionStateMachineContext for AnonymousContext {
+impl AnonymousCompletionStateMachineContext for &AnonymousContext {
     fn initialized(&mut self) -> Result<(), ()> {
-        self.calls.push("initialized");
+        self.calls.borrow_mut().push("initialized");
         Ok(())
     }
 
     fn stabilized(&mut self) -> Result<(), ()> {
-        self.calls.push("stabilized");
+        self.calls.borrow_mut().push("stabilized");
         Ok(())
     }
 }
 
 #[test]
 fn anonymous_completion_runs_during_initialization_and_after_events() {
-    let mut sm = AnonymousCompletionStateMachine::new(AnonymousContext::default());
+    let context = AnonymousContext::default();
+    let mut sm = AnonymousCompletionStateMachine::new(&context);
 
     assert!(matches!(
         sm.initialize().unwrap(),
@@ -230,7 +238,7 @@ fn anonymous_completion_runs_during_initialization_and_after_events() {
         sm.process_event(AnonymousCompletionEvents::Go).unwrap(),
         AnonymousCompletionStates::Done
     ));
-    assert_eq!(sm.context().calls, ["initialized", "stabilized"]);
+    assert_eq!(*context.calls.borrow(), ["initialized", "stabilized"]);
 }
 
 sml! {
@@ -242,13 +250,13 @@ sml! {
 
 #[derive(Default)]
 struct AsyncAnonymousContext {
-    prepared: bool,
+    prepared: support::SyncCell<bool>,
 }
 
-impl AsyncAnonymousStateMachineContext for AsyncAnonymousContext {
+impl AsyncAnonymousStateMachineContext for &AsyncAnonymousContext {
     async fn prepare(&mut self) -> Result<(), ()> {
         core::future::ready(()).await;
-        self.prepared = true;
+        self.prepared.set(true);
         Ok(())
     }
 }
@@ -256,10 +264,11 @@ impl AsyncAnonymousStateMachineContext for AsyncAnonymousContext {
 #[test]
 fn anonymous_initialization_supports_async_actions() {
     smol::block_on(async {
-        let mut sm = AsyncAnonymousStateMachine::new(AsyncAnonymousContext::default());
+        let context = AsyncAnonymousContext::default();
+        let mut sm = AsyncAnonymousStateMachine::new(&context);
         let state = sm.initialize().await.unwrap();
 
         assert!(matches!(state, AsyncAnonymousStates::Ready));
-        assert!(sm.context().prepared);
+        assert!(context.prepared.get());
     });
 }

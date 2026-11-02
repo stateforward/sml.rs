@@ -25,7 +25,7 @@ fn cpp_process_action_dispatches_after_the_current_transition() {
     assert!(sm.is(&ProcessQueueDslStates::Ready));
 
     sm.process_event(Kick).unwrap();
-    assert!(sm.is_terminated());
+    assert!(sm.is(&ProcessQueueDslStates::X));
 }
 
 pub struct Deferred;
@@ -50,7 +50,7 @@ fn cpp_defer_action_retries_after_a_state_change() {
     assert!(sm.is(&DeferQueueDslStates::Idle));
 
     sm.process_event(Unlock).unwrap();
-    assert!(sm.is_terminated());
+    assert!(sm.is(&DeferQueueDslStates::X));
 }
 
 pub struct AsyncEnable;
@@ -85,7 +85,7 @@ fn async_flat_process_uses_allocation_free_iterative_dispatch() {
         let mut machine = AsyncProcessQueueDslStateMachine::new(AsyncProcessContext);
         machine.process_event(AsyncEnable).await.unwrap();
         machine.process_event(AsyncStart).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&AsyncProcessQueueDslStates::X));
     });
 }
 
@@ -115,6 +115,6 @@ fn async_flat_defer_retries_after_awaited_state_change() {
         let mut machine = AsyncDeferQueueDslStateMachine::new(AsyncDeferContext);
         machine.process_event(AsyncDeferred).await.unwrap();
         machine.process_event(AsyncUnlock).await.unwrap();
-        assert!(machine.is_terminated());
+        assert!(machine.is(&AsyncDeferQueueDslStates::X));
     });
 }

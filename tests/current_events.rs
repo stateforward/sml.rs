@@ -29,7 +29,7 @@ struct FlatContext {
     guard_calls: Cell<usize>,
 }
 
-impl CurrentEventsFlatStateMachineContext for FlatContext {
+impl CurrentEventsFlatStateMachineContext for &FlatContext {
     fn guard(&self, _event: &FlatGuarded) -> Result<bool, ()> {
         self.guard_calls.set(self.guard_calls.get() + 1);
         Ok(false)
@@ -131,7 +131,7 @@ fn assert_event<E: Event>(capture: &Capture) {
 #[test]
 fn flat_query_is_static_and_does_not_run_guards() {
     let context = FlatContext::default();
-    let machine = CurrentEventsFlatStateMachine::new(context);
+    let machine = CurrentEventsFlatStateMachine::new(&context);
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
@@ -139,7 +139,7 @@ fn flat_query_is_static_and_does_not_run_guards() {
     assert_event::<FlatGo>(&capture);
     assert_event::<FlatGuarded>(&capture);
     assert!(!capture.ids.contains(&TypeId::of::<FlatDone>()));
-    assert_eq!(machine.context().guard_calls.get(), 0);
+    assert_eq!(context.guard_calls.get(), 0);
     assert!(CurrentEventsFlatEvents::EVENT_NAMES.contains(&"FlatGo"));
     assert!(CurrentEventsFlatEvents::EVENT_NAMES.contains(&"FlatGuarded"));
     assert!(CurrentEventsFlatEvents::EVENT_NAMES.contains(&"FlatSpecificUnexpected"));
@@ -201,7 +201,8 @@ fn multi_composite_query_tracks_only_the_active_child_and_ancestor() {
 
 #[test]
 fn catch_all_is_not_reported_but_specific_unexpected_events_are() {
-    let machine = CurrentEventsFlatStateMachine::new(FlatContext::default());
+    let context = FlatContext::default();
+    let machine = CurrentEventsFlatStateMachine::new(&context);
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);

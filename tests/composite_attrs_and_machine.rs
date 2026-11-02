@@ -118,6 +118,6 @@ fn composite_tree_implements_machine() {
     assert!(drive(&mut outer, OuterEvents::from(Go)));
     assert!(drive(&mut outer, OuterEvents::from(Go)));
     assert!(drive(&mut outer, OuterEvents::from(Leave)));
-    assert!(outer.is_terminated());
+    assert!(outer.is(&OuterStates::X));
     assert!(!drive(&mut outer, OuterEvents::from(Leave)));
 }

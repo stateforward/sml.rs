@@ -50,7 +50,7 @@ fn main() {
     let mut sm: StateMachine<Context, TestingPolicies> =
         StateMachine::new_with_policy(Context, TestingPolicies::default());
 
-    assert!(matches!(sm.state(), &States::Idle));
+    assert!(sm.is(&States::Idle));
 
     let r = sm.process_event(Events::Charge);
     assert!(matches!(r, Ok(&States::Charging)));
@@ -66,7 +66,7 @@ fn main() {
 
     let r = sm.process_event(Events::Charge);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Charged));
+    assert!(sm.is(&States::Charged));
 
     let r = sm.process_event(Events::Discharge);
     assert!(matches!(r, Ok(&States::Discharging)));
@@ -76,7 +76,7 @@ fn main() {
 
     let r = sm.process_event(Events::Discharge);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Discharged));
+    assert!(sm.is(&States::Discharged));
 
     sm.set_current_states(States::Idle);
     let r = sm.process_event(Events::FaultDetected);
@@ -100,17 +100,17 @@ fn main() {
 
     let r = sm.process_event(Events::Charge);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::Discharge);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::ChargeComplete);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::DischargeComplete);
     assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert!(sm.is(&States::Fault));
 }

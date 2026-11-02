@@ -6,6 +6,15 @@
 
 use sml::sml;
 
+/// Returns whether the machine's active root state matches `$pattern`.
+macro_rules! in_state {
+    ($machine:expr, $pattern:pat $(if $guard:expr)?) => {{
+        let mut matched = false;
+        $machine.visit_current_states(|state| matched |= matches!(state, $pattern $(if $guard)?));
+        matched
+    }};
+}
+
 sml! {
     _ {
         *State1 + Event1 [guard1] / async action1 = State2,
@@ -67,7 +76,7 @@ fn main() {
             lock: smol::lock::RwLock::new(false),
             done: false,
         });
-        assert!(matches!(sm.state(), &States::State1));
+        assert!(sm.is(&States::State1));
 
         let r = sm.process_event(Events::Event1).await;
         assert!(matches!(r, Ok(&States::State2)));
@@ -81,11 +90,11 @@ fn main() {
         // Now all events will not give any change of state
         let r = sm.process_event(Events::Event1).await;
         assert!(matches!(r, Err(Error::InvalidEvent)));
-        assert!(matches!(sm.state(), &States::State4(_)));
+        assert!(in_state!(sm, &States::State4(_)));
 
         let r = sm.process_event(Events::Event2).await;
         assert!(matches!(r, Err(Error::InvalidEvent)));
-        assert!(matches!(sm.state(), &States::State4(_)));
+        assert!(in_state!(sm, &States::State4(_)));
     });
 
     // ...
