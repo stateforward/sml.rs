@@ -50,67 +50,78 @@ fn main() {
     let mut sm: StateMachine<Context, TestingPolicies> =
         StateMachine::new_with_policy(Context, TestingPolicies::default());
 
-    assert!(matches!(sm.state(), &States::Idle));
+    assert!(sm.is(&States::Idle));
 
     let r = sm.process_event(Events::Charge);
-    assert!(matches!(r, Ok(&States::Charging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Charging));
 
     let r = sm.process_event(Events::Discharge);
-    assert!(matches!(r, Ok(&States::Discharging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Discharging));
 
     let r = sm.process_event(Events::Charge);
-    assert!(matches!(r, Ok(&States::Charging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Charging));
 
     let r = sm.process_event(Events::ChargeComplete);
-    assert!(matches!(r, Ok(&States::Charged)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Charged));
 
     let r = sm.process_event(Events::Charge);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Charged));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Charged));
 
     let r = sm.process_event(Events::Discharge);
-    assert!(matches!(r, Ok(&States::Discharging)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Discharging));
 
     let r = sm.process_event(Events::DischargeComplete);
-    assert!(matches!(r, Ok(&States::Discharged)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Discharged));
 
     let r = sm.process_event(Events::Discharge);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Discharged));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Discharged));
 
     sm.set_current_states(States::Idle);
     let r = sm.process_event(Events::FaultDetected);
-    assert!(matches!(r, Ok(&States::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Fault));
 
     sm.set_current_states(States::Charging);
     let r = sm.process_event(Events::FaultDetected);
-    assert!(matches!(r, Ok(&States::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Fault));
 
     sm.set_current_states(States::Charged);
     let r = sm.process_event(Events::FaultDetected);
-    assert!(matches!(r, Ok(&States::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Fault));
 
     sm.set_current_states(States::Discharging);
     let r = sm.process_event(Events::FaultDetected);
-    assert!(matches!(r, Ok(&States::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Fault));
 
     sm.set_current_states(States::Discharged);
     let r = sm.process_event(Events::FaultDetected);
-    assert!(matches!(r, Ok(&States::Fault)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::Charge);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::Discharge);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::ChargeComplete);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Fault));
 
     let r = sm.process_event(Events::DischargeComplete);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::Fault));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::Fault));
 }

@@ -1,4 +1,8 @@
-use sml::sml;
+use sml::{sml, sml_policies};
+
+sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
 
 pub struct E1;
 pub struct E2;
@@ -72,28 +76,28 @@ impl OrthogonalStateMachineContext for Context {
 
 #[test]
 fn events_are_broadcast_to_all_orthogonal_regions() {
-    let mut sm = OrthogonalStateMachine::new(Context::default());
+    let mut sm = OrthogonalStateMachine::new_with_policy(Context::default(), Testing::default());
 
     assert!(sm.is(&[OrthogonalStates::Boot, OrthogonalStates::Idle2]));
     sm.initialize().unwrap();
     assert!(sm.is(&[OrthogonalStates::Idle, OrthogonalStates::Idle2]));
     assert_eq!(sm.context().initializations, 1);
-    sm.process_event(E1).unwrap();
+    assert_eq!(sm.process_event(E1), Ok(true));
     assert!(sm.is(&[OrthogonalStates::S1, OrthogonalStates::Idle2]));
     assert_eq!(sm.context().actions, 2);
     assert_eq!(sm.context().entries, 1);
 
     // Specific and wildcard unexpected handlers are independently broadcast.
-    sm.process_event(Reset).unwrap();
+    assert_eq!(sm.process_event(Reset), Ok(true));
     assert_eq!(sm.context().unexpected, 2);
     assert!(sm.is(&[OrthogonalStates::S1, OrthogonalStates::Idle2]));
 
     // E2 advances both active regions, just like sml.cpp.
-    sm.process_event(E2).unwrap();
+    assert_eq!(sm.process_event(E2), Ok(true));
     assert!(sm.is(&[OrthogonalStates::X, OrthogonalStates::S3]));
     assert_eq!(sm.context().completions, 1);
 
-    sm.process_event(E3).unwrap();
+    assert_eq!(sm.process_event(E3), Ok(true));
     assert!(sm.is_terminated());
 }
 
@@ -133,8 +137,11 @@ impl AsyncOrthogonalStateMachineContext for AsyncContext {
 #[test]
 fn async_orthogonal_callbacks_are_awaited_in_every_region() {
     smol::block_on(async {
-        let mut sm = AsyncOrthogonalStateMachine::new(AsyncContext::default());
-        sm.process_event(AsyncEvent).await.unwrap();
+        let mut sm = AsyncOrthogonalStateMachine::new_with_policy(
+            AsyncContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(sm.process_event(AsyncEvent).await, Ok(true));
         assert!(sm.is_terminated());
         assert_eq!(sm.context().actions, 2);
     });
@@ -173,8 +180,9 @@ impl OriginOrthogonalStateMachineContext for OriginContext {
 
 #[test]
 fn orthogonal_completion_borrows_the_shared_origin_event() {
-    let mut sm = OriginOrthogonalStateMachine::new(OriginContext::default());
-    sm.process_event(Origin { id: 42 }).unwrap();
+    let mut sm =
+        OriginOrthogonalStateMachine::new_with_policy(OriginContext::default(), Testing::default());
+    assert_eq!(sm.process_event(Origin { id: 42 }), Ok(true));
 
     assert!(sm.is_terminated());
     assert_eq!(sm.context().ids, [42, 42]);
@@ -255,15 +263,16 @@ impl PayloadOrthogonalStateMachineContext for PayloadContext {
 
 #[test]
 fn orthogonal_regions_store_and_inject_typed_state_payloads() {
-    let mut machine = PayloadOrthogonalStateMachine::new(PayloadContext);
-    machine.process_event(Load).unwrap();
+    let mut machine =
+        PayloadOrthogonalStateMachine::new_with_policy(PayloadContext, Testing::default());
+    assert_eq!(machine.process_event(Load), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(PayloadOrthogonalStates::Loaded(Loaded(40)))
     ));
     assert!(machine.is_region(1, &PayloadOrthogonalStates::X));
 
-    machine.process_event(Bump(2)).unwrap();
+    assert_eq!(machine.process_event(Bump(2)), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(PayloadOrthogonalStates::Loaded(Loaded(42)))
@@ -313,10 +322,12 @@ impl PayloadLifecycleOrthogonalStateMachineContext for PayloadLifecycleContext {
 
 #[test]
 fn orthogonal_payloads_support_default_initial_targets_and_lifecycle() {
-    let mut machine =
-        PayloadLifecycleOrthogonalStateMachine::new(PayloadLifecycleContext::default());
+    let mut machine = PayloadLifecycleOrthogonalStateMachine::new_with_policy(
+        PayloadLifecycleContext::default(),
+        Testing::default(),
+    );
     machine.initialize().unwrap();
-    machine.process_event(PayloadAdvance).unwrap();
+    assert_eq!(machine.process_event(PayloadAdvance), Ok(true));
 
     assert!(matches!(
         machine.state(0),
@@ -349,8 +360,11 @@ impl AsyncPayloadOrthogonalStateMachineContext for AsyncPayloadContext {
 #[test]
 fn async_orthogonal_actions_can_produce_state_payloads() {
     smol::block_on(async {
-        let mut machine = AsyncPayloadOrthogonalStateMachine::new(AsyncPayloadContext);
-        machine.process_event(AsyncPayloadEvent).await.unwrap();
+        let mut machine = AsyncPayloadOrthogonalStateMachine::new_with_policy(
+            AsyncPayloadContext,
+            Testing::default(),
+        );
+        assert_eq!(machine.process_event(AsyncPayloadEvent).await, Ok(true));
         assert!(matches!(
             machine.state(0),
             Some(AsyncPayloadOrthogonalStates::AsyncPayload(AsyncPayload(7)))
@@ -403,9 +417,10 @@ fn orthogonal_callbacks_reborrow_mutable_temporary_context() {
     let mut machine = TemporaryOrthogonalStateMachine::new(TemporaryContext);
     let mut temporary = 0;
     machine.initialize(&mut temporary).unwrap();
-    machine
-        .process_event(&mut temporary, TemporaryEvent)
-        .unwrap();
+    assert_eq!(
+        machine.process_event(&mut temporary, TemporaryEvent),
+        Ok(true)
+    );
     assert_eq!(temporary, 15);
     assert!(machine.is_terminated());
 }
@@ -465,8 +480,9 @@ impl EvalOrthogonalStateMachineContext for EvalContext {
 #[test]
 fn orthogonal_eval_preserves_action_position_and_async_callbacks() {
     smol::block_on(async {
-        let mut machine = EvalOrthogonalStateMachine::new(EvalContext::default());
-        machine.process_event(OrthogonalEvalEvent).await.unwrap();
+        let mut machine =
+            EvalOrthogonalStateMachine::new_with_policy(EvalContext::default(), Testing::default());
+        assert_eq!(machine.process_event(OrthogonalEvalEvent).await, Ok(true));
         assert_eq!(
             machine.context().calls,
             [
@@ -510,16 +526,16 @@ impl DeferOrthogonalStateMachineContext for QueueContext {}
 #[test]
 fn orthogonal_process_dispatches_after_installing_the_target_state() {
     let mut machine = ProcessOrthogonalStateMachine::new(QueueContext);
-    machine.process_event(QueueStart).unwrap();
+    assert_eq!(machine.process_event(QueueStart), Ok(true));
     assert!(machine.is_terminated());
 }
 
 #[test]
 fn orthogonal_defer_retries_owned_events_after_a_state_change() {
     let mut machine = DeferOrthogonalStateMachine::new(QueueContext);
-    machine.process_event(QueueDeferred).unwrap();
+    assert_eq!(machine.process_event(QueueDeferred), Ok(true));
     assert!(machine.is_region(0, &DeferOrthogonalStates::Locked));
-    machine.process_event(QueueUnlock).unwrap();
+    assert_eq!(machine.process_event(QueueUnlock), Ok(true));
     assert!(machine.is_terminated());
 }
 
@@ -566,7 +582,7 @@ impl AsyncDeferOrthogonalStateMachineContext for AsyncQueueContext {
 fn async_orthogonal_process_uses_allocation_free_iterative_dispatch() {
     smol::block_on(async {
         let mut machine = AsyncProcessOrthogonalStateMachine::new(AsyncQueueContext);
-        machine.process_event(AsyncQueueStart).await.unwrap();
+        assert_eq!(machine.process_event(AsyncQueueStart).await, Ok(true));
         assert!(machine.is_terminated());
     });
 }
@@ -575,8 +591,8 @@ fn async_orthogonal_process_uses_allocation_free_iterative_dispatch() {
 fn async_orthogonal_defer_retries_after_awaited_state_change() {
     smol::block_on(async {
         let mut machine = AsyncDeferOrthogonalStateMachine::new(AsyncQueueContext);
-        machine.process_event(AsyncQueueDeferred).await.unwrap();
-        machine.process_event(AsyncQueueUnlock).await.unwrap();
+        assert_eq!(machine.process_event(AsyncQueueDeferred).await, Ok(true));
+        assert_eq!(machine.process_event(AsyncQueueUnlock).await, Ok(true));
         assert!(machine.is_terminated());
     });
 }
@@ -623,9 +639,11 @@ impl ExceptionOrthogonalStateMachineContext for ExceptionOrthogonalContext {
 #[test]
 fn orthogonal_exception_rows_route_typed_async_and_wildcard_failures() {
     smol::block_on(async {
-        let mut machine =
-            ExceptionOrthogonalStateMachine::new(ExceptionOrthogonalContext::default());
-        machine.process_event(OrthogonalFail).await.unwrap();
+        let mut machine = ExceptionOrthogonalStateMachine::new_with_policy(
+            ExceptionOrthogonalContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(machine.process_event(OrthogonalFail).await, Ok(true));
         assert!(machine.is_terminated());
         assert_eq!(machine.context().code, Some(42));
         assert!(machine.context().wildcard);

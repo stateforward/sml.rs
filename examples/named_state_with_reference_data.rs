@@ -31,8 +31,9 @@ fn main() {
     let mut sm = StatesWithRefDataStateMachine::new(Context);
     let result = sm.process_event(StatesWithRefDataEvents::Event1);
 
-    assert!(matches!(
-        result,
-        Ok(&StatesWithRefDataStates::State2(MyStateData(&42)))
-    ));
+    assert_eq!(result, Ok(true));
+    assert!(sm.visit_current_state(|state| matches!(
+        state,
+        StatesWithRefDataStates::State2(MyStateData(&42))
+    )));
 }

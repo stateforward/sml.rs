@@ -60,13 +60,13 @@ fn main() {
 
     // use a while let loop to let the events propagate and the dominos fall
     while let Some(e) = event {
-        let state = sm.process_event(e).unwrap();
+        assert!(sm.process_event(e).unwrap());
 
         // use pattern matching to extract the event from any state with an action that fires one
         // good practice here NOT to use a wildcard to ensure you don't miss any states
-        event = next_event(state);
+        event = sm.visit_current_state(next_event);
     }
 
     // All the dominos fell!
-    assert!(matches!(sm.state(), &DominosStates::D5));
+    assert!(sm.is(&DominosStates::D5));
 }

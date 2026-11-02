@@ -500,8 +500,49 @@ clang++ -std=c++20 -O3 -DNDEBUG -march=native \
 In 21 alternating runs, Rust completed the async RTC workload in a 2.543 ms
 median versus 12.849 ms for inline C++ `co_sm`, 80.2% lower elapsed time and
 405.3% higher throughput. This measures the uncontended ready path only.
-Scheduler queueing and suspended RTC completion require a separate benchmark
-when that adapter is implemented.
+
+### Scheduler policies
+
+The same workload runs through each scheduler policy; every caller awaits its
+event's completion before sending the next. `inline`, `fifo`, and `tokio`
+modes of `player_benchmark` measure 11 million events:
+
+```bash
+cargo run --release --features tokio --example player_benchmark -- inline
+cargo run --release --features tokio --example player_benchmark -- fifo
+cargo run --release --features tokio --example player_benchmark -- tokio
+```
+
+[`benchmarks/scheduler_compare`](benchmarks/scheduler_compare) runs the
+workload head to head with hsm.rs's queued `HSM::dispatch` (from a sibling
+`hsm/hsm.rs` checkout, one no-op effect per transition, mirroring the sml.rs
+actions). It is a separate workspace so hsm.rs stays out of this crate's
+dependency gates:
+
+```bash
+cargo run --release --manifest-path benchmarks/scheduler_compare/Cargo.toml
+```
+
+Medians of 7 runs of 1.1 million events on an Apple M3 Max with Rust 1.98
+(2026-11-01):
+
+| Path | ns/event |
+|---|---:|
+| Owned machine, `Machine::process_event_async` (no scheduler) | 1.9 |
+| `InlineScheduler` | 4.8 |
+| `FifoScheduler<1024>` | 15.2 |
+| `TokioScheduler`, current-thread runtime | 154.3 |
+| `TokioScheduler`, 2 workers, caller is a task | 141.0 |
+| `TokioScheduler`, 2 workers, 11 events queued then awaited | 73.5 |
+| hsm.rs `dispatch`, current-thread runtime | 249.6 |
+| hsm.rs `dispatch`, 2 workers, caller is a task | 260.6 |
+
+A `TokioScheduler` event pays one channel send, one task wake-up, and one
+oneshot reply; queuing several events before awaiting them amortizes the
+wake-ups. hsm.rs runs the event in the dispatching caller, so it has no
+hand-off, but each transition still costs more than the hand-off. A caller
+blocked in `Runtime::block_on` on a multi-thread runtime, rather than running
+as a task, pays a cross-thread wake-up per event (several microseconds).
 
 Reproduce both comparisons, including alternating order, raw samples, platform,
 and toolchain capture, with:

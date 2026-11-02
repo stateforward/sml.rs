@@ -22,26 +22,31 @@ impl StateMachineContext for Context {}
 
 fn main() {
     let mut sm = StateMachine::new(Context);
-    assert!(matches!(sm.state(), &States::State1));
+    assert!(sm.is(&States::State1));
 
     let r = sm.process_event(Events::Event1);
-    assert!(matches!(r, Ok(&States::State2)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State2));
 
     let r = sm.process_event(Events::Event2);
-    assert!(matches!(r, Ok(&States::State3)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State3));
 
     // Go back in the loop a few time
     let r = sm.process_event(Events::Event3);
-    assert!(matches!(r, Ok(&States::State2)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State2));
 
     let r = sm.process_event(Events::Event2);
-    assert!(matches!(r, Ok(&States::State3)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State3));
 
     let r = sm.process_event(Events::Event3);
-    assert!(matches!(r, Ok(&States::State2)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State2));
 
     // Now we cannot use Event1 again, as it is outside the state machine loop
     let r = sm.process_event(Events::Event1);
-    assert!(matches!(r, Err(Error::InvalidEvent)));
-    assert!(matches!(sm.state(), &States::State2));
+    assert_eq!(r, Ok(false));
+    assert!(sm.is(&States::State2));
 }

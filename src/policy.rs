@@ -1296,7 +1296,7 @@ mod tests {
         let _: &() = Policies::testing(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&bundle);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&bundle);
-        let (bundle_parts, ()) = Policies::into_parts(bundle);
+        let (bundle_parts, (), ()) = Policies::into_parts(bundle);
         let _: &() = PolicyParts::testing(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_defer_queue(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_process_queue(&bundle_parts);
@@ -1311,7 +1311,7 @@ mod tests {
         let _: &() = Policies::testing(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_defer_queue(&no_policy);
         let _: EventQueue<u8, 16> = Policies::new_process_queue(&no_policy);
-        let (no_policy_parts, ()) = Policies::into_parts(no_policy);
+        let (no_policy_parts, (), ()) = Policies::into_parts(no_policy);
         let _: &() = PolicyParts::logger(&no_policy_parts);
         let _: &() = PolicyParts::observer(&no_policy_parts);
         let _: &() = PolicyParts::testing(&no_policy_parts);

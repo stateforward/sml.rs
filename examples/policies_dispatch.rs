@@ -57,7 +57,9 @@ fn main() {
         sml::DefaultQueuePolicy,
     );
     let mut machine = DispatchMachineStateMachine::new_with_policy(Context, policy);
-    assert!(machine.process_event(Reject).is_err());
-    machine.process_event(Accept).unwrap();
+    // The dispatch policy filters `Reject` out, so no transition handles it.
+    assert_eq!(machine.process_event(Reject), Ok(false));
+    assert!(machine.is(&DispatchMachineStates::Idle));
+    assert_eq!(machine.process_event(Accept), Ok(true));
     assert!(machine.is(&DispatchMachineStates::SecondPath));
 }

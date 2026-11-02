@@ -29,8 +29,9 @@ impl StateMachineContext for Context {
 
 fn main() {
     let mut sm = StateMachine::new(Context, MyStateData(42));
-    let _ = sm.process_event(Events::Event1);
+    assert_eq!(sm.process_event(Events::Event1), Ok(true));
     let result = sm.process_event(Events::Event2);
 
-    assert!(matches!(result, Ok(&States::State1(MyStateData(42)))));
+    assert_eq!(result, Ok(true));
+    assert!(sm.visit_current_state(|state| matches!(state, States::State1(MyStateData(42)))));
 }

@@ -1,4 +1,4 @@
-//! Probe: orthogonal machines under a scheduler policy and the testing API.
+//! Orthogonal machines under a scheduler policy and the testing API.
 #![cfg(feature = "std")]
 
 use sml::{sml, sml_policies, FifoScheduler, Terminated};

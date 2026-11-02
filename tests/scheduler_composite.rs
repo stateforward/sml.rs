@@ -1,4 +1,4 @@
-//! Probe: composite machines (single-child and multi-child generators) with
+//! Composite machines (single-child and multi-child generators) with
 //! a queued scheduler policy and the testing-only accessor surface.
 #![cfg(feature = "std")]
 

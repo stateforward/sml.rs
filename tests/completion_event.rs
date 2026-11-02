@@ -1,5 +1,9 @@
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     value: u32,
@@ -46,16 +50,17 @@ impl CompletionStateMachineContext for Context {
 
 #[test]
 fn completion_transitions_chain_and_preserve_origin_data() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let mut sm = CompletionStateMachine::new_with_policy(Context::default(), Testing::default());
 
-    let state = sm
-        .process_event(CompletionEvents::Go(Payload {
+    assert_eq!(
+        sm.process_event(CompletionEvents::Go(Payload {
             value: 42,
             valid: true,
-        }))
-        .unwrap();
+        })),
+        Ok(true)
+    );
 
-    assert!(matches!(state, CompletionStates::Done));
+    assert!(sm.is(&CompletionStates::Done));
     assert_eq!(
         sm.context().calls,
         [("origin", 42), ("first", 42), ("second", 42)]
@@ -64,26 +69,27 @@ fn completion_transitions_chain_and_preserve_origin_data() {
 
 #[test]
 fn completion_transition_is_specific_to_the_origin_event() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let mut sm = CompletionStateMachine::new_with_policy(Context::default(), Testing::default());
 
-    let state = sm.process_event(CompletionEvents::Other).unwrap();
+    assert_eq!(sm.process_event(CompletionEvents::Other), Ok(true));
 
-    assert!(matches!(state, CompletionStates::Step1));
+    assert!(sm.is(&CompletionStates::Step1));
     assert!(sm.context().calls.is_empty());
 }
 
 #[test]
 fn failed_completion_guard_stops_the_chain_without_failing_origin_event() {
-    let mut sm = CompletionStateMachine::new(Context::default());
+    let mut sm = CompletionStateMachine::new_with_policy(Context::default(), Testing::default());
 
-    let state = sm
-        .process_event(CompletionEvents::Go(Payload {
+    assert_eq!(
+        sm.process_event(CompletionEvents::Go(Payload {
             value: 7,
             valid: false,
-        }))
-        .unwrap();
+        })),
+        Ok(true)
+    );
 
-    assert!(matches!(state, CompletionStates::Step1));
+    assert!(sm.is(&CompletionStates::Step1));
     assert_eq!(sm.context().calls, [("origin", 7)]);
 }
 
@@ -116,10 +122,13 @@ impl AsyncCompletionStateMachineContext for AsyncContext {
 #[test]
 fn completion_transitions_support_async_actions() {
     smol::block_on(async {
-        let mut sm = AsyncCompletionStateMachine::new(AsyncContext::default());
-        let state = sm.process_event(AsyncCompletionEvents::Go).await.unwrap();
+        let mut sm = AsyncCompletionStateMachine::new_with_policy(
+            AsyncContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(sm.process_event(AsyncCompletionEvents::Go).await, Ok(true));
 
-        assert!(matches!(state, AsyncCompletionStates::Done));
+        assert!(sm.is(&AsyncCompletionStates::Done));
         assert_eq!(sm.context().calls, ["origin", "completion"]);
     });
 }
@@ -147,14 +156,16 @@ impl TemporaryCompletionStateMachineContext for TemporaryContext {
 
 #[test]
 fn completion_transitions_reborrow_mutable_temporary_context() {
-    let mut sm = TemporaryCompletionStateMachine::new(TemporaryContext);
+    let mut sm =
+        TemporaryCompletionStateMachine::new_with_policy(TemporaryContext, Testing::default());
     let mut value = 0;
 
-    let state = sm
-        .process_event(&mut value, TemporaryCompletionEvents::Go)
-        .unwrap();
+    assert_eq!(
+        sm.process_event(&mut value, TemporaryCompletionEvents::Go),
+        Ok(true)
+    );
 
-    assert!(matches!(state, TemporaryCompletionStates::Done));
+    assert!(sm.is(&TemporaryCompletionStates::Done));
     assert_eq!(value, 11);
 }
 
@@ -183,13 +194,17 @@ fn completion_transitions_propagate_immutably_borrowed_origin_data() {
         value: 99,
         valid: true,
     };
-    let mut sm = BorrowedCompletionStateMachine::new(BorrowedContext::default());
+    let mut sm = BorrowedCompletionStateMachine::new_with_policy(
+        BorrowedContext::default(),
+        Testing::default(),
+    );
 
-    let state = sm
-        .process_event(BorrowedCompletionEvents::Go(&payload))
-        .unwrap();
+    assert_eq!(
+        sm.process_event(BorrowedCompletionEvents::Go(&payload)),
+        Ok(true)
+    );
 
-    assert!(matches!(state, BorrowedCompletionStates::Done));
+    assert!(sm.is(&BorrowedCompletionStates::Done));
     assert_eq!(sm.context().captured, Some(99));
 }
 
@@ -220,16 +235,15 @@ impl AnonymousCompletionStateMachineContext for AnonymousContext {
 
 #[test]
 fn anonymous_completion_runs_during_initialization_and_after_events() {
-    let mut sm = AnonymousCompletionStateMachine::new(AnonymousContext::default());
+    let mut sm = AnonymousCompletionStateMachine::new_with_policy(
+        AnonymousContext::default(),
+        Testing::default(),
+    );
 
-    assert!(matches!(
-        sm.initialize().unwrap(),
-        AnonymousCompletionStates::Ready
-    ));
-    assert!(matches!(
-        sm.process_event(AnonymousCompletionEvents::Go).unwrap(),
-        AnonymousCompletionStates::Done
-    ));
+    assert_eq!(sm.initialize(), Ok(()));
+    assert!(sm.is(&AnonymousCompletionStates::Ready));
+    assert_eq!(sm.process_event(AnonymousCompletionEvents::Go), Ok(true));
+    assert!(sm.is(&AnonymousCompletionStates::Done));
     assert_eq!(sm.context().calls, ["initialized", "stabilized"]);
 }
 
@@ -256,10 +270,13 @@ impl AsyncAnonymousStateMachineContext for AsyncAnonymousContext {
 #[test]
 fn anonymous_initialization_supports_async_actions() {
     smol::block_on(async {
-        let mut sm = AsyncAnonymousStateMachine::new(AsyncAnonymousContext::default());
-        let state = sm.initialize().await.unwrap();
+        let mut sm = AsyncAnonymousStateMachine::new_with_policy(
+            AsyncAnonymousContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(sm.initialize().await, Ok(()));
 
-        assert!(matches!(state, AsyncAnonymousStates::Ready));
+        assert!(sm.is(&AsyncAnonymousStates::Ready));
         assert!(sm.context().prepared);
     });
 }

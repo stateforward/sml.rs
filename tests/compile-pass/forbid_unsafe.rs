@@ -17,5 +17,5 @@ impl SafeGeneratedMachineStateMachineContext for Context {}
 
 fn main() {
     let mut machine = SafeGeneratedMachineStateMachine::new(Context);
-    machine.process_event(Tick).unwrap();
+    assert!(machine.process_event(Tick).unwrap());
 }

@@ -41,13 +41,14 @@ impl LoopingWithGuardsStateMachineContext for Context {
 
 fn main() {
     let mut sm = LoopingWithGuardsStateMachine::new(Context);
-    assert!(matches!(sm.state(), &LoopingWithGuardsStates::State1));
+    assert!(sm.is(&LoopingWithGuardsStates::State1));
 
     println!("Before action 1");
 
     // Go through the first guard and action
     let r = sm.process_event(LoopingWithGuardsEvents::Event1);
-    assert!(matches!(r, Ok(&LoopingWithGuardsStates::State2)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&LoopingWithGuardsStates::State2));
 
     println!("After action 1");
 
@@ -55,10 +56,10 @@ fn main() {
 
     // The action will never run as the guard will fail
     let r = sm.process_event(LoopingWithGuardsEvents::Event2);
-    assert!(matches!(r, Err(LoopingWithGuardsError::TransitionsFailed)));
+    assert_eq!(r, Ok(false));
 
     println!("After action 2");
 
     // Now we are stuck due to the guard never returning true
-    assert!(matches!(sm.state(), &LoopingWithGuardsStates::State2));
+    assert!(sm.is(&LoopingWithGuardsStates::State2));
 }

@@ -1,7 +1,11 @@
 use core::any::TypeId;
 use core::cell::Cell;
 
-use sml::{sml, Event, EventVisitor};
+use sml::{sml, sml_policies, Event, EventVisitor};
+
+sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
 
 pub struct FlatGo;
 pub struct FlatGuarded;
@@ -131,7 +135,7 @@ fn assert_event<E: Event>(capture: &Capture) {
 #[test]
 fn flat_query_is_static_and_does_not_run_guards() {
     let context = FlatContext::default();
-    let machine = CurrentEventsFlatStateMachine::new(context);
+    let machine = CurrentEventsFlatStateMachine::new_with_policy(context, Testing::default());
     let mut capture = Capture::default();
 
     machine.visit_current_events(&mut capture);
@@ -150,7 +154,7 @@ fn composite_query_includes_active_ancestor_and_child_transitions_once() {
     let mut machine = CurrentEventsParentStateMachine::new(CompositeContext);
     let mut capture = Capture::default();
 
-    machine.process_event(CompositeEnter).unwrap();
+    assert_eq!(machine.process_event(CompositeEnter), Ok(true));
     machine.visit_current_events(&mut capture);
 
     assert_event::<CompositeParentOnly>(&capture);
@@ -189,7 +193,7 @@ fn multi_composite_query_tracks_only_the_active_child_and_ancestor() {
     assert_event::<MultiEnterB>(&capture);
     assert_eq!(capture.ids.len(), 2);
 
-    machine.process_event(MultiEnterA).unwrap();
+    assert_eq!(machine.process_event(MultiEnterA), Ok(true));
     let mut capture = Capture::default();
     machine.visit_current_events(&mut capture);
     assert_event::<MultiAOnly>(&capture);

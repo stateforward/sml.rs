@@ -1,7 +1,7 @@
 //! Generic typed events with owned and synchronously borrowed payloads.
 
 use core::fmt::Debug;
-use sml::sml;
+use sml::{sml, sml_policies};
 
 /// An owned event.
 pub struct Message<T>(pub T);
@@ -48,18 +48,24 @@ impl GenericEventsStateMachineContext for Context {
     }
 }
 
+// Reading `context()` back is testing-only, so opt into `sml::TestingPolicy`.
+sml_policies!(InspectContext {
+    testing: sml::TestingPolicy,
+});
+
 fn main() {
-    let mut machine = GenericEventsStateMachine::new(Context::default());
-    machine.process_event(Message(7_u32)).unwrap();
-    machine
+    let mut machine =
+        GenericEventsStateMachine::new_with_policy(Context::default(), InspectContext::default());
+    assert!(machine.process_event(Message(7_u32)).unwrap());
+    assert!(machine
         .process_event(Message(String::from("typed")))
-        .unwrap();
+        .unwrap());
 
     let mut operation = Operation {
         input: String::from("result"),
         result: None,
     };
-    machine.process_event(&mut operation).unwrap();
+    assert!(machine.process_event(&mut operation).unwrap());
 
     assert_eq!(operation.result.as_deref(), Some("result"));
     assert_eq!(machine.context().observed, 2);

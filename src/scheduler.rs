@@ -472,6 +472,54 @@ mod shared {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::tests::{poll, Recorder};
+        use super::{lock, FifoScheduler, InlineScheduler, Queued, Schedule, StrictOrdering};
+        use core::task::Poll;
+        extern crate std;
+        use std::boxed::Box;
+
+        #[test]
+        fn a_busy_fifo_queues_bounded_and_resolves_after_the_drain() {
+            assert!(<FifoScheduler<2> as StrictOrdering>::GUARANTEES_FIFO);
+            let cell =
+                <FifoScheduler<2> as Schedule<Recorder>>::cell(FifoScheduler, Recorder::default());
+            assert!(lock(&cell.shared.machine).started);
+            // Another caller is draining, so these only queue.
+            lock(&cell.shared.queue).draining = true;
+            let mut first = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 1));
+            assert!(<FifoScheduler<2> as Queued<Recorder>>::try_submit(&cell, 2).is_ok());
+            assert!(<FifoScheduler<2> as Queued<Recorder>>::try_submit(&cell, 3).is_err());
+            let mut waiting = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 3));
+            assert_eq!(poll(first.as_mut()), Poll::Pending);
+            assert_eq!(poll(waiting.as_mut()), Poll::Pending);
+
+            assert!(cell.drain(9));
+            assert_eq!(poll(first.as_mut()), Poll::Ready(true));
+            assert_eq!(poll(waiting.as_mut()), Poll::Ready(true));
+            assert_eq!(lock(&cell.shared.machine).seen, [9, 1, 2, 3]);
+
+            let stop = <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 0);
+            assert_eq!(poll(stop), Poll::Ready(true));
+            assert!(<FifoScheduler<2> as Schedule<Recorder>>::is_terminated(&cell));
+        }
+
+        #[test]
+        fn an_inline_machine_starts_and_stops() {
+            assert!(<InlineScheduler as StrictOrdering>::SINGLE_CONSUMER);
+            let cell =
+                <InlineScheduler as Schedule<Recorder>>::cell(InlineScheduler, Recorder::default());
+            let clone = cell.clone();
+            assert!(lock(&clone.machine).started);
+            let stop = <InlineScheduler as Queued<Recorder>>::submit(&cell, 0);
+            assert_eq!(poll(stop), Poll::Ready(true));
+            assert!(<InlineScheduler as Schedule<Recorder>>::is_terminated(&cell));
+            let refused = <InlineScheduler as Queued<Recorder>>::try_submit(&cell, 1);
+            assert_eq!(refused.ok().map(poll), Some(Poll::Ready(false)));
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -645,3 +693,85 @@ mod task {
 
 #[cfg(feature = "tokio")]
 pub use task::{TokioCell, TokioCompletion, TokioScheduler};
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::{Schedule, Step, SyncMachineStep};
+    use crate::{
+        DefaultQueuePolicy, JumpTable, NoPolicy, Policies, PolicyBundle, PolicyParts, StepHook,
+        Terminated,
+    };
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Poll, Waker};
+    use std::vec::Vec;
+
+    /// Records each event; event `0` stops the machine.
+    #[derive(Default)]
+    pub(super) struct Recorder {
+        pub(super) started: bool,
+        pub(super) seen: Vec<u8>,
+        stopped: bool,
+    }
+
+    impl Terminated for Recorder {
+        fn is_terminated(&self) -> bool {
+            self.stopped
+        }
+    }
+
+    impl SyncMachineStep for Recorder {
+        type Event = u8;
+
+        fn start(&mut self) -> bool {
+            self.started = true;
+            true
+        }
+
+        fn step(&mut self, event: u8) -> bool {
+            self.seen.push(event);
+            self.stopped = event == 0;
+            true
+        }
+    }
+
+    pub(super) fn poll<F: Future>(future: F) -> Poll<F::Output> {
+        pin!(future).poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    #[test]
+    fn the_unit_scheduler_and_hook_keep_the_owned_machine() {
+        let mut machine = <() as Schedule<Recorder>>::cell((), Recorder::default());
+        assert!(!<() as Schedule<Recorder>>::is_terminated(&machine));
+        assert!(!<() as StepHook<Recorder, (), u8>>::ACTIVE);
+        StepHook::<Recorder, (), u8>::before_step(&mut (), &mut machine, &mut (), &1);
+        let step = Step {
+            event: "event",
+            accepted: true,
+            terminated: false,
+        };
+        StepHook::<Recorder, (), u8>::after_step(&mut (), &mut machine, &mut (), step);
+        assert!(machine.seen.is_empty());
+
+        let (mut parts, (), ()) = Policies::into_parts(NoPolicy::default());
+        let ((), ()) = {
+            let (hook, logger) = PolicyParts::step_hook_mut(&mut parts);
+            (*hook, *logger)
+        };
+        let bundle = PolicyBundle::<(), (), JumpTable>::new(
+            (),
+            (),
+            (),
+            (),
+            DefaultQueuePolicy,
+            DefaultQueuePolicy,
+        );
+        let (mut parts, (), ()) = Policies::into_parts(bundle.with_scheduler(()).with_step_hook(()));
+        let ((), ()) = {
+            let (hook, logger) = PolicyParts::step_hook_mut(&mut parts);
+            (*hook, *logger)
+        };
+    }
+}

@@ -5,6 +5,10 @@
 
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault;
 
@@ -71,8 +75,9 @@ impl CompletionExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_completion_fault_recovered_by_the_parent_exits_the_child_once() {
-    let mut machine = CompletionExitStateMachine::new(ExitContext::default());
-    machine.process_event(Go { fail: true }).unwrap();
+    let mut machine =
+        CompletionExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail: true }), Ok(true));
     assert!(machine.is(&CompletionExitStates::Idle));
     assert_eq!(
         machine.context().log,
@@ -80,7 +85,7 @@ fn composite_completion_fault_recovered_by_the_parent_exits_the_child_once() {
     );
     // The next cycle pairs one entry with one exit.
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
     assert!(machine.is(&CompletionExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -120,17 +125,18 @@ impl EventExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_event_fault_recovered_by_the_parent_exits_the_child_once() {
-    let mut machine = EventExitStateMachine::new(ExitContext::default());
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: true }).unwrap();
+    let mut machine =
+        EventExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: true }), Ok(true));
     assert!(machine.is(&EventExitStates::Idle));
     assert_eq!(
         machine.context().log,
         ["entry", "exit", "action", "recover"]
     );
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(machine.is_child(&EventExitEventExitKidStates::Done));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -171,9 +177,10 @@ impl SameLevelExitStateMachineContext for ExitContext {
 
 #[test]
 fn composite_event_fault_recovered_by_a_same_level_row_exits_the_source_once() {
-    let mut machine = SameLevelExitStateMachine::new(ExitContext::default());
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: true }).unwrap();
+    let mut machine =
+        SameLevelExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: true }), Ok(true));
     assert!(machine.is_child(&SameLevelExitSameLevelExitKidStates::Recovered));
     assert_eq!(
         machine.context().log,
@@ -181,11 +188,11 @@ fn composite_event_fault_recovered_by_a_same_level_row_exits_the_source_once() {
     );
     // Leave and re-enter the child: the next cycle pairs one entry with one
     // exit.
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(machine.is(&SameLevelExitStates::Idle));
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(machine.is_child(&SameLevelExitSameLevelExitKidStates::Done));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -224,9 +231,10 @@ impl OrthogonalExitStateMachineContext for ExitContext {
 
 #[test]
 fn orthogonal_event_fault_recovered_by_a_region_row_exits_the_source_once() {
-    let mut machine = OrthogonalExitStateMachine::new(ExitContext::default());
+    let mut machine =
+        OrthogonalExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
     machine.initialize().unwrap();
-    machine.process_event(Poke { fail: true }).unwrap();
+    assert_eq!(machine.process_event(Poke { fail: true }), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalExitStates::LeftRecovered)
@@ -237,8 +245,8 @@ fn orthogonal_event_fault_recovered_by_a_region_row_exits_the_source_once() {
     );
     // Re-enter the region state: the next cycle pairs one entry with one exit.
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(matches!(
         machine.state(0),
         Some(OrthogonalExitStates::LeftDone)
@@ -284,15 +292,16 @@ impl TreeExitStateMachineContext for ExitContext {
 
 #[test]
 fn tree_completion_fault_recovered_by_the_root_exits_the_leaf_once() {
-    let mut machine = TreeExitStateMachine::new(ExitContext::default());
-    machine.process_event(Go { fail: true }).unwrap();
+    let mut machine =
+        TreeExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail: true }), Ok(true));
     assert!(machine.is(&TreeExitStates::Idle));
     assert_eq!(
         machine.context().log,
         ["entry", "exit", "action", "recover"]
     );
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
     assert!(machine.is(&TreeExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -334,11 +343,14 @@ impl RegionExitStateMachineContext for ExitContext {
 
 #[test]
 fn orthogonal_node_completion_fault_recovered_by_the_parent_exits_the_region_once() {
-    let mut machine = RegionExitStateMachine::new(ExitContext {
-        fail_work: true,
-        ..ExitContext::default()
-    });
-    machine.process_event(Go { fail: true }).unwrap();
+    let mut machine = RegionExitStateMachine::new_with_policy(
+        ExitContext {
+            fail_work: true,
+            ..ExitContext::default()
+        },
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Go { fail: true }), Ok(true));
     assert!(machine.is(&RegionExitStates::Idle));
     assert_eq!(
         machine.context().log,
@@ -347,8 +359,8 @@ fn orthogonal_node_completion_fault_recovered_by_the_parent_exits_the_region_onc
     machine.context_mut().log.clear();
     machine.context_mut().fail_work = false;
     // The next cycle pairs one entry with one exit.
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(machine.is(&RegionExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -383,17 +395,18 @@ impl FlatExitStateMachineContext for ExitContext {
 
 #[test]
 fn flat_event_fault_recovery_exits_the_source_once() {
-    let mut machine = FlatExitStateMachine::new(ExitContext::default());
-    machine.process_event(Poke { fail: false }).unwrap();
-    machine.process_event(Poke { fail: true }).unwrap();
+    let mut machine =
+        FlatExitStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: true }), Ok(true));
     assert!(machine.is(&FlatExitStates::Idle));
     assert_eq!(
         machine.context().log,
         ["entry", "exit", "action", "recover"]
     );
     machine.context_mut().log.clear();
-    machine.process_event(Poke { fail: false }).unwrap();
-    machine.process_event(Poke { fail: false }).unwrap();
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
     assert!(machine.is(&FlatExitStates::Idle));
     assert_eq!(machine.context().log, ["entry", "exit", "action"]);
 }
@@ -447,10 +460,11 @@ impl ReNestStateMachineContext for ExitContext {
 
 #[test]
 fn reentering_a_nested_child_after_an_ancestor_recovery_pairs_its_hooks() {
-    let mut machine = ReNestStateMachine::new(ExitContext::default());
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Poke { fail: true }).unwrap();
+    let mut machine =
+        ReNestStateMachine::new_with_policy(ExitContext::default(), Testing::default());
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Poke { fail: true }), Ok(true));
     assert!(machine.is(&ReNestStates::Idle));
     assert_eq!(
         machine.context().log,
@@ -458,23 +472,24 @@ fn reentering_a_nested_child_after_an_ancestor_recovery_pairs_its_hooks() {
     );
     for _ in 0..2 {
         machine.context_mut().log.clear();
-        machine.process_event(Go { fail: false }).unwrap();
-        machine.process_event(Go { fail: false }).unwrap();
-        machine.process_event(Poke { fail: false }).unwrap();
+        assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+        assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+        assert_eq!(machine.process_event(Poke { fail: false }), Ok(true));
         assert_eq!(machine.context().log, ["entry", "exit", "action"]);
-        machine.process_event(Leave).unwrap();
+        assert_eq!(machine.process_event(Leave), Ok(true));
         assert!(machine.is(&ReNestStates::Idle));
     }
 }
 
 #[test]
 fn leaving_an_orthogonal_node_exits_its_nested_child() {
-    let mut machine = ReNestStateMachine::new(ExitContext::default());
+    let mut machine =
+        ReNestStateMachine::new_with_policy(ExitContext::default(), Testing::default());
     for _ in 0..2 {
         machine.context_mut().log.clear();
-        machine.process_event(Go { fail: false }).unwrap();
-        machine.process_event(Go { fail: false }).unwrap();
-        machine.process_event(Leave).unwrap();
+        assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+        assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+        assert_eq!(machine.process_event(Leave), Ok(true));
         assert!(machine.is(&ReNestStates::Idle));
         assert_eq!(machine.context().log, ["entry", "exit"]);
     }
@@ -517,12 +532,13 @@ impl InitNestStateMachineContext for ExitContext {
 
 #[test]
 fn entering_an_orthogonal_node_enters_a_nested_initial_child() {
-    let mut machine = InitNestStateMachine::new(ExitContext::default());
+    let mut machine =
+        InitNestStateMachine::new_with_policy(ExitContext::default(), Testing::default());
     for _ in 0..2 {
         machine.context_mut().log.clear();
-        machine.process_event(Go { fail: false }).unwrap();
+        assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
         assert_eq!(machine.context().log, ["entry"]);
-        machine.process_event(Leave).unwrap();
+        assert_eq!(machine.process_event(Leave), Ok(true));
         assert!(machine.is(&InitNestStates::Idle));
         assert_eq!(machine.context().log, ["entry", "exit"]);
     }
@@ -560,10 +576,11 @@ impl RootNestStateMachineContext for ExitContext {
 
 #[test]
 fn initializing_an_orthogonal_root_enters_a_nested_initial_child_once() {
-    let mut machine = RootNestStateMachine::new(ExitContext::default());
+    let mut machine =
+        RootNestStateMachine::new_with_policy(ExitContext::default(), Testing::default());
     machine.initialize().unwrap();
     assert_eq!(machine.context().log, ["entry"]);
-    machine.process_event(Leave).unwrap();
+    assert_eq!(machine.process_event(Leave), Ok(true));
     assert!(machine.is_region(0, &RootNestStates::LeftIdle));
     assert_eq!(machine.context().log, ["entry", "exit"]);
 }
@@ -626,12 +643,15 @@ impl TeardownStateMachineContext for TeardownContext {
 
 #[test]
 fn a_failed_region_exit_recovered_by_an_ancestor_does_not_exit_its_peers_again() {
-    let mut machine = TeardownStateMachine::new(TeardownContext {
-        exit_failures: 1,
-        ..TeardownContext::default()
-    });
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Leave).unwrap();
+    let mut machine = TeardownStateMachine::new_with_policy(
+        TeardownContext {
+            exit_failures: 1,
+            ..TeardownContext::default()
+        },
+        Testing::default(),
+    );
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Leave), Ok(true));
     assert!(machine.is(&TeardownStates::Idle));
     assert_eq!(
         machine.context().log,
@@ -646,8 +666,8 @@ fn a_failed_region_exit_recovered_by_an_ancestor_does_not_exit_its_peers_again()
     );
     // The next occupancy pairs each entry with one exit.
     machine.context_mut().log.clear();
-    machine.process_event(Go { fail: false }).unwrap();
-    machine.process_event(Leave).unwrap();
+    assert_eq!(machine.process_event(Go { fail: false }), Ok(true));
+    assert_eq!(machine.process_event(Leave), Ok(true));
     assert_eq!(
         machine.context().log,
         ["a entry", "b entry", "a exit", "b exit"]

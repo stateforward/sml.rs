@@ -1,5 +1,9 @@
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy
+});
+
 #[derive(Default)]
 pub struct Disconnected;
 
@@ -31,11 +35,11 @@ impl TypedStateDslStateMachineContext for Context {
 
 #[test]
 fn state_type_infers_payload_and_defaults_the_initial_value() {
-    let mut sm = TypedStateDslStateMachine::new(Context);
-    sm.process_event(Connect { id: 42 }).unwrap();
+    let mut sm = TypedStateDslStateMachine::new_with_policy(Context, Testing::default());
+    assert_eq!(sm.process_event(Connect { id: 42 }), Ok(true));
 
     assert!(matches!(sm.state(), TypedStateDslStates::Connected(data) if data.id == 42));
-    sm.process_event(Disconnect).unwrap();
+    assert_eq!(sm.process_event(Disconnect), Ok(true));
     assert!(sm.is_terminated());
 }
 
@@ -56,7 +60,8 @@ impl DefaultTypedTargetStateMachineContext for DefaultContext {}
 
 #[test]
 fn target_type_without_action_is_default_constructed() {
-    let mut sm = DefaultTypedTargetStateMachine::new(DefaultContext);
-    sm.process_event(TurnOn).unwrap();
+    let mut sm =
+        DefaultTypedTargetStateMachine::new_with_policy(DefaultContext, Testing::default());
+    assert_eq!(sm.process_event(TurnOn), Ok(true));
     assert!(matches!(sm.state(), DefaultTypedTargetStates::On(_)));
 }

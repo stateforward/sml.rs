@@ -1,5 +1,9 @@
 use sml::sml;
 
+sml::sml_policies!(Testing {
+    testing: sml::TestingPolicy,
+});
+
 pub struct Run;
 pub struct Finish;
 
@@ -29,12 +33,12 @@ impl ExceptionDslStateMachineContext for Context {
 
 #[test]
 fn wildcard_exception_transition_handles_action_result_error() {
-    let mut sm = ExceptionDslStateMachine::new(Context::default());
-    sm.process_event(Run).unwrap();
+    let mut sm = ExceptionDslStateMachine::new_with_policy(Context::default(), Testing::default());
+    assert_eq!(sm.process_event(Run), Ok(true));
 
     assert!(sm.is(&ExceptionDslStates::Recovered));
     assert!(sm.context().recovered);
-    sm.process_event(Finish).unwrap();
+    assert_eq!(sm.process_event(Finish), Ok(true));
     assert!(sm.is_terminated());
 }
 
@@ -68,8 +72,11 @@ impl AsyncExceptionDslStateMachineContext for AsyncContext {
 #[test]
 fn async_exception_transition_handles_guard_result_error() {
     smol::block_on(async {
-        let mut sm = AsyncExceptionDslStateMachine::new(AsyncContext::default());
-        sm.process_event(AsyncRun).await.unwrap();
+        let mut sm = AsyncExceptionDslStateMachine::new_with_policy(
+            AsyncContext::default(),
+            Testing::default(),
+        );
+        assert_eq!(sm.process_event(AsyncRun).await, Ok(true));
         assert!(sm.is(&AsyncExceptionDslStates::Recovered));
         assert!(sm.context().recovered);
     });
@@ -107,8 +114,9 @@ impl TypedExceptionDslStateMachineContext for TypedContext {
 
 #[test]
 fn typed_exception_infers_and_injects_callback_error() {
-    let mut sm = TypedExceptionDslStateMachine::new(TypedContext::default());
-    sm.process_event(TypedRun).unwrap();
+    let mut sm =
+        TypedExceptionDslStateMachine::new_with_policy(TypedContext::default(), Testing::default());
+    assert_eq!(sm.process_event(TypedRun), Ok(true));
 
     assert!(sm.is(&TypedExceptionDslStates::Recovered));
     assert_eq!(sm.context().code, Some(42));

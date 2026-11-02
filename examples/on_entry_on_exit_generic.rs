@@ -2,7 +2,7 @@
 
 #![deny(missing_docs)]
 
-use sml::sml;
+use sml::{sml, sml_policies};
 
 sml! {
     OnEntryExample {
@@ -29,40 +29,49 @@ impl OnEntryExampleStateMachineContext for Context {
     }
 }
 
+// The entry/exit counters live in the context; reading them back is a
+// testing-only capability, so opt into `sml::TestingPolicy`.
+sml_policies!(InspectContext {
+    testing: sml::TestingPolicy,
+});
+
 fn main() {
-    let mut sm = OnEntryExampleStateMachine::new(Context {
-        exited_d0: 0,
-        entered_d1: 0,
-    });
+    let mut sm = OnEntryExampleStateMachine::new_with_policy(
+        Context {
+            exited_d0: 0,
+            entered_d1: 0,
+        },
+        InspectContext::default(),
+    );
 
     // first event starts the dominos
-    let _ = sm.process_event(OnEntryExampleEvents::ToD1).unwrap();
+    assert!(sm.process_event(OnEntryExampleEvents::ToD1).unwrap());
 
-    assert!(matches!(sm.state(), &OnEntryExampleStates::D1));
+    assert!(sm.is(&OnEntryExampleStates::D1));
     assert_eq!(sm.context().exited_d0, 1);
     assert_eq!(sm.context().entered_d1, 1);
 
-    let _ = sm.process_event(OnEntryExampleEvents::ToD2).unwrap();
+    assert!(sm.process_event(OnEntryExampleEvents::ToD2).unwrap());
 
-    assert!(matches!(sm.state(), &OnEntryExampleStates::D2));
+    assert!(sm.is(&OnEntryExampleStates::D2));
     assert_eq!(sm.context().exited_d0, 1);
     assert_eq!(sm.context().entered_d1, 1);
 
-    let _ = sm.process_event(OnEntryExampleEvents::ToD1).unwrap();
+    assert!(sm.process_event(OnEntryExampleEvents::ToD1).unwrap());
 
-    assert!(matches!(sm.state(), &OnEntryExampleStates::D1));
+    assert!(sm.is(&OnEntryExampleStates::D1));
     assert_eq!(sm.context().exited_d0, 1);
     assert_eq!(sm.context().entered_d1, 2);
 
-    let _ = sm.process_event(OnEntryExampleEvents::ToD0).unwrap();
+    assert!(sm.process_event(OnEntryExampleEvents::ToD0).unwrap());
 
-    assert!(matches!(sm.state(), &OnEntryExampleStates::D0));
+    assert!(sm.is(&OnEntryExampleStates::D0));
     assert_eq!(sm.context().exited_d0, 1);
     assert_eq!(sm.context().entered_d1, 2);
 
-    let _ = sm.process_event(OnEntryExampleEvents::ToD3).unwrap();
+    assert!(sm.process_event(OnEntryExampleEvents::ToD3).unwrap());
 
-    assert!(matches!(sm.state(), &OnEntryExampleStates::D3));
+    assert!(sm.is(&OnEntryExampleStates::D3));
     assert_eq!(sm.context().exited_d0, 2);
     assert_eq!(sm.context().entered_d1, 2);
 }

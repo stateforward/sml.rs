@@ -21,10 +21,10 @@ impl ProcessQueueDslStateMachineContext for Context {}
 fn cpp_process_action_dispatches_after_the_current_transition() {
     let mut sm = ProcessQueueDslStateMachine::new(Context);
 
-    sm.process_event(Start).unwrap();
+    assert_eq!(sm.process_event(Start), Ok(true));
     assert!(sm.is(&ProcessQueueDslStates::Ready));
 
-    sm.process_event(Kick).unwrap();
+    assert_eq!(sm.process_event(Kick), Ok(true));
     assert!(sm.is_terminated());
 }
 
@@ -46,10 +46,10 @@ impl DeferQueueDslStateMachineContext for DeferContext {}
 fn cpp_defer_action_retries_after_a_state_change() {
     let mut sm = DeferQueueDslStateMachine::new(DeferContext);
 
-    sm.process_event(Deferred).unwrap();
+    assert_eq!(sm.process_event(Deferred), Ok(true));
     assert!(sm.is(&DeferQueueDslStates::Idle));
 
-    sm.process_event(Unlock).unwrap();
+    assert_eq!(sm.process_event(Unlock), Ok(true));
     assert!(sm.is_terminated());
 }
 
@@ -83,8 +83,8 @@ impl AsyncProcessQueueDslStateMachineContext for AsyncProcessContext {
 fn async_flat_process_uses_allocation_free_iterative_dispatch() {
     smol::block_on(async {
         let mut machine = AsyncProcessQueueDslStateMachine::new(AsyncProcessContext);
-        machine.process_event(AsyncEnable).await.unwrap();
-        machine.process_event(AsyncStart).await.unwrap();
+        assert_eq!(machine.process_event(AsyncEnable).await, Ok(true));
+        assert_eq!(machine.process_event(AsyncStart).await, Ok(true));
         assert!(machine.is_terminated());
     });
 }
@@ -113,8 +113,8 @@ impl AsyncDeferQueueDslStateMachineContext for AsyncDeferContext {
 fn async_flat_defer_retries_after_awaited_state_change() {
     smol::block_on(async {
         let mut machine = AsyncDeferQueueDslStateMachine::new(AsyncDeferContext);
-        machine.process_event(AsyncDeferred).await.unwrap();
-        machine.process_event(AsyncUnlock).await.unwrap();
+        assert_eq!(machine.process_event(AsyncDeferred).await, Ok(true));
+        assert_eq!(machine.process_event(AsyncUnlock).await, Ok(true));
         assert!(machine.is_terminated());
     });
 }

@@ -45,15 +45,17 @@ fn main() {
     let mut sm = StateMachine::new(Context);
 
     let result = sm.process_event(Events::Event1(&[])); // Guard will fail
-    assert!(matches!(result, Err(Error::TransitionsFailed)));
+    assert_eq!(result, Ok(false));
     let result = sm.process_event(Events::Event1(&[1, 2, 3])); // Guard will pass
-    assert!(matches!(result, Ok(&States::State2)));
+    assert_eq!(result, Ok(true));
+    assert!(sm.is(&States::State2));
 
     let r = 42;
     let result = sm.process_event(Events::Event2(MyReferenceWrapper(&r))); // Guard will fail
-    assert!(matches!(result, Err(Error::TransitionsFailed)));
+    assert_eq!(result, Ok(false));
 
     let r = 9001;
     let result = sm.process_event(Events::Event2(MyReferenceWrapper(&r))); // Guard will pass
-    assert!(matches!(result, Ok(States::State3)));
+    assert_eq!(result, Ok(true));
+    assert!(sm.is(&States::State3));
 }

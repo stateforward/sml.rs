@@ -67,25 +67,28 @@ fn main() {
             lock: smol::lock::RwLock::new(false),
             done: false,
         });
-        assert!(matches!(sm.state(), &States::State1));
+        assert!(sm.is(&States::State1));
 
         let r = sm.process_event(Events::Event1).await;
-        assert!(matches!(r, Ok(&States::State2)));
+        assert_eq!(r, Ok(true));
+        assert!(sm.is(&States::State2));
 
         let r = sm.process_event(Events::Event2).await;
-        assert!(matches!(r, Ok(&States::State3)));
+        assert_eq!(r, Ok(true));
+        assert!(sm.is(&States::State3));
 
         let r = sm.process_event(Events::Event3).await;
-        assert!(matches!(r, Ok(&States::State4(true))));
+        assert_eq!(r, Ok(true));
+        assert!(sm.visit_current_state(|state| matches!(state, States::State4(true))));
 
         // Now all events will not give any change of state
         let r = sm.process_event(Events::Event1).await;
-        assert!(matches!(r, Err(Error::InvalidEvent)));
-        assert!(matches!(sm.state(), &States::State4(_)));
+        assert_eq!(r, Ok(false));
+        assert!(sm.visit_current_state(|state| matches!(state, States::State4(_))));
 
         let r = sm.process_event(Events::Event2).await;
-        assert!(matches!(r, Err(Error::InvalidEvent)));
-        assert!(matches!(sm.state(), &States::State4(_)));
+        assert_eq!(r, Ok(false));
+        assert!(sm.visit_current_state(|state| matches!(state, States::State4(_))));
     });
 
     // ...

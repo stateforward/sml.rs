@@ -4,7 +4,7 @@
 
 #![deny(missing_docs)]
 
-use sml::sml;
+use sml::{sml, sml_policies};
 
 sml! {
     _ {
@@ -24,22 +24,31 @@ impl StateMachineContext for Context {
     }
 }
 
+// Reading the action counter back out of the context is testing-only, so
+// opt into `sml::TestingPolicy`.
+sml_policies!(InspectContext {
+    testing: sml::TestingPolicy,
+});
+
 fn main() {
-    let mut sm = StateMachine::new(Context(0));
-    assert!(matches!(sm.state(), &States::State1));
+    let mut sm = StateMachine::new_with_policy(Context(0), InspectContext::default());
+    assert!(sm.is(&States::State1));
     assert_eq!(sm.context().0, 0);
 
     // triggers action
     let r = sm.process_event(Events::Event1);
-    assert!(matches!(r, Ok(&States::State2)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State2));
     assert_eq!(sm.context().0, 1);
 
     let r = sm.process_event(Events::Event2);
-    assert!(matches!(r, Ok(&States::State1)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State1));
     assert_eq!(sm.context().0, 1);
 
     // triggers the same action
     let r = sm.process_event(Events::Event2);
-    assert!(matches!(r, Ok(&States::State3)));
+    assert_eq!(r, Ok(true));
+    assert!(sm.is(&States::State3));
     assert_eq!(sm.context().0, 2);
 }

@@ -4,7 +4,7 @@
 
 #![deny(missing_docs)]
 
-use sml::sml;
+use sml::{sml, sml_policies};
 
 sml! {
     _ {
@@ -31,12 +31,19 @@ impl StateMachineContext for Context {
     }
 }
 
-fn main() {
-    let mut sm = StateMachine::new(Context { num_transitions: 0 });
+sml_policies!(InspectContext {
+    testing: sml::TestingPolicy,
+});
 
-    sm.process_event(Events::Event1).ok(); // ++
-    sm.process_event(Events::Event1).ok(); // Will fail
-    sm.process_event(Events::Event2).ok(); // ++
+fn main() {
+    // Reading the context back out of the machine is a testing-only
+    // capability, so this example opts into `sml::TestingPolicy`.
+    let mut sm =
+        StateMachine::new_with_policy(Context { num_transitions: 0 }, InspectContext::default());
+
+    assert_eq!(sm.process_event(Events::Event1), Ok(true)); // ++
+    assert_eq!(sm.process_event(Events::Event1), Ok(false)); // Not handled in State2
+    assert_eq!(sm.process_event(Events::Event2), Ok(true)); // ++
 
     assert_eq!(sm.context().num_transitions, 2);
 

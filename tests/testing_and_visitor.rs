@@ -30,7 +30,7 @@ fn state_can_be_injected_for_focused_transition_testing() {
     let previous = sm.set_current_states(InspectableStates::Running);
     assert!(matches!(previous, InspectableStates::Idle));
 
-    sm.process_event(InspectableEvents::Stop).unwrap();
+    assert_eq!(sm.process_event(InspectableEvents::Stop), Ok(true));
     assert!(sm.is_terminated());
     assert!(sml::Terminated::is_terminated(&sm));
 }
@@ -50,9 +50,11 @@ fn current_state_can_be_visited_without_exposing_machine_internals() {
 
 #[test]
 fn initialize_runs_the_initial_entry_hook() {
-    let mut sm = InspectableStateMachine::new(Context::default());
+    let mut sm: InspectableStateMachine<Context, TestingPolicies> =
+        InspectableStateMachine::new_with_policy(Context::default(), TestingPolicies::default());
 
-    assert!(matches!(sm.initialize().unwrap(), InspectableStates::Idle));
+    assert_eq!(sm.initialize(), Ok(()));
+    assert!(sm.is(&InspectableStates::Idle));
     assert_eq!(sm.context().entries, 1);
 }
 
