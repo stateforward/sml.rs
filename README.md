@@ -58,35 +58,44 @@ sml! {
     }
 }
 
+// The caller owns the dependencies, as in sml.cpp: the machine holds a
+// shared reference, so the count stays readable while the machine runs.
 #[derive(Default)]
 struct Context {
-    actions: usize,
+    actions: core::cell::Cell<usize>,
 }
 
-impl PlayerStateMachineContext for Context {
+impl Context {
+    fn count(&self) {
+        self.actions.set(self.actions.get() + 1);
+    }
+}
+
+impl PlayerStateMachineContext for &Context {
     fn open_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn close_drawer(&mut self, _: &OpenClose) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn start_playback(&mut self, _: &Play) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 
     fn stop_playback(&mut self, _: &Stop) -> Result<(), ()> {
-        self.actions += 1;
+        self.count();
         Ok(())
     }
 }
 
 fn main() -> Result<(), PlayerError> {
-    let mut player = PlayerStateMachine::new(Context::default());
+    let context = Context::default();
+    let mut player = PlayerStateMachine::new(&context);
 
     assert!(player.is(&PlayerStates::Empty));
     player.process_event(OpenClose)?;
@@ -95,8 +104,8 @@ fn main() -> Result<(), PlayerError> {
     player.process_event(Play)?;
     player.process_event(Stop)?;
 
-    assert!(player.is_terminated());
-    assert_eq!(player.context().actions, 4);
+    assert!(player.is(&PlayerStates::X));
+    assert_eq!(context.actions.get(), 4);
     Ok(())
 }
 ```
@@ -139,8 +148,12 @@ orthogonal regions, composite machines, exceptions, and queue behavior.
 
 <!-- public methods emitted by the flat, orthogonal, and composite generators -->
 
-All generated machines provide construction, context access, event processing,
-and termination queries. The state API follows the machine shape:
+All generated machines provide construction, event processing, and the
+`sml.cpp` queries `is(...)`, `visit_current_states(visitor)`, and
+`visit_current_events(visitor)`. There are no state, context, or policy
+getters: like `sml.cpp`, the caller owns the dependencies it hands the machine
+(a reference or shared handle as the context, a logger that records into a
+sink the caller keeps) and asks the machine only which state it is in.
 
 <!-- public event-processing traits from src/lib.rs -->
 
@@ -153,11 +166,18 @@ inherent `process_event` method. Async callbacks are a separate concern.
 Orthogonal, async-callback, and temporary-context machines retain their
 shape-specific inherent processing APIs.
 
-| Shape | Main state API |
-|---|---|
-| Flat | `state()`, `is(...)`, `visit_current_state(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Orthogonal | `states()`, `state(region)`, `is_region(...)`, `set_current_states(...)` with `TestingPolicy` |
-| Composite | Parent state methods plus typed child state, active, setter, visitor, and `set_current_states(...)` with `TestingPolicy` |
+| Shape | `is(...)` accepts | `visit_current_states` visits | With `TestingPolicy` |
+|---|---|---|---|
+| Flat | `&States` | the active state, once | `set_current_states(state)` |
+| Orthogonal | `&[States; N]` | each region's state, in region order | `set_current_states([...])` |
+| Composite | `&ParentStates` (or `&[ParentStates; N]` for an orthogonal root), and any child machine's states enum (or its region array), checked inside that child | each active root state | `set_current_states(...)`, `set_child_state(...)` or `set_<child>_state(...)` |
+
+`is` compares variants and ignores payloads, matching `sml.cpp`'s
+`sm.is(state)`; `sm.is(&ChildStates::Idle)` is the Rust spelling of
+`sm.is<decltype(sub)>(state)`. The terminal check is `sm.is(&States::X)`. A
+child machine may appear only once in a composite tree; the generator already
+rejects a second owner or an overlapping region, so a child states enum names
+exactly one place in the tree.
 
 Call `initialize()` when the initial state's entry hook or anonymous completion
 must run before the first external event. `process_event` automatically runs
@@ -237,7 +257,11 @@ The policy hooks correspond to the four `sml.cpp` logger callbacks:
 `log_guard`. Generated events and states implement `EventName` and `StateName`,
 so adapters can use stable static variant names without serializing machine
 state. `Observer` receives the same callbacks and is useful for tracing or
-OpenTelemetry adapters without adding a telemetry dependency to sml.rs.
+OpenTelemetry adapters without adding a telemetry dependency to sml.rs. The
+machine keeps its policy slots private, so a logger or observer that the owner
+wants to read records into a sink it shares with the owner (for example an
+`Rc<RefCell<...>>` or a channel), as an `sml.cpp` logger writes to its own
+output.
 
 `JumpTable` is the default dispatch strategy; `BranchStm` and `SwitchStm` are
 available as parity names. A custom `Dispatch` policy can accept or reject an
@@ -270,8 +294,7 @@ not implement those integration traits directly. The policy-storage plumbing
 that generated code uses lives in `sml::__private`, which is macro support and
 not public API.
 
-These policies are for the machine's owner to configure and query its own
-machine. They are not a general introspection or control channel and must not
+These policies are for the machine's owner to configure its own machine. They are not a general introspection or control channel and must not
 be made reachable through an event, message, or other domain input.
 
 ### Schedulers
@@ -313,10 +336,10 @@ as `sml.cpp` does.
 Queued schedulers drive synchronous machines without a temporary context;
 async-callback and temporary-context machines keep the owned API. Besides
 `process_event_async`, `try_process_event`, and `Clone`, a scheduled handle
-answers the read-only queries `sml.cpp` still allows on a scheduled machine,
-`is(...)` and `visit_current_states(visitor)`. Both take the machine's lock, so
-they wait for a running event and must not be called from the machine's own
-callbacks.
+answers the same read-only queries as an owned machine, `is(...)`,
+`visit_current_states(visitor)`, and `visit_current_events(visitor)`. They take
+the machine's lock, so they wait for a running event and must not be called
+from the machine's own callbacks.
 
 sml.rs ships no async-runtime scheduler, as `sml.cpp` ships none: like
 `InlineScheduler` and `FifoScheduler`, a scheduler for a runtime implements
@@ -452,10 +475,11 @@ the 25 programs under `../sml.cpp/example` in
 - [Capability parity matrix](docs/sml-cpp-parity.md)
 - [Example-by-example translation audit](docs/sml-cpp-examples.md)
 - [Migrating from 0.8 to 1.0](docs/migrating-to-1.0.md)
-- [1.x stability policy](docs/stability.md)
+- [Migrating from 1.x to 2.0](docs/migrating-to-2.0.md)
+- [Stability policy](docs/stability.md)
 
 Rust-specific mappings, including trait methods instead of inline lambdas,
-context fields instead of type-based dependency injection, `Result` instead of
+caller-owned context references instead of type-based dependency injection, `Result` instead of
 thrown values, and policy-selectable dispatch lowering, are documented and tested
 there.
 

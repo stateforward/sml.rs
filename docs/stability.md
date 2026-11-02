@@ -1,6 +1,11 @@
 # Stability policy
 
-Version 1.1 establishes the following compatibility contract for subsequent
+Version 2.0 renames the policy types and narrows generated machines to the
+`sml.cpp` inspection API (`is`, `visit_current_states`, and
+`visit_current_events`); see the [2.0 migration guide](migrating-to-2.0.md).
+The contract below carries over to `2.x` releases.
+
+Version 1.1 established the following compatibility contract for subsequent
 `1.x` releases. Version 1.1 intentionally corrects the newly introduced
 `Machine<E>` contract from 1.0 before known downstream adoption; see the
 [1.1 migration guide](migrating-to-1.1.md).
@@ -9,8 +14,8 @@ Version 1.1 establishes the following compatibility contract for subsequent
 
 - Public items exported by `sml` and `sml::utility`.
 - Accepted `sml!` table spellings documented in `docs/dsl.md`.
-- Generated public machine, context, state, event, error, visitor, and typed
-  child APIs documented in the README and DSL guide.
+- Generated public machine, context trait, state, event, error, query, and
+  scheduled-handle APIs documented in the README and DSL guide.
 - Feature names and their documented behavior.
 - `no_std` operation without default features and the Rust 1.90 MSRV.
 
@@ -27,7 +32,9 @@ other public API, and verifies that an unrelated public removal still fails.
 ## Not covered by semantic versioning
 
 - Exact compiler diagnostics and source locations.
-- Private generated identifiers and macro implementation details.
+- Private generated identifiers and macro implementation details, including
+  the doc-hidden generated machine cores and the `sml::__private`
+  macro-support module.
 - Diagram formatting beyond valid DOT/SVG output.
 - Benchmark numbers, which vary by compiler, processor, and operating system.
 - Files under `benchmarks/`, `fuzz/`, `sanitizer/`, and `scripts/` as reusable
@@ -35,4 +42,4 @@ other public API, and verifies that an unrelated public removal still fails.
 
 Security fixes may reject previously accepted unsound behavior. MSRV increases
 are announced in the changelog and require a minor release during the 1.x
-series.
+and 2.x series.
