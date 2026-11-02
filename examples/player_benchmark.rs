@@ -82,7 +82,10 @@ fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
-fn process_with_policy<P: Policy>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
+fn process_with_policy<P: Policy<Scheduler = ()>>(
+    sm: &mut PlayerStateMachine<Context, P>,
+    event: PlayerEvents,
+) {
     let _ = Machine::process_event(sm, event);
 }
 
@@ -140,7 +143,7 @@ async fn run_async(sm: &mut PlayerStateMachine<Context>) {
     }
 }
 
-fn run_policy<P: Policy>(sm: &mut PlayerStateMachine<Context, P>) {
+fn run_policy<P: Policy<Scheduler = ()>>(sm: &mut PlayerStateMachine<Context, P>) {
     for _ in 0..1_000_000 {
         process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
@@ -171,7 +174,7 @@ fn run_policy<P: Policy>(sm: &mut PlayerStateMachine<Context, P>) {
     clippy::cast_precision_loss,
     reason = "benchmark throughput is intentionally reported as a floating-point rate"
 )]
-fn run_policy_benchmark<P: Policy>(label: &str, policy: P) {
+fn run_policy_benchmark<P: Policy<Scheduler = ()>>(label: &str, policy: P) {
     let mut sm = PlayerStateMachine::new_with_policy(Context, policy);
     let start = Instant::now();
     run_policy(&mut sm);

@@ -619,12 +619,12 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
 
         pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
-            #policy_name: ::sml::MachinePolicy,
+            #policy_name: ::sml::Policy,
         {
-            core: <<#policy_name as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<
-                #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policy>
+            core: <<#policy_name as ::sml::Policy>::Scheduler as ::sml::Scheduler>::Cell<
+                #core_name<T, #policy_name>
             >,
-            thread_safe: <<#policy_name as ::sml::MachinePolicy>::Policy as ::sml::Policy>::ThreadSafe,
+            thread_safe: <#policy_name as ::sml::Policy>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -784,14 +784,13 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         #[allow(missing_docs)]
         impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
         where
-            #policy_name: ::sml::MachinePolicy,
-            <#policy_name as ::sml::MachinePolicy>::Scheduler:
-                ::sml::Schedule<#core_name<T, <#policy_name as ::sml::MachinePolicy>::Policy>>,
+            #policy_name: ::sml::Policy,
+            <#policy_name as ::sml::Policy>::Scheduler:
+                ::sml::Schedule<#core_name<T, #policy_name>>,
         {
             #[inline(always)]
             pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
-                let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
-                let (policy, thread_safe) = ::sml::Policy::into_parts(policy);
+                let (policy, thread_safe, scheduler) = ::sml::Policy::into_scheduled_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {
@@ -816,7 +815,7 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<T: #context_name, #policy_name: ::sml::Policy> #machine_name<T, #policy_name> {
+        impl<T: #context_name, #policy_name: ::sml::Policy<Scheduler = ()>> #machine_name<T, #policy_name> {
             #public_api
 
             pub #async_keyword fn process_event<EventInput>(

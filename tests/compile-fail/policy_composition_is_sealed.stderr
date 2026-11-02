@@ -43,11 +43,11 @@ note: required by a bound in `sml::__private::PolicyParts`
             sml::__private::PoliciesParts<L, O, D, T, DQ, PQ>
             sml::policy::NoPolicyParts
 
-error[E0046]: not all trait items implemented, missing: `Parts`, `Logger`, `Observer`, `Dispatch`, `ThreadSafe`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `thread_safe`, `testing`, `new_defer_queue`, `new_process_queue`, `into_parts`
+error[E0046]: not all trait items implemented, missing: `Parts`, `Logger`, `Observer`, `Dispatch`, `ThreadSafe`, `Testing`, `DeferQueue`, `ProcessQueue`, `Scheduler`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `thread_safe`, `testing`, `new_defer_queue`, `new_process_queue`, `into_parts`, `into_scheduled_parts`
   --> tests/compile-fail/policy_composition_is_sealed.rs:11:1
    |
 11 | impl Policy for UserPolicies {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Parts`, `Logger`, `Observer`, `Dispatch`, `ThreadSafe`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `thread_safe`, `testing`, `new_defer_queue`, `new_process_queue`, `into_parts` in implementation
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Parts`, `Logger`, `Observer`, `Dispatch`, `ThreadSafe`, `Testing`, `DeferQueue`, `ProcessQueue`, `Scheduler`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `thread_safe`, `testing`, `new_defer_queue`, `new_process_queue`, `into_parts`, `into_scheduled_parts` in implementation
    |
    = help: implement the missing item: `type Parts = /* Type */;`
    = help: implement the missing item: `type Logger = /* Type */;`
@@ -57,6 +57,7 @@ error[E0046]: not all trait items implemented, missing: `Parts`, `Logger`, `Obse
    = help: implement the missing item: `type Testing = /* Type */;`
    = help: implement the missing item: `type DeferQueue<E> = /* Type */;`
    = help: implement the missing item: `type ProcessQueue<E> = /* Type */;`
+   = help: implement the missing item: `type Scheduler = /* Type */;`
    = help: implement the missing item: `fn logger(&self) -> &<Self as Policy>::Logger { todo!() }`
    = help: implement the missing item: `fn logger_mut(&mut self) -> &mut <Self as Policy>::Logger { todo!() }`
    = help: implement the missing item: `fn observer(&self) -> &<Self as Policy>::Observer { todo!() }`
@@ -67,6 +68,7 @@ error[E0046]: not all trait items implemented, missing: `Parts`, `Logger`, `Obse
    = help: implement the missing item: `fn new_defer_queue<E>(&self) -> <Self as Policy>::DeferQueue<E> { todo!() }`
    = help: implement the missing item: `fn new_process_queue<E>(&self) -> <Self as Policy>::ProcessQueue<E> { todo!() }`
    = help: implement the missing item: `fn into_parts(self) -> (<Self as Policy>::Parts, <Self as Policy>::ThreadSafe) { todo!() }`
+   = help: implement the missing item: `fn into_scheduled_parts(self) -> (<Self as Policy>::Parts, <Self as Policy>::ThreadSafe, <Self as Policy>::Scheduler) { todo!() }`
 
 error[E0277]: the trait bound `UserPolicies: sml::policy::policies::Sealed` is not satisfied
   --> tests/compile-fail/policy_composition_is_sealed.rs:11:17
@@ -82,8 +84,8 @@ help: the trait `sml::policy::policies::Sealed` is not implemented for `UserPoli
 help: the following other types implement trait `sml::policy::policies::Sealed`
   --> src/policy.rs
    |
-   | impl<L, O, D, S, T, DQ, PQ> policies::Sealed for Policies<L, O, D, S, T, DQ, PQ> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Policies<L, O, D, S, T, DQ, PQ>`
+   | impl<L, O, D, S, T, DQ, PQ, SC> policies::Sealed for Policies<L, O, D, S, T, DQ, PQ, SC> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Policies<L, O, D, S, T, DQ, PQ, SC>`
 ...
    | impl policies::Sealed for NoPolicy {}
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `NoPolicy`
@@ -94,5 +96,5 @@ note: required by a bound in `Policy`
    |                   ^^^^^^^^^^^^^^^^ required by this bound in `Policy`
    = note: `Policy` is a "sealed trait", because to implement it you also need to implement `sml::policy::policies::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
    = help: the following types implement the trait:
-             sml::Policies<L, O, D, S, T, DQ, PQ>
+             sml::Policies<L, O, D, S, T, DQ, PQ, SC>
              sml::NoPolicy

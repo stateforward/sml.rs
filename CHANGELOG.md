@@ -22,8 +22,8 @@ This is a major release; see the [2.0 migration guide](docs/migrating-to-2.0.md)
   synchronous machines without a temporary context.
 - `InlineScheduler` and the bounded `FifoScheduler<N>` (`std`), the
   `Scheduler`, `Schedule`, `Queued`, `StrictOrdering`, and `SyncMachineStep`
-  contract for owner-written schedulers, and the sealed `MachinePolicy` trait
-  that pairs a policy with its scheduler. `FifoScheduler` recovers draining
+  contract for owner-written schedulers, and a `Scheduler` associated type
+  plus `into_scheduled_parts` on the sealed `Policy` trait. `FifoScheduler` recovers draining
   after a panicking step: the next caller drains, waiters for room are woken,
   and nothing queued is stranded once the machine reaches `X`.
 - `visit_current_states(visitor)` on every generated machine: the visitor
@@ -37,8 +37,9 @@ This is a major release; see the [2.0 migration guide](docs/migrating-to-2.0.md)
 ### Changed
 
 - The `PolicyBundle` struct is renamed `Policies`, and the sealed `Policies`
-  trait is renamed `Policy`. Generated machines are bounded on
-  `MachinePolicy`, which every `Policy` implements with the `()` scheduler.
+  trait is renamed `Policy`. The owned machine's API is bounded on
+  `P: Policy<Scheduler = ()>`; generic code over an owned machine's policy
+  adds that bound.
 - `PolicyParts` and `PolicyBundleParts` (now `PoliciesParts`) move to the
   doc-hidden `sml::__private` macro-support module, which is not public API.
 - `is(...)` is generic over `IsState` instead of taking the root states type

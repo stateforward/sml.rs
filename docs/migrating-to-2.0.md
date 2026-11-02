@@ -22,22 +22,25 @@ sml = { package = "stateforward-sml", version = "2.0" }
 
 `sml_policies!` keeps its name and slots, and gains a `scheduler:` slot.
 `Policies::new`, `with_dispatch`, `into_parts`, and `Policy::into_parts` keep
-their signatures. Code that is generic over a policy keeps working with the
-renamed bound:
+their signatures. `Policy` gains a `Scheduler` associated type (`()` for
+`NoPolicy` and a default `Policies`) and an `into_scheduled_parts` split. The
+owned machine's API (`process_event`, `initialize`, `Machine<E>`, and the
+testing setters) is bounded on `P: Policy<Scheduler = ()>`, so code that is
+generic over the policy of an owned machine names that bound:
 
 ```rust,ignore
 // 1.x
 fn drive<P: sml::Policies>(sm: &mut PlayerStateMachine<Context, P>) { /* ... */ }
 // 2.0
-fn drive<P: sml::Policy>(sm: &mut PlayerStateMachine<Context, P>) { /* ... */ }
+fn drive<P: sml::Policy<Scheduler = ()>>(sm: &mut PlayerStateMachine<Context, P>) { /* ... */ }
 ```
+
+`is`, `visit_current_states`, and `visit_current_events` need only
+`P: Policy`, since they also work on a scheduled handle.
 
 `sml::__private` is macro support for generated code. It is not public API and
 is exempt from semantic versioning; code that named `PolicyParts` or
-`PolicyBundleParts` directly should stop doing so. Generated machines are now
-bounded on the sealed `MachinePolicy` trait, which every `Policy` implements
-with the `()` scheduler, so a `P: Policy` bound is still sufficient for the
-owned machine.
+`PolicyBundleParts` directly should stop doing so.
 
 ## State queries: `is` and `visit_current_states`
 

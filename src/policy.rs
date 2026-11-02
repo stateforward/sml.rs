@@ -1,6 +1,6 @@
 //! Policy extension points for generated state machines.
 
-use crate::scheduler::{Scheduler, StrictOrdering};
+use crate::scheduler::Scheduler;
 use crate::utility::{EventQueue, QueueFull};
 
 mod policy_parts {
@@ -9,10 +9,6 @@ mod policy_parts {
 
 mod policies {
     pub trait Sealed {}
-}
-
-mod machine_policy {
-    pub trait MachinePolicySealed {}
 }
 
 /// Supplies a stable name for a generated event payload or variant.
@@ -637,6 +633,11 @@ pub trait Policy: policies::Sealed {
     type DeferQueue<E>: Queue<E>;
     /// Process queue slot.
     type ProcessQueue<E>: Queue<E>;
+    /// Scheduler slot. The `()` scheduler keeps the owned `&mut self`
+    /// machine; a queued scheduler (one implementing
+    /// [`StrictOrdering`](crate::StrictOrdering)) makes the generated machine a
+    /// cloneable handle.
+    type Scheduler: Scheduler;
 
     /// Borrows the logger.
     fn logger(&self) -> &Self::Logger;
@@ -658,11 +659,15 @@ pub trait Policy: policies::Sealed {
     fn new_process_queue<E>(&self) -> Self::ProcessQueue<E>;
 
     /// Splits the lock slot from the slots that may be mutably used while the
-    /// processing lock is held.
+    /// processing lock is held. The scheduler slot is discarded.
     fn into_parts(self) -> (Self::Parts, Self::ThreadSafe);
+
+    /// Splits the lock and scheduler slots from the slots that may be mutably
+    /// used while an event is processed.
+    fn into_scheduled_parts(self) -> (Self::Parts, Self::ThreadSafe, Self::Scheduler);
 }
 
-impl<L, O, D, S, T, DQ, PQ> Policy for Policies<L, O, D, S, T, DQ, PQ>
+impl<L, O, D, S, T, DQ, PQ, SC> Policy for Policies<L, O, D, S, T, DQ, PQ, SC>
 where
     L: Logger,
     O: Observer,
@@ -671,6 +676,7 @@ where
     T: Testing,
     DQ: QueuePolicy,
     PQ: QueuePolicy,
+    SC: Scheduler,
 {
     type Parts = PoliciesParts<L, O, D, T, DQ, PQ>;
     type Logger = L;
@@ -680,6 +686,7 @@ where
     type Testing = T;
     type DeferQueue<E> = DQ::Queue<E>;
     type ProcessQueue<E> = PQ::Queue<E>;
+    type Scheduler = SC;
 
     fn logger(&self) -> &Self::Logger {
         &self.logger
@@ -718,62 +725,18 @@ where
     }
 
     fn into_parts(self) -> (Self::Parts, Self::ThreadSafe) {
-        Self::into_parts(self)
+        let (unscheduled, _) = self.into_scheduler();
+        Policies::into_parts(unscheduled)
+    }
+
+    fn into_scheduled_parts(self) -> (Self::Parts, Self::ThreadSafe, SC) {
+        let (unscheduled, scheduler) = self.into_scheduler();
+        let (parts, thread_safe) = Policies::into_parts(unscheduled);
+        (parts, thread_safe, scheduler)
     }
 }
 
-impl<L, O, D, S, T, DQ, PQ> policies::Sealed for Policies<L, O, D, S, T, DQ, PQ> {}
-
-/// The policy a generated machine is parameterized by: a [`Policy`] value
-/// together with a [`Scheduler`].
-///
-/// Every [`Policy`] type is a `MachinePolicy` with the `()` scheduler, so
-/// the owned `&mut self` machine is unchanged. A [`Policies`] whose
-/// scheduler slot holds a queued scheduler (one implementing
-/// [`StrictOrdering`]) is a `MachinePolicy` but not a [`Policy`]; generated
-/// machines with it are cloneable handles. This trait is sealed.
-pub trait MachinePolicy: machine_policy::MachinePolicySealed {
-    /// The policy slots other than the scheduler.
-    type Policy: Policy;
-    /// The scheduler slot.
-    type Scheduler: Scheduler;
-
-    /// Splits the scheduler from the other policy slots.
-    fn into_scheduled(self) -> (Self::Policy, Self::Scheduler);
-}
-
-impl<P: Policy> MachinePolicy for P {
-    type Policy = P;
-    type Scheduler = ();
-
-    #[inline]
-    fn into_scheduled(self) -> (P, ()) {
-        (self, ())
-    }
-}
-
-impl<P: Policy> machine_policy::MachinePolicySealed for P {}
-
-impl<L, O, D, S, T, DQ, PQ, SC> MachinePolicy for Policies<L, O, D, S, T, DQ, PQ, SC>
-where
-    Policies<L, O, D, S, T, DQ, PQ>: Policy,
-    SC: Scheduler + StrictOrdering,
-{
-    type Policy = Policies<L, O, D, S, T, DQ, PQ>;
-    type Scheduler = SC;
-
-    fn into_scheduled(self) -> (Self::Policy, SC) {
-        self.into_scheduler()
-    }
-}
-
-impl<L, O, D, S, T, DQ, PQ, SC> machine_policy::MachinePolicySealed
-    for Policies<L, O, D, S, T, DQ, PQ, SC>
-where
-    Policies<L, O, D, S, T, DQ, PQ>: Policy,
-    SC: Scheduler + StrictOrdering,
-{
-}
+impl<L, O, D, S, T, DQ, PQ, SC> policies::Sealed for Policies<L, O, D, S, T, DQ, PQ, SC> {}
 
 /// The default policy bundle. Its fields are all zero-sized.
 pub struct NoPolicy {
@@ -836,6 +799,7 @@ impl Policy for NoPolicy {
     type Testing = ();
     type DeferQueue<E> = EventQueue<E, 16>;
     type ProcessQueue<E> = EventQueue<E, 16>;
+    type Scheduler = ();
 
     fn logger(&self) -> &Self::Logger {
         &self.logger
@@ -890,6 +854,11 @@ impl Policy for NoPolicy {
             },
             thread_safe,
         )
+    }
+
+    fn into_scheduled_parts(self) -> (Self::Parts, Self::ThreadSafe, ()) {
+        let (parts, thread_safe) = Self::into_parts(self);
+        (parts, thread_safe, ())
     }
 }
 
@@ -1309,9 +1278,13 @@ mod tests {
     fn the_scheduler_slot_is_replaced_and_split_off() {
         let bundle = Policies::<(), (), JumpTable>::default();
         let scheduled = bundle.with_scheduler(crate::FifoScheduler::<4>);
-        let (unscheduled, crate::FifoScheduler::<4>) = MachinePolicy::into_scheduled(scheduled);
-        let (_parts, ()) = Policy::into_parts(unscheduled.with_scheduler(()));
-        let (_policy, ()) = MachinePolicy::into_scheduled(NoPolicy::default());
+        let (_parts, (), crate::FifoScheduler::<4>) = Policy::into_scheduled_parts(scheduled);
+        let scheduled =
+            Policies::<(), (), JumpTable>::default().with_scheduler(crate::FifoScheduler::<4>);
+        let (_parts, ()) = Policy::into_parts(scheduled);
+        let (_parts, (), ()) = Policy::into_scheduled_parts(NoPolicy::default());
+        let (_parts, (), ()) =
+            Policy::into_scheduled_parts(Policies::<(), (), JumpTable>::default());
         let _: Policies<
             (),
             (),

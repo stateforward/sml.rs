@@ -73,10 +73,9 @@ mod scheduler;
 pub mod utility;
 
 pub use policy::{
-    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger,
-    MachinePolicy, NoPolicy, Observer, Policies, Policy, ProcessQueue, Queue, QueuePolicy,
-    RawMutex, StateName, SwitchStm, Testing, TestingAccess, TestingPolicy, ThreadSafe,
-    ThreadSafety,
+    BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger, NoPolicy,
+    Observer, Policies, Policy, ProcessQueue, Queue, QueuePolicy, RawMutex, StateName, SwitchStm,
+    Testing, TestingAccess, TestingPolicy, ThreadSafe, ThreadSafety,
 };
 
 /// Macro support for generated machines.

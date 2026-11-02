@@ -1422,8 +1422,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         },
     };
     let custom_policy_local_init = quote! {
-        let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
-        let (policy, thread_safe) = ::sml::Policy::into_parts(policy);
+        let (policy, thread_safe, scheduler) = ::sml::Policy::into_scheduled_parts(policy);
         #deferred_local
         #pending_local
     };
@@ -1547,7 +1546,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #context_type_ident: #state_machine_context_type_name
     ));
     machine_impl_generics.params.push(parse_quote!(
-        #policy_type_ident: ::sml::Policy
+        #policy_type_ident: ::sml::Policy<Scheduler = ()>
     ));
     let (machine_impl_generics, _, machine_impl_where_clause) =
         machine_impl_generics.split_for_impl();
@@ -1936,7 +1935,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         quote! {}
     };
     let core_type = quote! {
-        #core_type_name<#state_lifetimes #context_type_ident, <#policy_type_ident as ::sml::MachinePolicy>::Policy>
+        #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
     };
     let own_core_type =
         quote! { #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident> };
@@ -1976,10 +1975,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident> Clone
                 for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
             where
-                #policy_type_ident: ::sml::MachinePolicy,
-                <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::StrictOrdering,
-                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
-                <<#policy_type_ident as ::sml::MachinePolicy>::Policy as ::sml::Policy>::ThreadSafe: Clone,
+                #policy_type_ident: ::sml::Policy,
+                <#policy_type_ident as ::sml::Policy>::Scheduler: ::sml::StrictOrdering,
+                <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
+                <#policy_type_ident as ::sml::Policy>::ThreadSafe: Clone,
             {
                 fn clone(&self) -> Self {
                     Self {
@@ -1993,8 +1992,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
                 #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
             where
-                #policy_type_ident: ::sml::MachinePolicy,
-                <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::Queued<#core_type>,
+                #policy_type_ident: ::sml::Policy,
+                <#policy_type_ident as ::sml::Policy>::Scheduler: ::sml::Queued<#core_type>,
             {
                 /// Queues `event` now and resolves to its acceptance once it
                 /// has run to completion. Dropping the completion does not
@@ -2006,7 +2005,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                     &self,
                     event: E,
                 ) -> impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E> {
-                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Queued<#core_type>>::submit(
+                    <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Queued<#core_type>>::submit(
                         &self.core,
                         event.into(),
                     )
@@ -2025,7 +2024,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                     impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E>,
                     ::sml::utility::QueueFull,
                 > {
-                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Queued<#core_type>>::try_submit(
+                    <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Queued<#core_type>>::try_submit(
                         &self.core,
                         event.into(),
                     )
@@ -2087,7 +2086,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         where
-            #policy_type_ident: ::sml::Policy,
+            #policy_type_ident: ::sml::Policy<Scheduler = ()>,
             <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
@@ -2244,10 +2243,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         /// State machine structure definition.
         pub struct #state_machine_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
         where
-            #policy_type_ident: ::sml::MachinePolicy,
+            #policy_type_ident: ::sml::Policy,
         {
-            core: <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>,
-            thread_safe: <<#policy_type_ident as ::sml::MachinePolicy>::Policy as ::sml::Policy>::ThreadSafe,
+            core: <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>,
+            thread_safe: <#policy_type_ident as ::sml::Policy>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -2383,14 +2382,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         where
-            #policy_type_ident: ::sml::MachinePolicy,
-            <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::Schedule<#core_type>,
+            #policy_type_ident: ::sml::Policy,
+            <#policy_type_ident as ::sml::Policy>::Scheduler: ::sml::Schedule<#core_type>,
         {
             #new_with_policy_code
         }
 
         #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::MachinePolicy>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
             /// Returns true when the active state has the same variant as
@@ -2399,7 +2398,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             /// query takes the machine's lock.
             #[inline(always)]
             pub fn is<S: ::sml::IsState<#core_type>>(&self, expected: &S) -> bool {
-                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Scheduler>::inspect(
                     &self.core,
                     |core| expected.is_state(core),
                 )
@@ -2413,7 +2412,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 &self,
                 mut visitor: impl FnMut(&#states_type_name <#state_lifetimes>),
             ) {
-                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Scheduler>::inspect(
                     &self.core,
                     |core| visitor(&core.state),
                 );
@@ -2424,7 +2423,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             /// scheduled machine the visit runs under the machine's lock.
             #[inline(always)]
             pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                <<#policy_type_ident as ::sml::Policy>::Scheduler as ::sml::Scheduler>::inspect(
                     &self.core,
                     |core| core.__sml_visit_current_events(visitor),
                 );
@@ -2451,7 +2450,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy<Scheduler = ()>>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
             #public_initialize

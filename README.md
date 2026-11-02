@@ -288,12 +288,13 @@ one state per region.
 bounded ring or another user-owned allocation-free container to implement
 `Queue<E>`.
 
-`Policy` (and `MachinePolicy`, which pairs a policy with its scheduler) are
-sealed implementation traits. This is intentional: custom slot implementations
+`Policy` is a sealed implementation trait; its `Scheduler` associated type
+names the scheduler slot, and the owned machine's API is bounded on
+`P: Policy<Scheduler = ()>`. This is intentional: custom slot implementations
 remain supported, while the generated machine retains ownership of policy
 storage and keeps the thread-safety guard separate from the mutable transition
 engine. Use the `Policies` struct or `sml_policies!` to compose policies; do
-not implement those integration traits directly. The policy-storage plumbing
+not implement the integration trait directly. The policy-storage plumbing
 that generated code uses lives in `sml::__private`, which is macro support and
 not public API.
 
