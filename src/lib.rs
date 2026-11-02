@@ -136,6 +136,18 @@ pub trait Machine<E> {
     }
 }
 
+/// A state value that a generated machine's `is(...)` can test.
+///
+/// Generated code implements this for the root states enum and for each child
+/// machine's states enum (or the state array of an orthogonal root or child),
+/// with `M` the machine's hidden core type. `sm.is(&ChildStates::Idle)` thus
+/// checks inside that child, the Rust form of `sml.cpp`'s
+/// `sm.is<decltype(sub)>(state)`.
+pub trait IsState<M: ?Sized> {
+    /// Returns whether `machine` is currently in this state.
+    fn is_state(&self, machine: &M) -> bool;
+}
+
 /// Reports whether a state machine has reached its terminal state.
 pub trait Terminated {
     /// Returns true after entering the generated `X` state.

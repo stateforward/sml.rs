@@ -838,12 +838,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             visitor(&self.core.child_state)
         }
 
-        /// Visits each static typed event payload with a transition from the
-        /// active child or its parent state. Guards and context are not observed.
-        #[inline(always)]
-        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-            self.core.__sml_visit_current_events(visitor)
-        }
 
         #[inline(always)]
         pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
@@ -890,7 +884,13 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         context_bound: quote! { #context_name },
         policy_name: &policy_name,
         events: quote! { #events_name },
-        is_expected: quote! { #parent_states_name },
+        is_states: vec![
+            (quote! { #parent_states_name }, quote! { machine.is(self) }),
+            (
+                quote! { #child_states_name },
+                quote! { machine.is_child(self) },
+            ),
+        ],
         visited: quote! { #parent_states_name },
         visit: quote! { visitor(&core.state) },
         start: quote! { self.__sml_initialize_unlocked().is_ok() },
@@ -950,7 +950,9 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             QueueFull,
         }
 
-        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        pub struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
             #policy_name: ::sml::Policy,
         {
@@ -1610,6 +1612,7 @@ fn generate_multi_code(
     let mut child_callback_methods = Vec::new();
     let mut child_api = Vec::new();
     let mut child_public_api = Vec::new();
+    let mut child_is_states = Vec::new();
     let mut child_dispatches = Vec::<(usize, Option<usize>, TokenStream)>::new();
     let mut child_completions = Vec::<(usize, TokenStream)>::new();
     let mut child_exceptions = Vec::<(usize, TokenStream)>::new();
@@ -1778,6 +1781,10 @@ fn generate_multi_code(
                 "{}_is_active",
                 string_morph::to_snake_case(&reference.to_string())
             );
+            child_is_states.push((
+                quote! { [#child_states_name; #region_count] },
+                quote! { machine.#states_method() == self },
+            ));
             child_api.push(quote! {
                 fn #states_method(&self) -> &[#child_states_name; #region_count] {
                     &self.#field
@@ -2007,6 +2014,10 @@ fn generate_multi_code(
             &all_child_references,
             &node_parents,
         )?;
+        child_is_states.push((
+            quote! { #child_states_name },
+            quote! { machine.#is_method(self) },
+        ));
         child_api.push(quote! {
             fn #state_method(&self) -> &#child_states_name { &self.#field }
             fn #is_method(&self, expected: &#child_states_name) -> bool {
@@ -2880,13 +2891,6 @@ fn generate_multi_code(
         #public_initialize
         #public_root_state_api
 
-        /// Visits each static typed event payload with a transition from an
-        /// active state, including active composite ancestors and regions.
-        /// Guards and context are not observed.
-        #[inline(always)]
-        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-            self.core.__sml_visit_current_events(visitor)
-        }
 
         #(#child_public_api)*
 
@@ -2933,6 +2937,7 @@ fn generate_multi_code(
         }
     };
 
+    let mut is_states = child_is_states;
     let (root_states, root_visit) = if let Some(region_count) = root_region_count {
         (
             quote! { [#parent_states_name; #region_count] },
@@ -2950,7 +2955,10 @@ fn generate_multi_code(
         context_bound: quote! { #context_name },
         policy_name: &policy_name,
         events: quote! { #events_name },
-        is_expected: root_states,
+        is_states: {
+            is_states.insert(0, (root_states, quote! { machine.is(self) }));
+            is_states
+        },
         visited: quote! { #parent_states_name },
         visit: root_visit,
         start: quote! { self.initialize().is_ok() },
@@ -2958,7 +2966,9 @@ fn generate_multi_code(
     });
     let core_struct = quote! {
         #[doc(hidden)]
-        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        pub struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
             #policy_name: ::sml::Policy,
         {
@@ -5292,8 +5302,9 @@ pub(crate) struct ScheduledItems<'a> {
     pub(crate) policy_name: &'a Ident,
     /// The generated events type.
     pub(crate) events: TokenStream,
-    /// The type `is` compares against.
-    pub(crate) is_expected: TokenStream,
+    /// Each states type `is` accepts, with the check it runs on `self.core`
+    /// bound as `machine`.
+    pub(crate) is_states: Vec<(TokenStream, TokenStream)>,
     /// The state type `visit_current_states` hands to its visitor.
     pub(crate) visited: TokenStream,
     /// Calls `visitor` once per active state of `core`.
@@ -5315,7 +5326,7 @@ pub(crate) fn scheduled_items(input: &ScheduledItems<'_>) -> TokenStream {
         context_bound,
         policy_name,
         events,
-        is_expected,
+        is_states,
         visited,
         visit,
         start,
@@ -5323,16 +5334,51 @@ pub(crate) fn scheduled_items(input: &ScheduledItems<'_>) -> TokenStream {
     } = input;
     let core_type = quote! { #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policy> };
     let scheduler = quote! { <#policy_name as ::sml::MachinePolicy>::Scheduler };
+    let is_impls = is_states.iter().map(|(states, check)| {
+        quote! {
+            #[allow(missing_docs)]
+            impl<T: #context_bound, #policy_name: ::sml::Policy>
+                ::sml::IsState<#core_name<T, #policy_name>> for #states
+            {
+                #[inline(always)]
+                fn is_state(&self, machine: &#core_name<T, #policy_name>) -> bool {
+                    #check
+                }
+            }
+        }
+    });
     let query = quote! {
         #[allow(missing_docs)]
         impl<T: #context_bound, #policy_name: ::sml::MachinePolicy> #machine_name<T, #policy_name> {
-            /// Returns whether the active root state equals `expected`. On a
-            /// scheduled machine the query takes the machine's lock.
+            /// Returns whether the machine is in `expected`: a root state (or
+            /// the root regions' states), or a state of a child machine,
+            /// checked inside that child. On a scheduled machine the query
+            /// takes the machine's lock.
             #[inline(always)]
-            pub fn is(&self, expected: &#is_expected) -> bool {
-                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| core.is(expected))
+            pub fn is<S: ::sml::IsState<#core_type>>(&self, expected: &S) -> bool {
+                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| expected.is_state(core))
+            }
+
+            /// Calls `visitor` once per active root state (once per root
+            /// region), as `sml.cpp`'s `visit_current_states` does. On a
+            /// scheduled machine the visit runs under the machine's lock.
+            #[inline(always)]
+            pub fn visit_current_states(&self, mut visitor: impl FnMut(&#visited)) {
+                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| #visit);
+            }
+
+            /// Visits each static typed event payload with a transition from an
+            /// active state. Guards and context are not observed. On a
+            /// scheduled machine the visit runs under the machine's lock.
+            #[inline(always)]
+            pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| {
+                    core.__sml_visit_current_events(visitor)
+                });
             }
         }
+
+        #(#is_impls)*
     };
     if !*schedulable {
         return query;
@@ -5412,12 +5458,6 @@ pub(crate) fn scheduled_items(input: &ScheduledItems<'_>) -> TokenStream {
                 ::sml::utility::QueueFull,
             > {
                 <#scheduler as ::sml::Queued<#core_type>>::try_submit(&self.core, event.into())
-            }
-
-            /// Calls `visitor` once per active root state, under the
-            /// machine's lock.
-            pub fn visit_current_states(&self, mut visitor: impl FnMut(&#visited)) {
-                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| #visit);
             }
         }
     }

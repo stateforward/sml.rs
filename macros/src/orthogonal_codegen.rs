@@ -503,7 +503,9 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
     };
 
     let core_struct = quote! {
-        struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        pub struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
             #policy_name: ::sml::Policy,
         {
@@ -535,12 +537,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             self.core.states.get(region)
         }
 
-        /// Visits each static typed event payload with a transition from any
-        /// active region. Guards and context are not observed.
-        #[inline(always)]
-        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-            self.core.__sml_visit_current_events(visitor)
-        }
 
         #[inline(always)]
         pub fn logger(&self) -> &<<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
@@ -599,7 +595,10 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             context_bound: quote! { #context_name },
             policy_name: &policy_name,
             events: quote! { #events_name },
-            is_expected: quote! { [#states_name; #region_count] },
+            is_states: vec![(
+                quote! { [#states_name; #region_count] },
+                quote! { machine.is(self) },
+            )],
             visited: quote! { #states_name },
             visit: quote! { core.states.iter().for_each(&mut visitor) },
             start: quote! { self.__sml_initialize_unlocked().is_ok() },

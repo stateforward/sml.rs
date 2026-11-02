@@ -2041,18 +2041,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         event.into(),
                     )
                 }
-
-                /// Calls `visitor` once with the active state, under the
-                /// machine's lock.
-                pub fn visit_current_states(
-                    &self,
-                    mut visitor: impl FnMut(&#states_type_name <#state_lifetimes>),
-                ) {
-                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
-                        &self.core,
-                        |core| visitor(&core.state),
-                    );
-                }
             }
         }
     });
@@ -2173,12 +2161,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             visitor(&self.core.state)
         }
 
-        /// Visits each static typed event payload with a transition from the
-        /// current state. Guards and context are not observed.
-        #[inline(always)]
-        pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
-            self.core.__sml_visit_current_events(visitor)
-        }
 
         /// Returns the current context.
         #[inline(always)]
@@ -2221,7 +2203,9 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
     });
     let core_struct = quote! {
-        struct #core_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        pub struct #core_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
         where
             #policy_type_ident: ::sml::Policy,
         {
@@ -2524,11 +2508,50 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             /// `sml.cpp`'s state-identity query. On a scheduled machine the
             /// query takes the machine's lock.
             #[inline(always)]
-            pub fn is(&self, expected: &#states_type_name <#state_lifetimes>) -> bool {
+            pub fn is<S: ::sml::IsState<#core_type>>(&self, expected: &S) -> bool {
                 <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
                     &self.core,
-                    |core| core.is(expected),
+                    |core| expected.is_state(core),
                 )
+            }
+
+            /// Calls `visitor` once with the active state, as `sml.cpp`'s
+            /// `visit_current_states` does. On a scheduled machine the visit
+            /// runs under the machine's lock.
+            #[inline(always)]
+            pub fn visit_current_states(
+                &self,
+                mut visitor: impl FnMut(&#states_type_name <#state_lifetimes>),
+            ) {
+                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                    &self.core,
+                    |core| visitor(&core.state),
+                );
+            }
+
+            /// Visits each static typed event payload with a transition from the
+            /// current state. Guards and context are not observed. On a
+            /// scheduled machine the visit runs under the machine's lock.
+            #[inline(always)]
+            pub fn visit_current_events<V: ::sml::EventVisitor>(&self, visitor: &mut V) {
+                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                    &self.core,
+                    |core| core.__sml_visit_current_events(visitor),
+                );
+            }
+        }
+
+        #[allow(missing_docs)]
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
+            ::sml::IsState<#core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>>
+            for #states_type_name <#state_lifetimes>
+        {
+            #[inline(always)]
+            fn is_state(
+                &self,
+                machine: &#core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>,
+            ) -> bool {
+                machine.is(self)
             }
         }
 
