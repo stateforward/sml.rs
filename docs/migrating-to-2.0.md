@@ -120,7 +120,10 @@ std::thread::spawn(move || smol::block_on(handle.process_event_async(Start)));
 A scheduled machine's only operations are `process_event_async`,
 `try_process_event`, and `Clone`. The event is queued when
 `process_event_async` is called; the completion resolves to its acceptance
-once it has run to completion, and dropping it does not cancel the event. A
+once it has run to completion, and dropping it does not cancel the event.
+When a bounded queue (`FifoScheduler<N>`) is full, the event is queued only
+once a poll of its completion finds room, so dropping the completion first
+discards the event; `try_process_event` reports the full queue instead. A
 queued machine runs its initial entry when constructed. `FifoScheduler<N>` and
 `InlineScheduler` need the `std` feature. sml.rs ships no async-runtime
 scheduler; the README's Schedulers section describes the traits one

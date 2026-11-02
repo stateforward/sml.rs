@@ -45,10 +45,14 @@ impl<M: Terminated> Schedule<M> for () {
 
 /// A scheduler that queues events for a shared machine.
 ///
-/// [`Queued::submit`] queues the event before it returns. Dropping the
-/// returned completion does not cancel the event: it still runs, and only its
-/// result is discarded. Once the machine reaches `X`, queued and later events
-/// resolve to `false` without running.
+/// [`Queued::submit`] queues the event before it returns, unless a bounded
+/// queue is full: then the completion holds the event and queues it on the
+/// first poll that finds room, and dropping the completion before that
+/// discards the event. Once an event is queued, dropping its completion does
+/// not cancel it: it still runs, and only its result is discarded. Use
+/// [`Queued::try_submit`] to learn at once that the queue is full. Once the
+/// machine reaches `X`, queued and later events resolve to `false` without
+/// running.
 pub trait Queued<M: SyncMachineStep>: Schedule<M> + StrictOrdering {
     /// Resolves to the event's acceptance after it has run to completion.
     type Completion: core::future::Future<Output = bool>;

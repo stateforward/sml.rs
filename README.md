@@ -304,8 +304,10 @@ let accepted: bool = machine.process_event_async(Stop).await;
 `process_event_async` queues the event before it returns and resolves to its
 acceptance once the event has run to completion, including the machine's own
 `process`/`defer` queues and completion transitions. Dropping the completion
-does not cancel the event. `try_process_event` returns `QueueFull` instead of
-waiting when a bounded queue has no room. Events run in FIFO order, one at a
+does not cancel a queued event. The exception is a full bounded queue
+(`FifoScheduler<N>`): the completion then holds the event and queues it on
+the first poll that finds room, so dropping it before then discards the
+event. `try_process_event` returns `QueueFull` instead of waiting. Events run in FIFO order, one at a
 time, which is `sml.cpp`'s `strict_ordering_scheduler_contract`
 (`StrictOrdering`). Once the machine reaches `X`, queued and later events
 resolve to `false`. A queued machine runs its initial entry when constructed,

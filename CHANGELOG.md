@@ -22,7 +22,9 @@ step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
   cloneable handle: `process_event_async(&self, event)` queues the event at
   call time and resolves to its acceptance once it has run to completion, and
   `try_process_event` reports `QueueFull` instead of waiting. Dropping the
-  completion does not cancel the event. Events run in FIFO order, one at a
+  completion does not cancel a queued event; when a bounded queue is full,
+  the event is queued only once a poll finds room, so dropping the
+  completion first discards it. Events run in FIFO order, one at a
   time, each to completion; after `X`, queued and later events resolve to
   `false`. A queued machine runs its initial entry when it is constructed.
 - Queued schedulers drive synchronous machines without a temporary context;

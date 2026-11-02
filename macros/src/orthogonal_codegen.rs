@@ -618,7 +618,10 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             {
                 /// Queues `event` now and resolves to its acceptance once it
                 /// has run to completion. Dropping the completion does not
-                /// cancel the event.
+                /// cancel a queued event. When the scheduler's bounded queue
+                /// is full, the event is queued only once a poll finds room,
+                /// and dropping the completion first discards it; use
+                /// `try_process_event` to learn of a full queue at once.
                 pub fn process_event_async<E: Into<#events_name>>(
                     &self,
                     event: E,

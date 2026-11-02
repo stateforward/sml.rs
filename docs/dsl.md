@@ -268,8 +268,9 @@ external event types that convert into that enum.
 
 A `scheduler` policy (see [Schedulers](../README.md#schedulers)) turns a
 synchronous machine without a temporary context into a cloneable handle whose
-`process_event_async(&self, event)` queues the event at call time and resolves
-to its acceptance once it has run to completion: the `sml.cpp` `co_sm`
+`process_event_async(&self, event)` queues the event at call time (or, when a
+bounded queue is full, on the first poll that finds room) and resolves to its
+acceptance once it has run to completion: the `sml.cpp` `co_sm`
 behavior, chosen per machine through its policy rather than a wrapper type. A
 scheduled machine's only operations are `process_event_async`,
 `try_process_event`, and `Clone`.
