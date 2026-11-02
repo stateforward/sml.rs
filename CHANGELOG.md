@@ -23,12 +23,17 @@ step hook. See the [2.0 migration guide](docs/migrating-to-2.0.md).
   completion does not cancel the event. Events run in FIFO order, one at a
   time, each to completion; after `X`, queued and later events resolve to
   `false`. A queued machine runs its initial entry when it is constructed.
+- Queued schedulers drive synchronous machines without a temporary context;
+  a machine with async guards or actions keeps its owned `async fn
+  process_event`.
 - `InlineScheduler` (std): runs the event under the machine's lock before
   `process_event_async` returns.
 - `FifoScheduler<N>` (std): the `sml.cpp` draining model on a bounded
   power-of-two queue. A caller that finds the machine idle runs its event and
   drains what others queued meanwhile; callers that find it busy, including a
-  re-entrant action, only queue.
+  re-entrant action, only queue. When the queue is full,
+  `process_event_async` waits for room before queuing; dropping that
+  completion first discards the event.
 - `TokioScheduler` (`tokio` feature): a dedicated task owns the machine and
   runs queued events; callers only queue, and no lock is held across `.await`.
 - `TokioScope`: machines placed in a scope keep their own tasks and FIFO

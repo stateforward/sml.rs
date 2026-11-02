@@ -381,6 +381,11 @@ mod shared {
     }
 
     /// Completion of an event submitted to a [`FifoScheduler`].
+    ///
+    /// When the bounded queue was full at submission, the completion waits
+    /// for room and queues the event when polled with room available; until
+    /// then the event is not queued, and dropping the completion discards it.
+    /// `try_process_event` reports a full queue instead.
     pub struct FifoCompletion<M: SyncMachineStep, const N: usize> {
         state: FifoWait<M, N>,
     }
