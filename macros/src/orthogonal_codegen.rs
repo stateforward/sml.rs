@@ -574,11 +574,6 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         }
 
         #[inline(always)]
-        pub fn is(&self, expected: &[#states_name; #region_count]) -> bool {
-            self.core.states == *expected
-        }
-
-        #[inline(always)]
         pub fn is_region(&self, region: usize, expected: &#states_name) -> bool {
             self.core.states.get(region).is_some_and(|state| state == expected)
         }
@@ -595,6 +590,19 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
         pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
     };
 
+    let scheduling =
+        crate::composite_codegen::scheduled_items(&crate::composite_codegen::ScheduledItems {
+            machine_name: &machine_name,
+            core_name: &core_name,
+            context_bound: quote! { #context_name },
+            policy_name: &policy_name,
+            events: quote! { #events_name },
+            is_expected: quote! { [#states_name; #region_count] },
+            visited: quote! { #states_name },
+            visit: quote! { core.states.iter().for_each(&mut visitor) },
+            start: quote! { self.__sml_initialize_unlocked().is_ok() },
+            schedulable: !is_async_machine && machine.temporary_context_type.is_none(),
+        });
     let states_attr = &machine.states_attr;
     let events_attr = &machine.events_attr;
     Ok(quote! {
@@ -653,10 +661,12 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
 
         pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
-            #policy_name: ::sml::Policies,
+            #policy_name: ::sml::MachinePolicy,
         {
-            core: #core_name<T, #policy_name>,
-            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
+            core: <<#policy_name as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<
+                #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>
+            >,
+            thread_safe: <<#policy_name as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -839,26 +849,42 @@ pub fn generate_code(machine: &StateMachine) -> parse::Result<TokenStream> {
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
-            #public_api
-
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::MachinePolicy,
+            <#policy_name as ::sml::MachinePolicy>::Scheduler:
+                ::sml::Schedule<#core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>>,
+        {
             #[inline(always)]
             pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
                 let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {
-                    core: #core_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_name {
                         states: [#(#initial_states),*],
                         states_exit_skip: [false; #region_count],
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
+        }
+
+        #scheduling
+
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,

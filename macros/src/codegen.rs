@@ -1422,6 +1422,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         },
     };
     let custom_policy_local_init = quote! {
+        let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
         let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
         #deferred_local
         #pending_local
@@ -1434,14 +1435,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             {
                 #custom_policy_local_init
                 #state_machine_type_name {
-                    core: #core_type_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_type_name {
                         state: #states_type_name::#starting_state(core::default::Default::default()),
                         exit_skip: false,
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
@@ -1451,14 +1452,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             pub fn new_with_policy(context: #context_type_ident, state_data: #st, policy: #policy_type_ident) -> Self {
                 #custom_policy_local_init
                 #state_machine_type_name {
-                    core: #core_type_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_type_name {
                         state: #states_type_name::#starting_state(state_data),
                         exit_skip: false,
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
@@ -1467,14 +1468,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             pub fn new_with_policy(context: #context_type_ident, policy: #policy_type_ident) -> Self {
                 #custom_policy_local_init
                 #state_machine_type_name {
-                    core: #core_type_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_type_name {
                         state: #states_type_name::#starting_state,
                         exit_skip: false,
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
@@ -1945,6 +1946,116 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             }
         }
     };
+    let core_type = quote! {
+        #core_type_name<#state_lifetimes #context_type_ident, <#policy_type_ident as ::sml::MachinePolicy>::Policies>
+    };
+    let own_core_type =
+        quote! { #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident> };
+    let schedulable = !is_async_state_machine
+        && sm.temporary_context_type.is_none()
+        && dispatch_generics.params.is_empty();
+    let scheduled_api = schedulable.then(|| {
+        quote! {
+            #[allow(missing_docs)]
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+                ::sml::Terminated for #own_core_type
+            {
+                #[inline(always)]
+                fn is_terminated(&self) -> bool {
+                    #core_type_name::is_terminated(self)
+                }
+            }
+
+            #[allow(missing_docs)]
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+                ::sml::SyncMachineStep for #own_core_type
+            {
+                type Event = #events_type_name #event_type_generics;
+
+                #[inline]
+                fn start(&mut self) -> bool {
+                    self.__sml_initialize_unlocked().is_ok()
+                }
+
+                #[inline]
+                fn step(&mut self, event: Self::Event) -> bool {
+                    self.__sml_process_event_unlocked(event).is_ok()
+                }
+            }
+
+            /// A scheduled machine is a handle: clones share one machine.
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident> Clone
+                for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
+            where
+                #policy_type_ident: ::sml::MachinePolicy,
+                <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::StrictOrdering,
+                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
+                <<#policy_type_ident as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe: Clone,
+            {
+                fn clone(&self) -> Self {
+                    Self {
+                        core: self.core.clone(),
+                        thread_safe: self.thread_safe.clone(),
+                    }
+                }
+            }
+
+            #[allow(missing_docs)]
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
+                #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
+            where
+                #policy_type_ident: ::sml::MachinePolicy,
+                <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::Queued<#core_type>,
+            {
+                /// Queues `event` now and resolves to its acceptance once it
+                /// has run to completion. Dropping the completion does not
+                /// cancel a queued event. When the scheduler's bounded queue
+                /// is full, the event is queued only once a poll finds room,
+                /// and dropping the completion first discards it; use
+                /// `try_process_event` to learn of a full queue at once.
+                pub fn process_event_async<E: Into<#events_type_name #event_type_generics>>(
+                    &self,
+                    event: E,
+                ) -> impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E> {
+                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Queued<#core_type>>::submit(
+                        &self.core,
+                        event.into(),
+                    )
+                }
+
+                /// Queues `event` unless the scheduler's bounded queue is full.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`QueueFull`](::sml::utility::QueueFull) without
+                /// queuing the event when the queue has no room.
+                pub fn try_process_event<E: Into<#events_type_name #event_type_generics>>(
+                    &self,
+                    event: E,
+                ) -> Result<
+                    impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E>,
+                    ::sml::utility::QueueFull,
+                > {
+                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Queued<#core_type>>::try_submit(
+                        &self.core,
+                        event.into(),
+                    )
+                }
+
+                /// Calls `visitor` once with the active state, under the
+                /// machine's lock.
+                pub fn visit_current_states(
+                    &self,
+                    mut visitor: impl FnMut(&#states_type_name <#state_lifetimes>),
+                ) {
+                    <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                        &self.core,
+                        |core| visitor(&core.state),
+                    );
+                }
+            }
+        }
+    });
     let default_constructor_impl = quote! {
         #[allow(missing_docs)]
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name>
@@ -2045,14 +2156,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #[inline(always)]
         pub fn state(&self) -> &#states_type_name <#state_lifetimes> {
             &self.core.state
-        }
-
-        /// Returns true when the active state has the same variant as
-        /// `expected`. State payloads are intentionally ignored, matching
-        /// `sml.cpp`'s state-identity query.
-        #[inline(always)]
-        pub fn is(&self, expected: &#states_type_name <#state_lifetimes>) -> bool {
-            self.core.state == *expected
         }
 
         /// Returns true when the machine is in its terminal `X` state.
@@ -2228,10 +2331,10 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         /// State machine structure definition.
         pub struct #state_machine_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
         where
-            #policy_type_ident: ::sml::Policies,
+            #policy_type_ident: ::sml::MachinePolicy,
         {
-            core: #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>,
-            thread_safe: <#policy_type_ident as ::sml::Policies>::ThreadSafe,
+            core: <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>,
+            thread_safe: <<#policy_type_ident as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -2403,10 +2506,41 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
+            #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
+        where
+            #policy_type_ident: ::sml::MachinePolicy,
+            <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::Schedule<#core_type>,
+        {
+            #new_with_policy_code
+        }
+
+        #[allow(missing_docs)]
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::MachinePolicy>
+            #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
+        {
+            /// Returns true when the active state has the same variant as
+            /// `expected`. State payloads are intentionally ignored, matching
+            /// `sml.cpp`'s state-identity query. On a scheduled machine the
+            /// query takes the machine's lock.
+            #[inline(always)]
+            pub fn is(&self, expected: &#states_type_name <#state_lifetimes>) -> bool {
+                <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::inspect(
+                    &self.core,
+                    |core| core.is(expected),
+                )
+            }
+        }
+
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(missing_docs)]
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
-            #new_with_policy_code
             #public_initialize
             #public_state_api
 
@@ -2426,6 +2560,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
 
         #machine_trait_impl
+        #scheduled_api
         #default_constructor_impl
         #testing_state_api
         #terminated_trait_impl

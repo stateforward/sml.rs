@@ -864,9 +864,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
 
         #[inline(always)]
-        pub fn is(&self, expected: &#parent_states_name) -> bool { self.core.state == *expected }
-
-        #[inline(always)]
         pub fn is_child(&self, expected: &#child_states_name) -> bool {
             self.core.child_state == *expected
         }
@@ -885,6 +882,18 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         #[inline(always)]
         pub fn context_mut(&mut self) -> &mut T { &mut self.core.context }
     };
+    let scheduling = scheduled_items(&ScheduledItems {
+        machine_name: &machine_name,
+        core_name: &core_name,
+        context_bound: quote! { #context_name },
+        policy_name: &policy_name,
+        events: quote! { #events_name },
+        is_expected: quote! { #parent_states_name },
+        visited: quote! { #parent_states_name },
+        visit: quote! { visitor(&core.state) },
+        start: quote! { self.__sml_initialize_unlocked().is_ok() },
+        schedulable: !is_async_machine && temporary_context_type.is_none(),
+    });
     Ok(quote! {
         use ::sml::Queue as _;
 
@@ -957,10 +966,12 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
 
         pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
-            #policy_name: ::sml::Policies,
+            #policy_name: ::sml::MachinePolicy,
         {
-            core: #core_name<T, #policy_name>,
-            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
+            core: <<#policy_name as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<
+                #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>
+            >,
+            thread_safe: <<#policy_name as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -1176,15 +1187,19 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
-            #public_api
-
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::MachinePolicy,
+            <#policy_name as ::sml::MachinePolicy>::Scheduler:
+                ::sml::Schedule<#core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>>,
+        {
             pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
                 let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {
-                    core: #core_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_name {
                         state: #parent_states_name::#parent_initial #parent_initial_value,
                         child_state: #child_states_name::#child_initial #child_initial_value,
                         state_exit_skip: false,
@@ -1193,10 +1208,22 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
+        }
+
+        #scheduling
+
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
@@ -2818,12 +2845,6 @@ fn generate_multi_code(
                 self.core.set_current_states(states)
             }
 
-            /// Returns whether all root-region states equal `expected`.
-            #[inline(always)]
-            pub fn is(&self, expected: &[#parent_states_name; #region_count]) -> bool {
-                self.core.is(expected)
-            }
-
             /// Returns whether a root region equals `expected`.
             #[inline(always)]
             pub fn is_region(&self, region: usize, expected: &#parent_states_name) -> bool {
@@ -2848,12 +2869,6 @@ fn generate_multi_code(
                     ::sml::TestingAccess,
             {
                 self.core.set_current_states(state)
-            }
-
-            /// Returns whether the active root state equals `expected`.
-            #[inline(always)]
-            pub fn is(&self, expected: &#parent_states_name) -> bool {
-                self.core.is(expected)
             }
         }
     };
@@ -2914,6 +2929,29 @@ fn generate_multi_code(
         }
     };
 
+    let (root_states, root_visit) = if let Some(region_count) = root_region_count {
+        (
+            quote! { [#parent_states_name; #region_count] },
+            quote! { core.states.iter().for_each(&mut visitor) },
+        )
+    } else {
+        (
+            quote! { #parent_states_name },
+            quote! { visitor(&core.state) },
+        )
+    };
+    let scheduling = scheduled_items(&ScheduledItems {
+        machine_name: &machine_name,
+        core_name: &core_name,
+        context_bound: quote! { #context_name },
+        policy_name: &policy_name,
+        events: quote! { #events_name },
+        is_expected: root_states,
+        visited: quote! { #parent_states_name },
+        visit: root_visit,
+        start: quote! { self.initialize().is_ok() },
+        schedulable: !is_async_machine && temporary_context_type.is_none(),
+    });
     let core_struct = quote! {
         #[doc(hidden)]
         struct #core_name<T: #context_name, #policy_name = ::sml::NoPolicy>
@@ -2978,10 +3016,12 @@ fn generate_multi_code(
 
         pub struct #machine_name<T: #context_name, #policy_name = ::sml::NoPolicy>
         where
-            #policy_name: ::sml::Policies,
+            #policy_name: ::sml::MachinePolicy,
         {
-            core: #core_name<T, #policy_name>,
-            thread_safe: <#policy_name as ::sml::Policies>::ThreadSafe,
+            core: <<#policy_name as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<
+                #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>
+            >,
+            thread_safe: <<#policy_name as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -3122,25 +3162,41 @@ fn generate_multi_code(
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
-            #public_api
-
+        impl<T: #context_name, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::MachinePolicy,
+            <#policy_name as ::sml::MachinePolicy>::Scheduler:
+                ::sml::Schedule<#core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies>>,
+        {
             pub fn new_with_policy(context: T, policy: #policy_name) -> Self {
+                let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
                 let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
                 #deferred_local
                 #pending_local
                 Self {
-                    core: #core_name {
+                    core: ::sml::Schedule::cell(scheduler, #core_name {
                         #root_state_init
                         #(#child_initializers)*
                         context,
                         policy,
                         #deferred_init
                         #pending_init
-                    },
+                    }),
                     thread_safe,
                 }
             }
+        }
+
+        #scheduling
+
+        #[allow(
+            clippy::unnested_or_patterns,
+            clippy::unused_async_trait_impl,
+            clippy::useless_let_if_seq
+        )]
+        #[allow(missing_docs)]
+        impl<T: #context_name, #policy_name: ::sml::Policies> #machine_name<T, #policy_name> {
+            #public_api
 
             pub #async_keyword fn process_event<EventInput>(
                 &mut self,
@@ -5218,6 +5274,146 @@ fn composite_machine_impl(
             #[inline]
             fn process_event(&mut self, event: #events_name) -> bool {
                 self.process_event(event).is_ok()
+            }
+        }
+    }
+}
+
+/// The names a generator hands to [`scheduled_items`].
+pub(crate) struct ScheduledItems<'a> {
+    pub(crate) machine_name: &'a Ident,
+    pub(crate) core_name: &'a Ident,
+    /// The context trait bound on `T`.
+    pub(crate) context_bound: TokenStream,
+    pub(crate) policy_name: &'a Ident,
+    /// The generated events type.
+    pub(crate) events: TokenStream,
+    /// The type `is` compares against.
+    pub(crate) is_expected: TokenStream,
+    /// The state type `visit_current_states` hands to its visitor.
+    pub(crate) visited: TokenStream,
+    /// Calls `visitor` once per active state of `core`.
+    pub(crate) visit: TokenStream,
+    /// The core expression that runs the initial entry.
+    pub(crate) start: TokenStream,
+    /// Whether the machine is synchronous without a temporary context, so a
+    /// queued scheduler can drive it.
+    pub(crate) schedulable: bool,
+}
+
+/// The state query shared by owned and scheduled machines, and for
+/// schedulable machines the core's `SyncMachineStep`, the handle's `Clone`,
+/// and the queued handle API.
+pub(crate) fn scheduled_items(input: &ScheduledItems<'_>) -> TokenStream {
+    let ScheduledItems {
+        machine_name,
+        core_name,
+        context_bound,
+        policy_name,
+        events,
+        is_expected,
+        visited,
+        visit,
+        start,
+        schedulable,
+    } = input;
+    let core_type = quote! { #core_name<T, <#policy_name as ::sml::MachinePolicy>::Policies> };
+    let scheduler = quote! { <#policy_name as ::sml::MachinePolicy>::Scheduler };
+    let query = quote! {
+        #[allow(missing_docs)]
+        impl<T: #context_bound, #policy_name: ::sml::MachinePolicy> #machine_name<T, #policy_name> {
+            /// Returns whether the active root state equals `expected`. On a
+            /// scheduled machine the query takes the machine's lock.
+            #[inline(always)]
+            pub fn is(&self, expected: &#is_expected) -> bool {
+                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| core.is(expected))
+            }
+        }
+    };
+    if !*schedulable {
+        return query;
+    }
+    quote! {
+        #query
+
+        #[allow(missing_docs)]
+        impl<T: #context_bound, #policy_name: ::sml::Policies> ::sml::Terminated for #core_name<T, #policy_name> {
+            #[inline(always)]
+            fn is_terminated(&self) -> bool {
+                #core_name::is_terminated(self)
+            }
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_bound, #policy_name: ::sml::Policies> ::sml::SyncMachineStep for #core_name<T, #policy_name> {
+            type Event = #events;
+
+            #[inline]
+            fn start(&mut self) -> bool {
+                #start
+            }
+
+            #[inline]
+            fn step(&mut self, event: Self::Event) -> bool {
+                self.__sml_process_event_unlocked(event).is_ok()
+            }
+        }
+
+        /// A scheduled machine is a handle: clones share one machine.
+        impl<T: #context_bound, #policy_name> Clone for #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::MachinePolicy,
+            #scheduler: ::sml::StrictOrdering,
+            <#scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
+            <<#policy_name as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe: Clone,
+        {
+            fn clone(&self) -> Self {
+                Self {
+                    core: self.core.clone(),
+                    thread_safe: self.thread_safe.clone(),
+                }
+            }
+        }
+
+        #[allow(missing_docs)]
+        impl<T: #context_bound, #policy_name> #machine_name<T, #policy_name>
+        where
+            #policy_name: ::sml::MachinePolicy,
+            #scheduler: ::sml::Queued<#core_type>,
+        {
+            /// Queues `event` now and resolves to its acceptance once it has
+            /// run to completion. Dropping the completion does not cancel a
+            /// queued event. When the scheduler's bounded queue is full, the
+            /// event is queued only once a poll finds room, and dropping the
+            /// completion first discards it; use `try_process_event` to learn
+            /// of a full queue at once.
+            pub fn process_event_async<E: Into<#events>>(
+                &self,
+                event: E,
+            ) -> impl ::core::future::Future<Output = bool> + use<T, #policy_name, E> {
+                <#scheduler as ::sml::Queued<#core_type>>::submit(&self.core, event.into())
+            }
+
+            /// Queues `event` unless the scheduler's bounded queue is full.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`QueueFull`](::sml::utility::QueueFull) without
+            /// queuing the event when the queue has no room.
+            pub fn try_process_event<E: Into<#events>>(
+                &self,
+                event: E,
+            ) -> Result<
+                impl ::core::future::Future<Output = bool> + use<T, #policy_name, E>,
+                ::sml::utility::QueueFull,
+            > {
+                <#scheduler as ::sml::Queued<#core_type>>::try_submit(&self.core, event.into())
+            }
+
+            /// Calls `visitor` once per active root state, under the
+            /// machine's lock.
+            pub fn visit_current_states(&self, mut visitor: impl FnMut(&#visited)) {
+                <#scheduler as ::sml::Scheduler>::inspect(&self.core, |core| #visit);
             }
         }
     }
