@@ -2172,7 +2172,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 pub fn process_event_async<E: Into<#events_type_name #event_type_generics>>(
                     &self,
                     event: E,
-                ) -> <<#policy_type_ident as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion {
+                ) -> impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E> {
                     <<#policy_type_ident as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::submit(
                         &self.core,
                         event.into(),
@@ -2189,7 +2189,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                     &self,
                     event: E,
                 ) -> Result<
-                    <<#policy_type_ident as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion,
+                    impl ::core::future::Future<Output = bool> + use<#state_lifetimes #context_type_ident, #policy_type_ident, E>,
                     ::sml::utility::QueueFull,
                 > {
                     <<#policy_type_ident as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::try_submit(

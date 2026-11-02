@@ -234,7 +234,31 @@ mod shared {
         events: EventQueue<(Job<M>, Arc<Ticket>), N>,
         draining: bool,
         terminated: bool,
-        room: Vec<Waker>,
+        // One registration per completion waiting for room.
+        room: Vec<Arc<Waiter>>,
+    }
+
+    // A completion waiting for room in a full queue: registered at most once,
+    // holding the waker of its latest poll.
+    #[derive(Default)]
+    struct Waiter {
+        waker: Mutex<Option<Waker>>,
+    }
+
+    impl Waiter {
+        fn update(&self, waker: &Waker) {
+            let mut current = lock(&self.waker);
+            if !current.as_ref().is_some_and(|known| known.will_wake(waker)) {
+                *current = Some(waker.clone());
+            }
+        }
+
+        fn wake(&self) {
+            let waker = lock(&self.waker).take();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
     }
 
     #[derive(Default)]
@@ -332,8 +356,8 @@ mod shared {
             for ticket in stranded {
                 ticket.resolve(false);
             }
-            for waker in room {
-                waker.wake();
+            for waiter in room {
+                waiter.wake();
             }
         }
     }
@@ -385,15 +409,17 @@ mod shared {
     where
         M::Event: Send + 'static,
     {
-        fn offer(&self, event: M::Event, waker: Option<&Waker>) -> Offer<M::Event> {
+        fn offer(&self, event: M::Event, waiter: Option<&Arc<Waiter>>) -> Offer<M::Event> {
             let mut queue = lock(&self.shared.queue);
             if queue.terminated {
                 return Offer::Done(false);
             }
             if queue.draining {
                 if queue.events.len() == N {
-                    if let Some(waker) = waker {
-                        queue.room.push(waker.clone());
+                    if let Some(waiter) = waiter {
+                        if !queue.room.iter().any(|known| Arc::ptr_eq(known, waiter)) {
+                            queue.room.push(Arc::clone(waiter));
+                        }
                     }
                     return Offer::Full(event);
                 }
@@ -442,8 +468,8 @@ mod shared {
                     }
                     (next, core::mem::take(&mut queue.room))
                 };
-                for waker in room {
-                    waker.wake();
+                for waiter in room {
+                    waiter.wake();
                 }
                 let Some((job, ticket)) = next else {
                     return accepted;
@@ -473,7 +499,24 @@ mod shared {
         Done(bool),
         Queued(Arc<Ticket>),
         // The queue was full: the event is queued once there is room.
-        Room(FifoCell<M, N>, M::Event),
+        Room(FifoCell<M, N>, M::Event, Arc<Waiter>),
+    }
+
+    impl<M, const N: usize> FifoCell<M, N> {
+        // Withdraws a waiting completion's registration.
+        fn forget(&self, waiter: &Arc<Waiter>) {
+            lock(&self.shared.queue)
+                .room
+                .retain(|known| !Arc::ptr_eq(known, waiter));
+        }
+    }
+
+    impl<M: SyncMachineStep, const N: usize> Drop for FifoCompletion<M, N> {
+        fn drop(&mut self) {
+            if let FifoWait::Room(cell, _, waiter) = &self.state {
+                cell.forget(waiter);
+            }
+        }
     }
 
     // The completion never pins its fields; the waiting event is moved out
@@ -490,11 +533,20 @@ mod shared {
             let this = self.get_mut();
             // Take the state out so a waiting event can move into the queue.
             this.state = match core::mem::replace(&mut this.state, FifoWait::Done(false)) {
-                FifoWait::Room(cell, event) => match cell.offer(event, Some(cx.waker())) {
-                    Offer::Done(accepted) => FifoWait::Done(accepted),
-                    Offer::Queued(ticket) => FifoWait::Queued(ticket),
-                    Offer::Full(event) => FifoWait::Room(cell, event),
-                },
+                FifoWait::Room(cell, event, waiter) => {
+                    waiter.update(cx.waker());
+                    match cell.offer(event, Some(&waiter)) {
+                        Offer::Done(accepted) => {
+                            cell.forget(&waiter);
+                            FifoWait::Done(accepted)
+                        }
+                        Offer::Queued(ticket) => {
+                            cell.forget(&waiter);
+                            FifoWait::Queued(ticket)
+                        }
+                        Offer::Full(event) => FifoWait::Room(cell, event, waiter),
+                    }
+                }
                 state => state,
             };
             match &this.state {
@@ -515,7 +567,9 @@ mod shared {
             let state = match cell.offer(event, None) {
                 Offer::Done(accepted) => FifoWait::Done(accepted),
                 Offer::Queued(ticket) => FifoWait::Queued(ticket),
-                Offer::Full(event) => FifoWait::Room(cell.clone(), event),
+                Offer::Full(event) => {
+                    FifoWait::Room(cell.clone(), event, Arc::new(Waiter::default()))
+                }
             };
             FifoCompletion { state }
         }
@@ -633,6 +687,24 @@ mod shared {
             assert_eq!(poll(queued.as_mut()), Poll::Ready(false));
             assert_eq!(poll(waiting.as_mut()), Poll::Ready(false));
             assert_eq!(lock(&cell.shared.machine).seen, [1]);
+        }
+
+        #[test]
+        fn a_waiting_completion_registers_once_and_withdraws_when_dropped() {
+            let cell =
+                <FifoScheduler<2> as Schedule<Recorder>>::cell(FifoScheduler, Recorder::default());
+            lock(&cell.shared.queue).draining = true;
+            let queued: std::vec::Vec<_> = (1..=2)
+                .map(|event| <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, event))
+                .collect();
+            let mut waiting = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 3));
+            for _ in 0..1_000 {
+                assert_eq!(poll(waiting.as_mut()), Poll::Pending);
+            }
+            assert_eq!(lock(&cell.shared.queue).room.len(), 1);
+            drop(waiting);
+            assert!(lock(&cell.shared.queue).room.is_empty());
+            drop(queued);
         }
 
         #[test]

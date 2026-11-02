@@ -27,7 +27,7 @@ sml! {
 }
 
 type Handle = CounterStateMachine<Recorder, Fifo>;
-type Waiting = sml::FifoCompletion<__SmlCounterStateMachineCore<Recorder, Fifo>, 4>;
+type Waiting = std::pin::Pin<Box<dyn Future<Output = bool> + Send>>;
 
 /// What a re-entrant action did, shared with the test.
 #[derive(Default)]
@@ -58,7 +58,7 @@ impl CounterStateMachineContext for Recorder {
                     .map(|value| this.try_process_event(Push(value)).is_ok())
                     .collect();
                 *lock(&self.reentry.tried) = tried;
-                *lock(&self.reentry.waiting) = Some(this.process_event_async(Push(20)));
+                *lock(&self.reentry.waiting) = Some(Box::pin(this.process_event_async(Push(20))));
             }
         }
         Ok(())
@@ -270,4 +270,45 @@ fn initialization_reports_what_it_emitted_as_its_own_step() {
         vec![(step("initialize", true, false), vec![0])]
     );
     assert_eq!(ready(machine.process_event_async(Push(6))), Some(true));
+}
+
+/// A machine defined in a module and handed out by value, as an owner would.
+mod defined_elsewhere {
+    use sml::{sml, sml_policies, FifoScheduler};
+
+    pub struct Go;
+
+    sml! {
+        Remote {
+            *Idle + event<Go> / went = Idle,
+        }
+    }
+
+    pub struct Quiet;
+
+    impl RemoteStateMachineContext for Quiet {
+        fn went(&mut self, _event: &Go) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    sml_policies!(Queued { scheduler: FifoScheduler<4> });
+
+    pub fn make() -> RemoteStateMachine<Quiet, Queued> {
+        RemoteStateMachine::new_with_policy(Quiet, Queued::default())
+    }
+}
+
+const fn is_send<T: Send>(_: &T) {}
+
+#[test]
+fn a_scheduled_machine_is_usable_outside_its_defining_module() {
+    let machine = defined_elsewhere::make();
+    assert_eq!(
+        ready(machine.process_event_async(defined_elsewhere::Go)),
+        Some(true)
+    );
+    let queued = machine.try_process_event(defined_elsewhere::Go);
+    assert_eq!(queued.ok().and_then(ready), Some(true));
+    is_send(&machine.process_event_async(defined_elsewhere::Go));
 }

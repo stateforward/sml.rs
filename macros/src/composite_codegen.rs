@@ -5507,7 +5507,7 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
                 pub fn process_event_async<E: Into<#events_name>>(
                     &self,
                     event: E,
-                ) -> <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion {
+                ) -> impl ::core::future::Future<Output = bool> + use<T, #policy_name, E> {
                     <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::submit(
                         &self.core,
                         event.into(),
@@ -5524,7 +5524,7 @@ fn composite_scheduling(input: &ComposedScheduling<'_>) -> CompositeScheduling {
                     &self,
                     event: E,
                 ) -> Result<
-                    <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::Completion,
+                    impl ::core::future::Future<Output = bool> + use<T, #policy_name, E>,
                     ::sml::utility::QueueFull,
                 > {
                     <<#policy_name as ::sml::Policies>::Scheduler as ::sml::Queued<#core_type>>::try_submit(
