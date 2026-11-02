@@ -389,7 +389,7 @@ mod shared {
         Done(bool),
         Queued(Arc<Ticket>),
         // The queue was full: the event is queued once there is room.
-        Room(FifoCell<M, N>, Option<M::Event>),
+        Room(FifoCell<M, N>, M::Event),
     }
 
     // The completion never pins its fields; the waiting event is moved out
@@ -404,25 +404,19 @@ mod shared {
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
             let this = self.get_mut();
-            loop {
-                match &mut this.state {
-                    FifoWait::Done(accepted) => return Poll::Ready(*accepted),
-                    FifoWait::Queued(ticket) => return ticket.poll(cx),
-                    FifoWait::Room(cell, event) => {
-                        let Some(event) = event.take() else {
-                            return Poll::Ready(false);
-                        };
-                        let cell = cell.clone();
-                        this.state = match cell.offer(event, Some(cx.waker())) {
-                            Offer::Done(accepted) => FifoWait::Done(accepted),
-                            Offer::Queued(ticket) => FifoWait::Queued(ticket),
-                            Offer::Full(event) => {
-                                this.state = FifoWait::Room(cell, Some(event));
-                                return Poll::Pending;
-                            }
-                        };
-                    }
-                }
+            // Take the state out so a waiting event can move into the queue.
+            this.state = match core::mem::replace(&mut this.state, FifoWait::Done(false)) {
+                FifoWait::Room(cell, event) => match cell.offer(event, Some(cx.waker())) {
+                    Offer::Done(accepted) => FifoWait::Done(accepted),
+                    Offer::Queued(ticket) => FifoWait::Queued(ticket),
+                    Offer::Full(event) => FifoWait::Room(cell, event),
+                },
+                state => state,
+            };
+            match &this.state {
+                FifoWait::Done(accepted) => Poll::Ready(*accepted),
+                FifoWait::Queued(ticket) => ticket.poll(cx),
+                FifoWait::Room(..) => Poll::Pending,
             }
         }
     }
@@ -437,7 +431,7 @@ mod shared {
             let state = match cell.offer(event, None) {
                 Offer::Done(accepted) => FifoWait::Done(accepted),
                 Offer::Queued(ticket) => FifoWait::Queued(ticket),
-                Offer::Full(event) => FifoWait::Room(cell.clone(), Some(event)),
+                Offer::Full(event) => FifoWait::Room(cell.clone(), event),
             };
             FifoCompletion { state }
         }
@@ -468,7 +462,7 @@ mod shared {
 
         #[test]
         fn a_busy_fifo_queues_bounded_and_resolves_after_the_drain() {
-            assert!(<FifoScheduler<2> as StrictOrdering>::GUARANTEES_FIFO);
+            const { assert!(<FifoScheduler<2> as StrictOrdering>::GUARANTEES_FIFO) };
             let cell =
                 <FifoScheduler<2> as Schedule<Recorder>>::cell(FifoScheduler, Recorder::default());
             assert!(lock(&cell.shared.machine).started);
@@ -480,11 +474,21 @@ mod shared {
             let mut waiting = Box::pin(<FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 3));
             assert_eq!(poll(first.as_mut()), Poll::Pending);
             assert_eq!(poll(waiting.as_mut()), Poll::Pending);
+            // Room appears while the machine is still busy: the waiting event
+            // queues instead of running.
+            let (job, ticket) = lock(&cell.shared.queue)
+                .events
+                .pop()
+                .ok_or(())
+                .unwrap_or_else(|()| panic!("queued"));
+            assert_eq!(poll(waiting.as_mut()), Poll::Pending);
+            assert!(job(&mut lock(&cell.shared.machine)));
+            ticket.resolve(true);
 
             assert!(cell.drain(9));
             assert_eq!(poll(first.as_mut()), Poll::Ready(true));
             assert_eq!(poll(waiting.as_mut()), Poll::Ready(true));
-            assert_eq!(lock(&cell.shared.machine).seen, [9, 1, 2, 3]);
+            assert_eq!(lock(&cell.shared.machine).seen, [1, 9, 2, 3]);
 
             let stop = <FifoScheduler<2> as Queued<Recorder>>::submit(&cell, 0);
             assert_eq!(poll(stop), Poll::Ready(true));
@@ -493,7 +497,7 @@ mod shared {
 
         #[test]
         fn an_inline_machine_starts_and_stops() {
-            assert!(<InlineScheduler as StrictOrdering>::SINGLE_CONSUMER);
+            const { assert!(<InlineScheduler as StrictOrdering>::SINGLE_CONSUMER) };
             let cell =
                 <InlineScheduler as Schedule<Recorder>>::cell(InlineScheduler, Recorder::default());
             let clone = cell.clone();
@@ -907,7 +911,7 @@ mod tests {
     #[test]
     fn the_unit_scheduler_and_hook_keep_the_owned_machine() {
         let machine = <() as Schedule<Recorder>>::cell((), Recorder::default());
-        assert!(!<() as StepHook<(), u8>>::ACTIVE);
+        const { assert!(!<() as StepHook<(), u8>>::ACTIVE) };
         StepHook::<(), u8>::before_step(&mut (), &mut (), &1);
         StepHook::<(), u8>::output(&mut (), &mut (), ());
         let step = Step {

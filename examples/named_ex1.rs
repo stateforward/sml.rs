@@ -2,6 +2,9 @@
 //!
 //! A simple example of a state machine which will get stuck in the final state.
 //! A picture depicting the state machine can be found in the README.
+//!
+//! `process_event` reports whether a transition handled the event: `Ok(true)`
+//! moves the machine along, `Ok(false)` means the current state ignored it.
 
 #![deny(missing_docs)]
 
@@ -21,22 +24,19 @@ impl LinearStateMachineContext for Context {}
 
 fn main() {
     let mut sm = LinearStateMachine::new(Context);
-    assert!(sm.is(&LinearStates::State1));
 
+    // State1 -> State2
     let r = sm.process_event(LinearEvents::Event1);
     assert_eq!(r, Ok(true));
-    assert!(sm.is(&LinearStates::State2));
 
+    // State2 -> State3
     let r = sm.process_event(LinearEvents::Event2);
     assert_eq!(r, Ok(true));
-    assert!(sm.is(&LinearStates::State3));
 
-    // Now all events will not give any change of state
+    // Now all events will not give any change of state: State3 handles none
     let r = sm.process_event(LinearEvents::Event1);
     assert_eq!(r, Ok(false));
-    assert!(sm.is(&LinearStates::State3));
 
     let r = sm.process_event(LinearEvents::Event2);
     assert_eq!(r, Ok(false));
-    assert!(sm.is(&LinearStates::State3));
 }

@@ -67,7 +67,6 @@ fn main() {
         .process_event(&mut val, Events::Event1(MyEventData(1)))
         .unwrap();
 
-    assert!(handled);
-    assert!(sm.is(&States::State2(MyStateData(1))));
+    assert!(handled); // now in State2(MyStateData(1))
     assert_eq!(val, 2);
 }

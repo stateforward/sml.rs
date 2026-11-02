@@ -1339,6 +1339,8 @@ mod tests {
         let _: &() = PolicyParts::logger(&no_policy_parts);
         let _: &() = PolicyParts::observer(&no_policy_parts);
         let _: &() = PolicyParts::testing(&no_policy_parts);
+        let _: EventQueue<u8, 16> = PolicyParts::new_defer_queue(&no_policy_parts);
+        let _: EventQueue<u8, 16> = PolicyParts::new_process_queue(&no_policy_parts);
     }
 
     #[test]

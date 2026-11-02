@@ -291,13 +291,17 @@ mod task {
         most: AtomicUsize,
     }
 
-    pub struct Busy(Arc<Gauge>);
+    /// A worker whose step takes a while, or until the test opens `gate`.
+    pub struct Busy(Arc<Gauge>, Option<std::sync::mpsc::Receiver<()>>);
 
     impl WorkerStateMachineContext for Busy {
         fn work(&mut self, _event: &Work) -> Result<(), ()> {
             let running = self.0.running.fetch_add(1, Ordering::SeqCst) + 1;
             self.0.most.fetch_max(running, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(5));
+            match &self.1 {
+                Some(gate) => gate.recv().ok().unwrap_or_default(),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
             self.0.running.fetch_sub(1, Ordering::SeqCst);
             Ok(())
         }
@@ -309,7 +313,7 @@ mod task {
 
     fn worker(scheduler: TokioScheduler, gauge: &Arc<Gauge>) -> WorkerStateMachine<Busy, Scoped> {
         WorkerStateMachine::new_with_policy(
-            Busy(Arc::clone(gauge)),
+            Busy(Arc::clone(gauge), None),
             Scoped::default().with_scheduler(scheduler),
         )
     }
@@ -388,5 +392,48 @@ mod task {
         });
         assert_eq!(accepted, (true, true));
         assert!(format!("{:?}", TokioScope::new(0)).starts_with("TokioScope"));
+    }
+
+    #[test]
+    fn ending_a_scope_stops_machines_that_have_not_started_or_wait_for_a_slot() {
+        let gauge = Arc::new(Gauge::default());
+        // On a current-thread runtime a spawned machine has not started until
+        // the test yields, so ending the scope first means it never starts.
+        let current = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap_or_else(|error| panic!("tokio runtime: {}", error));
+        let unstarted = current.block_on(async {
+            let scope = TokioScope::new(1);
+            let owned = TokioScope::new(1);
+            let machine = worker(scope.scheduler().owning(owned.clone()), &gauge);
+            let queued = machine.process_event_async(Work);
+            scope.end();
+            let late = worker(owned.scheduler(), &gauge);
+            (queued.await, late.process_event_async(Work).await)
+        });
+        assert_eq!(unstarted, (false, false));
+
+        // With one slot held by a step the test controls, the second
+        // machine's step waits for a slot; ending the scope stops it instead.
+        let waiting = runtime().block_on(async {
+            let scope = TokioScope::new(1);
+            let held = Arc::new(Gauge::default());
+            let (open, gate) = std::sync::mpsc::channel();
+            let busy = WorkerStateMachine::new_with_policy(
+                Busy(Arc::clone(&held), Some(gate)),
+                Scoped::default().with_scheduler(scope.scheduler()),
+            );
+            let blocked = worker(scope.scheduler(), &gauge);
+            let running = busy.process_event_async(Work);
+            while held.running.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let parked = blocked.process_event_async(Work);
+            scope.end();
+            open.send(()).ok();
+            (running.await, parked.await)
+        });
+        assert_eq!(waiting, (true, false));
     }
 }
