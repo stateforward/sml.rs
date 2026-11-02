@@ -8,7 +8,7 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
-- A `scheduler` policy slot. `PolicyBundle` gains a defaulted scheduler type
+- A `scheduler` policy slot. `Policies` gains a defaulted scheduler type
   parameter and `sml_policies!` accepts `scheduler: ...`. The default `()`
   keeps the owned `&mut self` machine. A queued scheduler turns the generated
   flat, composite, or orthogonal machine itself into a cloneable handle with

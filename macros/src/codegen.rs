@@ -1356,14 +1356,14 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     });
     let pending_init = async_queue.then(|| quote! { pending, });
     let deferred_local = has_deferred_events.then(|| {
-        quote! { let deferred = ::sml::PolicyParts::new_defer_queue(&policy); }
+        quote! { let deferred = ::sml::__private::PolicyParts::new_defer_queue(&policy); }
     });
     let pending_local = async_queue.then(|| {
-        quote! { let pending = ::sml::PolicyParts::new_process_queue(&policy); }
+        quote! { let pending = ::sml::__private::PolicyParts::new_process_queue(&policy); }
     });
     let policy_local_init = quote! {
         let policy: ::sml::NoPolicy = core::default::Default::default();
-        let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+        let (policy, thread_safe) = ::sml::Policy::into_parts(policy);
         #deferred_local
         #pending_local
     };
@@ -1423,7 +1423,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     };
     let custom_policy_local_init = quote! {
         let (policy, scheduler) = ::sml::MachinePolicy::into_scheduled(policy);
-        let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+        let (policy, thread_safe) = ::sml::Policy::into_parts(policy);
         #deferred_local
         #pending_local
     };
@@ -1547,7 +1547,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #context_type_ident: #state_machine_context_type_name
     ));
     machine_impl_generics.params.push(parse_quote!(
-        #policy_type_ident: ::sml::Policies
+        #policy_type_ident: ::sml::Policy
     ));
     let (machine_impl_generics, _, machine_impl_where_clause) =
         machine_impl_generics.split_for_impl();
@@ -1937,7 +1937,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     };
     let terminated_trait_impl = quote! {
         #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
             ::sml::Terminated for #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
             #[inline(always)]
@@ -1947,7 +1947,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         }
     };
     let core_type = quote! {
-        #core_type_name<#state_lifetimes #context_type_ident, <#policy_type_ident as ::sml::MachinePolicy>::Policies>
+        #core_type_name<#state_lifetimes #context_type_ident, <#policy_type_ident as ::sml::MachinePolicy>::Policy>
     };
     let own_core_type =
         quote! { #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident> };
@@ -1957,7 +1957,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let scheduled_api = schedulable.then(|| {
         quote! {
             #[allow(missing_docs)]
-            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
                 ::sml::Terminated for #own_core_type
             {
                 #[inline(always)]
@@ -1967,7 +1967,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             }
 
             #[allow(missing_docs)]
-            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+            impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
                 ::sml::SyncMachineStep for #own_core_type
             {
                 type Event = #events_type_name #event_type_generics;
@@ -1990,7 +1990,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                 #policy_type_ident: ::sml::MachinePolicy,
                 <#policy_type_ident as ::sml::MachinePolicy>::Scheduler: ::sml::StrictOrdering,
                 <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>: Clone,
-                <<#policy_type_ident as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe: Clone,
+                <<#policy_type_ident as ::sml::MachinePolicy>::Policy as ::sml::Policy>::ThreadSafe: Clone,
             {
                 fn clone(&self) -> Self {
                     Self {
@@ -2088,7 +2088,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                         state_data: #state_data_type,
                         policy: #policy_type_ident,
                     ) -> Self {
-                        let (policy, thread_safe) = ::sml::Policies::into_parts(policy);
+                        let (policy, thread_safe) = ::sml::Policy::into_parts(policy);
                         #deferred_local
                         #pending_local
                         #state_machine_type_name {
@@ -2110,8 +2110,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         where
-            #policy_type_ident: ::sml::Policies,
-            <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Testing:
+            #policy_type_ident: ::sml::Policy,
+            <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Testing:
                 ::sml::TestingAccess,
         {
             #testing_state_data_api
@@ -2130,26 +2130,26 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let public_state_api = quote! {
         /// Borrows the configured logger.
         #[inline(always)]
-        pub fn logger(&self) -> &<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-            ::sml::PolicyParts::logger(&self.core.policy)
+        pub fn logger(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
+            ::sml::__private::PolicyParts::logger(&self.core.policy)
         }
 
         /// Mutably borrows the configured logger.
         #[inline(always)]
-        pub fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-            ::sml::PolicyParts::logger_mut(&mut self.core.policy)
+        pub fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
+            ::sml::__private::PolicyParts::logger_mut(&mut self.core.policy)
         }
 
         /// Borrows the configured observer.
         #[inline(always)]
-        pub fn observer(&self) -> &<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-            ::sml::PolicyParts::observer(&self.core.policy)
+        pub fn observer(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
+            ::sml::__private::PolicyParts::observer(&self.core.policy)
         }
 
         /// Mutably borrows the configured observer.
         #[inline(always)]
-        pub fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-            ::sml::PolicyParts::observer_mut(&mut self.core.policy)
+        pub fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
+            ::sml::__private::PolicyParts::observer_mut(&mut self.core.policy)
         }
 
         /// Returns the current state.
@@ -2212,18 +2212,18 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     });
     let deferred_field = has_deferred_events.then(|| {
         quote! {
-            deferred: <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
+            deferred: <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
         }
     });
     let pending_field = async_queue.then(|| {
         quote! {
-            pending: <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::ProcessQueue<#events_type_name #event_type_generics>,
+            pending: <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::ProcessQueue<#events_type_name #event_type_generics>,
         }
     });
     let core_struct = quote! {
         struct #core_type_name<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident = ::sml::NoPolicy>
         where
-            #policy_type_ident: ::sml::Policies,
+            #policy_type_ident: ::sml::Policy,
         {
             state: #states_type_name <#state_lifetimes>,
             // Set once a transition's exits ran and cleared when it replaces
@@ -2233,7 +2233,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #[allow(dead_code, reason = "the exit-skip token is only read where the state is exited")]
             exit_skip: bool,
             context: #context_type_ident,
-            policy: <#policy_type_ident as ::sml::Policies>::Parts,
+            policy: <#policy_type_ident as ::sml::Policy>::Parts,
             #deferred_field
             #pending_field
         }
@@ -2334,7 +2334,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             #policy_type_ident: ::sml::MachinePolicy,
         {
             core: <<#policy_type_ident as ::sml::MachinePolicy>::Scheduler as ::sml::Scheduler>::Cell<#core_type>,
-            thread_safe: <<#policy_type_ident as ::sml::MachinePolicy>::Policies as ::sml::Policies>::ThreadSafe,
+            thread_safe: <<#policy_type_ident as ::sml::MachinePolicy>::Policy as ::sml::Policy>::ThreadSafe,
         }
 
         // These control-flow patterns are emitted by the DSL lowering. They
@@ -2345,7 +2345,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
             #core_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
         #process_completion
@@ -2357,102 +2357,102 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
 
             #[inline(always)]
             fn __sml_log_process_event(
-                policy: &mut <#policy_type_ident as ::sml::Policies>::Parts,
+                policy: &mut <#policy_type_ident as ::sml::Policy>::Parts,
                 event: &'static str,
             ) {
                 ::sml::Logger::log_process_event(
-                    ::sml::PolicyParts::logger_mut(policy), event,
+                    ::sml::__private::PolicyParts::logger_mut(policy), event,
                 );
                 ::sml::Observer::observe_process_event(
-                    ::sml::PolicyParts::observer_mut(policy), event,
+                    ::sml::__private::PolicyParts::observer_mut(policy), event,
                 );
             }
 
             #[inline(always)]
             fn __sml_log_state_change(
-                policy: &mut <#policy_type_ident as ::sml::Policies>::Parts,
+                policy: &mut <#policy_type_ident as ::sml::Policy>::Parts,
                 from: &'static str,
                 to: &'static str,
             ) {
                 ::sml::Logger::log_state_change(
-                    ::sml::PolicyParts::logger_mut(policy), from, to,
+                    ::sml::__private::PolicyParts::logger_mut(policy), from, to,
                 );
                 ::sml::Observer::observe_state_change(
-                    ::sml::PolicyParts::observer_mut(policy), from, to,
+                    ::sml::__private::PolicyParts::observer_mut(policy), from, to,
                 );
             }
 
             #[inline(always)]
             fn __sml_log_action(
-                policy: &mut <#policy_type_ident as ::sml::Policies>::Parts,
+                policy: &mut <#policy_type_ident as ::sml::Policy>::Parts,
                 action: &'static str,
                 event: &'static str,
             ) {
                 ::sml::Logger::log_action(
-                    ::sml::PolicyParts::logger_mut(policy), action, event,
+                    ::sml::__private::PolicyParts::logger_mut(policy), action, event,
                 );
                 ::sml::Observer::observe_action(
-                    ::sml::PolicyParts::observer_mut(policy), action, event,
+                    ::sml::__private::PolicyParts::observer_mut(policy), action, event,
                 );
             }
 
             #[inline(always)]
             fn __sml_log_guard(
-                policy: &mut <#policy_type_ident as ::sml::Policies>::Parts,
+                policy: &mut <#policy_type_ident as ::sml::Policy>::Parts,
                 guard: &'static str,
                 event: &'static str,
                 result: bool,
             ) {
                 ::sml::Logger::log_guard(
-                    ::sml::PolicyParts::logger_mut(policy), guard, event, result,
+                    ::sml::__private::PolicyParts::logger_mut(policy), guard, event, result,
                 );
                 ::sml::Observer::observe_guard(
-                    ::sml::PolicyParts::observer_mut(policy), guard, event, result,
+                    ::sml::__private::PolicyParts::observer_mut(policy), guard, event, result,
                 );
             }
 
             #[inline(always)]
             fn __sml_dispatch_allowed(
-                policy: &< #policy_type_ident as ::sml::Policies>::Parts,
+                policy: &< #policy_type_ident as ::sml::Policy>::Parts,
                 event: &'static str,
             ) -> bool {
-                ::sml::Dispatch::dispatch(::sml::PolicyParts::dispatch(policy), event)
+                ::sml::Dispatch::dispatch(::sml::__private::PolicyParts::dispatch(policy), event)
             }
 
             #[inline(always)]
             fn __sml_dispatch_candidate(
-                policy: &<#policy_type_ident as ::sml::Policies>::Parts,
+                policy: &<#policy_type_ident as ::sml::Policy>::Parts,
                 state: &'static str,
                 event: &'static str,
                 candidate: usize,
             ) -> bool {
                 ::sml::Dispatch::dispatch_candidate(
-                    ::sml::PolicyParts::dispatch(policy), state, event, candidate,
+                    ::sml::__private::PolicyParts::dispatch(policy), state, event, candidate,
                 )
             }
 
             /// Borrows the configured logger.
             #[inline(always)]
-            fn logger(&self) -> &<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-                ::sml::PolicyParts::logger(&self.policy)
+            fn logger(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
+                ::sml::__private::PolicyParts::logger(&self.policy)
             }
 
             /// Mutably borrows the configured logger.
             #[inline(always)]
-            fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Logger {
-                ::sml::PolicyParts::logger_mut(&mut self.policy)
+            fn logger_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Logger {
+                ::sml::__private::PolicyParts::logger_mut(&mut self.policy)
             }
 
             /// Borrows the configured observer.
             #[inline(always)]
-            fn observer(&self) -> &<<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-                ::sml::PolicyParts::observer(&self.policy)
+            fn observer(&self) -> &<<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
+                ::sml::__private::PolicyParts::observer(&self.policy)
             }
 
             /// Mutably borrows the configured observer.
             #[inline(always)]
-            fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policies>::Parts as ::sml::PolicyParts>::Observer {
-                ::sml::PolicyParts::observer_mut(&mut self.policy)
+            fn observer_mut(&mut self) -> &mut <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::Observer {
+                ::sml::__private::PolicyParts::observer_mut(&mut self.policy)
             }
 
             /// Returns the current state.
@@ -2538,7 +2538,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             clippy::useless_let_if_seq
         )]
         #[allow(missing_docs)]
-        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policies>
+        impl<#state_lifetimes #context_type_ident: #state_machine_context_type_name, #policy_type_ident: ::sml::Policy>
             #state_machine_type_name<#state_lifetimes #context_type_ident, #policy_type_ident>
         {
             #public_initialize

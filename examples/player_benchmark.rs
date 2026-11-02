@@ -1,6 +1,6 @@
 //! CD-player throughput workload matching `sml.cpp/benchmark/simple/sml_player_sm.hpp`.
 
-use sml::{sml, BranchStm, Dispatch, Machine, Policies, PolicyBundle, SwitchStm};
+use sml::{sml, BranchStm, Dispatch, Machine, Policies, Policy, SwitchStm};
 use std::time::Instant;
 
 pub struct OpenClose;
@@ -68,9 +68,9 @@ impl Dispatch for AllowAll {
     }
 }
 
-type BranchPolicies = PolicyBundle<(), (), BranchStm>;
-type SwitchPolicies = PolicyBundle<(), (), SwitchStm>;
-type CustomPolicies = PolicyBundle<(), (), AllowAll>;
+type BranchPolicies = Policies<(), (), BranchStm>;
+type SwitchPolicies = Policies<(), (), SwitchStm>;
+type CustomPolicies = Policies<(), (), AllowAll>;
 
 // Keep benchmark state observable to the optimizer without a compiler
 // boundary that would weaken the crate's safety contract.
@@ -82,7 +82,7 @@ fn process(sm: &mut PlayerStateMachine<Context>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
-fn process_with_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
+fn process_with_policy<P: Policy>(sm: &mut PlayerStateMachine<Context, P>, event: PlayerEvents) {
     let _ = Machine::process_event(sm, event);
 }
 
@@ -140,7 +140,7 @@ async fn run_async(sm: &mut PlayerStateMachine<Context>) {
     }
 }
 
-fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
+fn run_policy<P: Policy>(sm: &mut PlayerStateMachine<Context, P>) {
     for _ in 0..1_000_000 {
         process_with_policy(sm, PlayerEvents::OpenClose(OpenClose));
         barrier(sm);
@@ -171,7 +171,7 @@ fn run_policy<P: Policies>(sm: &mut PlayerStateMachine<Context, P>) {
     clippy::cast_precision_loss,
     reason = "benchmark throughput is intentionally reported as a floating-point rate"
 )]
-fn run_policy_benchmark<P: Policies>(label: &str, policy: P) {
+fn run_policy_benchmark<P: Policy>(label: &str, policy: P) {
     let mut sm = PlayerStateMachine::new_with_policy(Context, policy);
     let start = Instant::now();
     run_policy(&mut sm);

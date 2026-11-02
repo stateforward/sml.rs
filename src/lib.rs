@@ -74,10 +74,20 @@ pub mod utility;
 
 pub use policy::{
     BranchStm, DefaultQueuePolicy, DeferQueue, Dispatch, EventName, JumpTable, Logger,
-    MachinePolicy, NoPolicy, Observer, Policies, PolicyBundle, PolicyBundleParts, PolicyParts,
-    ProcessQueue, Queue, QueuePolicy, RawMutex, StateName, SwitchStm, Testing, TestingAccess,
-    TestingPolicy, ThreadSafe, ThreadSafety,
+    MachinePolicy, NoPolicy, Observer, Policies, Policy, ProcessQueue, Queue, QueuePolicy,
+    RawMutex, StateName, SwitchStm, Testing, TestingAccess, TestingPolicy, ThreadSafe,
+    ThreadSafety,
 };
+
+/// Macro support for generated machines.
+///
+/// This module is not public API and is exempt from semantic versioning:
+/// generated code names these items, and their shape may change in any
+/// release.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::policy::{PoliciesParts, PolicyParts};
+}
 #[cfg(feature = "std")]
 pub use scheduler::{FifoCell, FifoCompletion, FifoScheduler, InlineCell, InlineScheduler};
 pub use scheduler::{Queued, Schedule, Scheduler, StrictOrdering, SyncMachineStep};

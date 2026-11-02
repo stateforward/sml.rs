@@ -202,7 +202,7 @@ payload state returns that payload value instead.
 Generated machines take an optional policy bundle:
 
 ```rust
-use sml::{sml, sml_policies, Logger, PolicyBundle, TestingPolicy};
+use sml::{sml, sml_policies, Logger, Policies, TestingPolicy};
 
 struct Trace;
 impl Logger for Trace {}
@@ -257,16 +257,18 @@ production `NoPolicy` machines do not expose that state mutation method. The
 capability marker is sealed, so a custom production policy cannot opt itself
 into state mutation. Flat machines pass one state; orthogonal machines pass
 one state per region.
-`PolicyBundle` also selects the defer and process queue factories, allowing a
+`Policies` also selects the defer and process queue factories, allowing a
 bounded ring or another user-owned allocation-free container to implement
 `Queue<E>`.
 
-`Policies` and `PolicyParts` are sealed implementation traits. This is
-intentional: custom slot implementations remain supported, while the generated
-machine retains ownership of policy storage and keeps the thread-safety guard
-separate from the mutable transition engine. Use `PolicyBundle` or
-`sml_policies!` to compose policies; do not implement those integration traits
-directly.
+`Policy` (and `MachinePolicy`, which pairs a policy with its scheduler) are
+sealed implementation traits. This is intentional: custom slot implementations
+remain supported, while the generated machine retains ownership of policy
+storage and keeps the thread-safety guard separate from the mutable transition
+engine. Use the `Policies` struct or `sml_policies!` to compose policies; do
+not implement those integration traits directly. The policy-storage plumbing
+that generated code uses lives in `sml::__private`, which is macro support and
+not public API.
 
 These policies are for the machine's owner to configure and query its own
 machine. They are not a general introspection or control channel and must not

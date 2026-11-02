@@ -324,11 +324,11 @@ impl QueuePolicy for DefaultQueuePolicy {
     }
 }
 
-/// The non-locking slots stored by a [`PolicyBundle`].
+/// The non-locking slots stored by a [`Policies`].
 ///
 /// The fields are private so policy invariants are established only through
-/// [`PolicyBundle`] constructors and the [`PolicyParts`] contract.
-pub struct PolicyBundleParts<
+/// [`Policies`] constructors and the [`PolicyParts`] contract.
+pub struct PoliciesParts<
     L = (),
     O = (),
     D = JumpTable,
@@ -356,7 +356,7 @@ pub struct PolicyBundleParts<
 /// `&mut self` machine; a queued scheduler such as
 /// [`FifoScheduler`](crate::FifoScheduler) turns the generated machine into a
 /// cloneable handle.
-pub struct PolicyBundle<
+pub struct Policies<
     L = (),
     O = (),
     D = JumpTable,
@@ -384,7 +384,7 @@ pub struct PolicyBundle<
     scheduler: SC,
 }
 
-impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
+impl<L, O, D, S, T, DQ, PQ> Policies<L, O, D, S, T, DQ, PQ> {
     /// Creates a policy bundle.
     pub fn new(
         logger: L,
@@ -432,7 +432,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
     }
 
     /// Splits the lock slot from the other policy slots.
-    pub fn into_parts(self) -> (PolicyBundleParts<L, O, D, T, DQ, PQ>, S) {
+    pub fn into_parts(self) -> (PoliciesParts<L, O, D, T, DQ, PQ>, S) {
         let Self {
             logger,
             observer,
@@ -444,7 +444,7 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
             scheduler: (),
         } = self;
         (
-            PolicyBundleParts {
+            PoliciesParts {
                 logger,
                 observer,
                 testing,
@@ -457,9 +457,9 @@ impl<L, O, D, S, T, DQ, PQ> PolicyBundle<L, O, D, S, T, DQ, PQ> {
     }
 }
 
-impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
+impl<L, O, D, S, T, DQ, PQ, SC> Policies<L, O, D, S, T, DQ, PQ, SC> {
     /// Replaces the scheduler slot.
-    pub fn with_scheduler<SC2>(self, scheduler: SC2) -> PolicyBundle<L, O, D, S, T, DQ, PQ, SC2> {
+    pub fn with_scheduler<SC2>(self, scheduler: SC2) -> Policies<L, O, D, S, T, DQ, PQ, SC2> {
         let Self {
             logger,
             observer,
@@ -470,7 +470,7 @@ impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
             dispatch,
             scheduler: _,
         } = self;
-        PolicyBundle {
+        Policies {
             logger,
             observer,
             thread_safe,
@@ -487,7 +487,7 @@ impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
         clippy::type_complexity,
         reason = "the tuple names the unscheduled bundle and the scheduler once each"
     )]
-    pub fn into_scheduler(self) -> (PolicyBundle<L, O, D, S, T, DQ, PQ>, SC) {
+    pub fn into_scheduler(self) -> (Policies<L, O, D, S, T, DQ, PQ>, SC) {
         let Self {
             logger,
             observer,
@@ -499,7 +499,7 @@ impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
             scheduler,
         } = self;
         (
-            PolicyBundle {
+            Policies {
                 logger,
                 observer,
                 thread_safe,
@@ -514,7 +514,7 @@ impl<L, O, D, S, T, DQ, PQ, SC> PolicyBundle<L, O, D, S, T, DQ, PQ, SC> {
     }
 }
 
-impl<L, O, D, S, T, DQ, PQ, SC> Default for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
+impl<L, O, D, S, T, DQ, PQ, SC> Default for Policies<L, O, D, S, T, DQ, PQ, SC>
 where
     L: Default,
     O: Default,
@@ -542,7 +542,7 @@ where
 /// Describes the non-locking policy slots used by a generated machine.
 ///
 /// This is a sealed integration trait. Configure policy slots with
-/// [`PolicyBundle`] or [`sml_policies!`](crate::sml_policies); downstream code
+/// [`Policies`] or [`sml_policies!`](crate::sml_policies); downstream code
 /// cannot provide a replacement policy-storage implementation.
 pub trait PolicyParts: policy_parts::Sealed {
     /// Logger slot.
@@ -575,7 +575,7 @@ pub trait PolicyParts: policy_parts::Sealed {
     fn new_process_queue<E>(&self) -> Self::ProcessQueue<E>;
 }
 
-impl<L, O, D, T, DQ, PQ> PolicyParts for PolicyBundleParts<L, O, D, T, DQ, PQ>
+impl<L, O, D, T, DQ, PQ> PolicyParts for PoliciesParts<L, O, D, T, DQ, PQ>
 where
     L: Logger,
     O: Observer,
@@ -624,15 +624,15 @@ where
     }
 }
 
-impl<L, O, D, T, DQ, PQ> policy_parts::Sealed for PolicyBundleParts<L, O, D, T, DQ, PQ> {}
+impl<L, O, D, T, DQ, PQ> policy_parts::Sealed for PoliciesParts<L, O, D, T, DQ, PQ> {}
 
 /// Describes the complete policy supplied to a generated machine.
 ///
-/// This is a sealed integration trait. Use [`PolicyBundle`] or
+/// This is a sealed integration trait. Use [`Policies`] or
 /// [`sml_policies!`](crate::sml_policies) to compose the supported policy
 /// slots. Sealing this boundary keeps generated policy storage and lock
 /// separation under the library's safe-borrowing implementation.
-pub trait Policies: policies::Sealed {
+pub trait Policy: policies::Sealed {
     /// Non-locking policy slots.
     type Parts: PolicyParts;
     /// Logger slot.
@@ -674,7 +674,7 @@ pub trait Policies: policies::Sealed {
     fn into_parts(self) -> (Self::Parts, Self::ThreadSafe);
 }
 
-impl<L, O, D, S, T, DQ, PQ> Policies for PolicyBundle<L, O, D, S, T, DQ, PQ>
+impl<L, O, D, S, T, DQ, PQ> Policy for Policies<L, O, D, S, T, DQ, PQ>
 where
     L: Logger,
     O: Observer,
@@ -684,7 +684,7 @@ where
     DQ: QueuePolicy,
     PQ: QueuePolicy,
 {
-    type Parts = PolicyBundleParts<L, O, D, T, DQ, PQ>;
+    type Parts = PoliciesParts<L, O, D, T, DQ, PQ>;
     type Logger = L;
     type Observer = O;
     type Dispatch = D;
@@ -734,28 +734,28 @@ where
     }
 }
 
-impl<L, O, D, S, T, DQ, PQ> policies::Sealed for PolicyBundle<L, O, D, S, T, DQ, PQ> {}
+impl<L, O, D, S, T, DQ, PQ> policies::Sealed for Policies<L, O, D, S, T, DQ, PQ> {}
 
-/// The policy a generated machine is parameterized by: a [`Policies`] value
+/// The policy a generated machine is parameterized by: a [`Policy`] value
 /// together with a [`Scheduler`].
 ///
-/// Every [`Policies`] type is a `MachinePolicy` with the `()` scheduler, so
-/// the owned `&mut self` machine is unchanged. A [`PolicyBundle`] whose
+/// Every [`Policy`] type is a `MachinePolicy` with the `()` scheduler, so
+/// the owned `&mut self` machine is unchanged. A [`Policies`] whose
 /// scheduler slot holds a queued scheduler (one implementing
-/// [`StrictOrdering`]) is a `MachinePolicy` but not a [`Policies`]; generated
+/// [`StrictOrdering`]) is a `MachinePolicy` but not a [`Policy`]; generated
 /// machines with it are cloneable handles. This trait is sealed.
 pub trait MachinePolicy: machine_policy::MachinePolicySealed {
     /// The policy slots other than the scheduler.
-    type Policies: Policies;
+    type Policy: Policy;
     /// The scheduler slot.
     type Scheduler: Scheduler;
 
     /// Splits the scheduler from the other policy slots.
-    fn into_scheduled(self) -> (Self::Policies, Self::Scheduler);
+    fn into_scheduled(self) -> (Self::Policy, Self::Scheduler);
 }
 
-impl<P: Policies> MachinePolicy for P {
-    type Policies = P;
+impl<P: Policy> MachinePolicy for P {
+    type Policy = P;
     type Scheduler = ();
 
     #[inline]
@@ -764,25 +764,25 @@ impl<P: Policies> MachinePolicy for P {
     }
 }
 
-impl<P: Policies> machine_policy::MachinePolicySealed for P {}
+impl<P: Policy> machine_policy::MachinePolicySealed for P {}
 
-impl<L, O, D, S, T, DQ, PQ, SC> MachinePolicy for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
+impl<L, O, D, S, T, DQ, PQ, SC> MachinePolicy for Policies<L, O, D, S, T, DQ, PQ, SC>
 where
-    PolicyBundle<L, O, D, S, T, DQ, PQ>: Policies,
+    Policies<L, O, D, S, T, DQ, PQ>: Policy,
     SC: Scheduler + StrictOrdering,
 {
-    type Policies = PolicyBundle<L, O, D, S, T, DQ, PQ>;
+    type Policy = Policies<L, O, D, S, T, DQ, PQ>;
     type Scheduler = SC;
 
-    fn into_scheduled(self) -> (Self::Policies, SC) {
+    fn into_scheduled(self) -> (Self::Policy, SC) {
         self.into_scheduler()
     }
 }
 
 impl<L, O, D, S, T, DQ, PQ, SC> machine_policy::MachinePolicySealed
-    for PolicyBundle<L, O, D, S, T, DQ, PQ, SC>
+    for Policies<L, O, D, S, T, DQ, PQ, SC>
 where
-    PolicyBundle<L, O, D, S, T, DQ, PQ>: Policies,
+    Policies<L, O, D, S, T, DQ, PQ>: Policy,
     SC: Scheduler + StrictOrdering,
 {
 }
@@ -847,7 +847,7 @@ impl PolicyParts for NoPolicyParts {
     }
 }
 
-impl Policies for NoPolicy {
+impl Policy for NoPolicy {
     type Parts = NoPolicyParts;
     type Logger = ();
     type Observer = ();
@@ -1046,7 +1046,7 @@ macro_rules! __sml_policy_parse {
     ) => {
         $crate::__sml_policy_check_duplicates!(@check [$($seen)*]);
         #[doc = "Generated policy bundle."]
-        pub type $name = $crate::PolicyBundle<
+        pub type $name = $crate::Policies<
             $logger,
             $observer,
             $dispatch,
@@ -1285,7 +1285,7 @@ mod tests {
             Some(3)
         );
 
-        let mut bundle = PolicyBundle::<(), (), JumpTable>::new(
+        let mut bundle = Policies::<(), (), JumpTable>::new(
             (),
             (),
             (),
@@ -1293,31 +1293,31 @@ mod tests {
             DefaultQueuePolicy,
             DefaultQueuePolicy,
         );
-        let _: &() = Policies::logger(&bundle);
-        let _: &mut () = Policies::logger_mut(&mut bundle);
-        let _: &() = Policies::observer(&bundle);
-        let _: &mut () = Policies::observer_mut(&mut bundle);
-        let _: &JumpTable = Policies::dispatch(&bundle);
-        let _: &() = Policies::thread_safe(&bundle);
-        let _: &() = Policies::testing(&bundle);
-        let _: EventQueue<u8, 16> = Policies::new_defer_queue(&bundle);
-        let _: EventQueue<u8, 16> = Policies::new_process_queue(&bundle);
-        let (bundle_parts, ()) = Policies::into_parts(bundle);
+        let _: &() = Policy::logger(&bundle);
+        let _: &mut () = Policy::logger_mut(&mut bundle);
+        let _: &() = Policy::observer(&bundle);
+        let _: &mut () = Policy::observer_mut(&mut bundle);
+        let _: &JumpTable = Policy::dispatch(&bundle);
+        let _: &() = Policy::thread_safe(&bundle);
+        let _: &() = Policy::testing(&bundle);
+        let _: EventQueue<u8, 16> = Policy::new_defer_queue(&bundle);
+        let _: EventQueue<u8, 16> = Policy::new_process_queue(&bundle);
+        let (bundle_parts, ()) = Policy::into_parts(bundle);
         let _: &() = PolicyParts::testing(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_defer_queue(&bundle_parts);
         let _: EventQueue<u8, 16> = PolicyParts::new_process_queue(&bundle_parts);
 
         let mut no_policy = NoPolicy::default();
-        let _: &() = Policies::logger(&no_policy);
-        let _: &mut () = Policies::logger_mut(&mut no_policy);
-        let _: &() = Policies::observer(&no_policy);
-        let _: &mut () = Policies::observer_mut(&mut no_policy);
-        let _: &JumpTable = Policies::dispatch(&no_policy);
-        let _: &() = Policies::thread_safe(&no_policy);
-        let _: &() = Policies::testing(&no_policy);
-        let _: EventQueue<u8, 16> = Policies::new_defer_queue(&no_policy);
-        let _: EventQueue<u8, 16> = Policies::new_process_queue(&no_policy);
-        let (no_policy_parts, ()) = Policies::into_parts(no_policy);
+        let _: &() = Policy::logger(&no_policy);
+        let _: &mut () = Policy::logger_mut(&mut no_policy);
+        let _: &() = Policy::observer(&no_policy);
+        let _: &mut () = Policy::observer_mut(&mut no_policy);
+        let _: &JumpTable = Policy::dispatch(&no_policy);
+        let _: &() = Policy::thread_safe(&no_policy);
+        let _: &() = Policy::testing(&no_policy);
+        let _: EventQueue<u8, 16> = Policy::new_defer_queue(&no_policy);
+        let _: EventQueue<u8, 16> = Policy::new_process_queue(&no_policy);
+        let (no_policy_parts, ()) = Policy::into_parts(no_policy);
         let _: &() = PolicyParts::logger(&no_policy_parts);
         let _: &() = PolicyParts::observer(&no_policy_parts);
         let _: &() = PolicyParts::testing(&no_policy_parts);
@@ -1326,12 +1326,12 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn the_scheduler_slot_is_replaced_and_split_off() {
-        let bundle = PolicyBundle::<(), (), JumpTable>::default();
+        let bundle = Policies::<(), (), JumpTable>::default();
         let scheduled = bundle.with_scheduler(crate::FifoScheduler::<4>);
         let (unscheduled, crate::FifoScheduler::<4>) = MachinePolicy::into_scheduled(scheduled);
-        let (_parts, ()) = Policies::into_parts(unscheduled.with_scheduler(()));
+        let (_parts, ()) = Policy::into_parts(unscheduled.with_scheduler(()));
         let (_policy, ()) = MachinePolicy::into_scheduled(NoPolicy::default());
-        let _: PolicyBundle<
+        let _: Policies<
             (),
             (),
             JumpTable,
@@ -1340,7 +1340,7 @@ mod tests {
             DefaultQueuePolicy,
             DefaultQueuePolicy,
             crate::InlineScheduler,
-        > = PolicyBundle::default();
+        > = Policies::default();
     }
 
     #[test]

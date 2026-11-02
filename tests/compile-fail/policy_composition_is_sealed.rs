@@ -1,12 +1,13 @@
 extern crate sml;
 
-use sml::{PolicyParts, Policies};
+use sml::__private::PolicyParts;
+use sml::Policy;
 
 struct UserParts;
 struct UserPolicies;
 
 impl PolicyParts for UserParts {}
 
-impl Policies for UserPolicies {}
+impl Policy for UserPolicies {}
 
 fn main() {}

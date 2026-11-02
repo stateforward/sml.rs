@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use sml::{
     sml, BranchStm, DefaultQueuePolicy, Dispatch, EventName, JumpTable, Logger, NoPolicy, Observer,
-    PolicyBundle, QueuePolicy, RawMutex, StateName, TestingPolicy, ThreadSafe,
+    Policies, QueuePolicy, RawMutex, StateName, TestingPolicy, ThreadSafe,
 };
 
 sml::sml_policies!(TestingPolicies {
@@ -90,7 +90,7 @@ impl PolicyAsyncStateMachineContext for AsyncContext {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_supports_async_processing_without_unsafe_borrows() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies = Policies<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
@@ -119,7 +119,7 @@ impl Dispatch for CandidateDispatch {
     }
 }
 
-type CandidatePolicies = PolicyBundle<(), (), CandidateDispatch>;
+type CandidatePolicies = Policies<(), (), CandidateDispatch>;
 
 #[test]
 fn custom_dispatch_can_select_a_later_guarded_candidate() {
@@ -193,7 +193,7 @@ fn flat_logger_and_custom_dispatch_are_owner_policies() {
     let gate = Gate {
         rejected: AtomicUsize::new(0),
     };
-    let policy = PolicyBundle::<Log, Observe, Gate>::with_dispatch(
+    let policy = Policies::<Log, Observe, Gate>::with_dispatch(
         gate,
         Log::default(),
         Observe::default(),
@@ -269,7 +269,7 @@ impl PolicyParentStateMachineContext for CompositeContext {
 
 #[test]
 fn composite_policy_is_shared_by_parent_and_child() {
-    let policy = PolicyBundle::<Log, (), JumpTable>::with_dispatch(
+    let policy = Policies::<Log, (), JumpTable>::with_dispatch(
         JumpTable,
         Log::default(),
         (),
@@ -323,7 +323,7 @@ impl PolicyOrthogonalStateMachineContext for OrthogonalContext {
 
 #[test]
 fn orthogonal_policy_uses_the_same_dispatch_and_logger_slots() {
-    let policy = PolicyBundle::<Log, (), BranchStm>::with_dispatch(
+    let policy = Policies::<Log, (), BranchStm>::with_dispatch(
         BranchStm,
         Log::default(),
         (),
@@ -370,7 +370,7 @@ sml! {
 struct QueueContext;
 impl PolicyQueueStateMachineContext for QueueContext {}
 
-type QueuePolicies = PolicyBundle<(), (), JumpTable, (), (), TinyQueues, TinyQueues>;
+type QueuePolicies = Policies<(), (), JumpTable, (), (), TinyQueues, TinyQueues>;
 
 #[test]
 fn custom_queue_factories_replace_the_default_queue() {
@@ -405,7 +405,7 @@ impl RawMutex for LockProbe {
 }
 
 type LockedQueuePolicies =
-    PolicyBundle<(), (), JumpTable, ThreadSafe<LockProbe>, (), TinyQueues, TinyQueues>;
+    Policies<(), (), JumpTable, ThreadSafe<LockProbe>, (), TinyQueues, TinyQueues>;
 
 #[test]
 fn deferred_processing_does_not_reenter_the_thread_lock() {
@@ -431,7 +431,7 @@ fn deferred_processing_does_not_reenter_the_thread_lock() {
 fn thread_safe_policy_wraps_event_processing() {
     let _test_guard = LOCK_TEST.lock().expect("lock-policy tests must serialize");
     LOCK_CALLS.store(0, Ordering::Relaxed);
-    let policy = PolicyBundle::<(), (), JumpTable, ThreadSafe<LockProbe>>::with_dispatch(
+    let policy = Policies::<(), (), JumpTable, ThreadSafe<LockProbe>>::with_dispatch(
         JumpTable,
         (),
         (),
@@ -448,7 +448,7 @@ fn thread_safe_policy_wraps_event_processing() {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies = Policies<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
     let policy = StandardMutexPolicies::with_dispatch(
         JumpTable,
         (),
@@ -467,7 +467,7 @@ fn standard_mutex_guard_is_borrowed_disjointly_from_policy_slots() {
 #[cfg(feature = "std")]
 #[test]
 fn standard_mutex_guard_is_disjoint_for_composite_and_orthogonal_machines() {
-    type StandardMutexPolicies = PolicyBundle<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
+    type StandardMutexPolicies = Policies<(), (), JumpTable, ThreadSafe<std::sync::Mutex<()>>>;
 
     let composite_policy = StandardMutexPolicies::with_dispatch(
         JumpTable,

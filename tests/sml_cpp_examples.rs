@@ -447,10 +447,10 @@ mod testing {
     fn translated_behavior() {
         let mut sm: TestingExampleStateMachine<
             Context,
-            sml::PolicyBundle<(), (), sml::JumpTable, (), sml::TestingPolicy>,
+            sml::Policies<(), (), sml::JumpTable, (), sml::TestingPolicy>,
         > = TestingExampleStateMachine::new_with_policy(
             Context::default(),
-            sml::PolicyBundle::<(), (), sml::JumpTable, (), sml::TestingPolicy>::default(),
+            sml::Policies::<(), (), sml::JumpTable, (), sml::TestingPolicy>::default(),
         );
         sm.set_current_states(TestingExampleStates::S2);
         sm.process_event(E3).unwrap();
