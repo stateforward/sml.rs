@@ -4,16 +4,12 @@ use derive_more::Display;
 
 use sml::sml;
 
-sml::sml_policies!(Testing {
-    testing: sml::TestingPolicy,
-});
-
 mod internal_macros {
     #[macro_export]
     macro_rules! assert_transition {
         ($sm:expr, $event:expr, $expected_state:expr, $expected_count:expr) => {{
             let prev_state = $sm.state().clone();
-            assert_eq!($sm.process_event($event), Ok(true));
+            $sm.process_event($event).unwrap();
             println!(
                 "{:?} -> {:?} : {:?}",
                 prev_state,
@@ -28,8 +24,8 @@ mod internal_macros {
     macro_rules! assert_transition_ok {
         ($sm:expr, $event:expr, $expected_action:expr, $expected_result:pat) => {{
             let prev_state = $sm.state().clone();
-            if $sm.process_event($event) == Ok(true) {
-                let result = $sm.state().clone();
+            if let Ok(result) = $sm.process_event($event) {
+                let result = result.clone();
                 println!("{:?} -> {:?} : {:?}", prev_state, result, $sm.context());
                 match result {
                     $expected_result => {}
@@ -65,13 +61,13 @@ fn wildcard_after_input_state() {
     struct Context;
     impl StateMachineContext for Context {}
 
-    let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
+    let mut sm = StateMachine::new(Context);
 
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::State2));
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::State2));
 
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::Fault));
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::Fault));
 }
 
 #[test]
@@ -142,14 +138,14 @@ fn derive_display_events_states() {
     struct Context;
     impl StateMachineContext for Context {}
 
-    let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
-    assert!(sm.is(&States::Init));
+    let mut sm = StateMachine::new(Context);
+    assert!(matches!(sm.state(), &States::Init));
 
     let event = Events::Event;
     assert_eq!(format!("{event}"), "Event");
 
-    assert_eq!(sm.process_event(event), Ok(true));
-    assert!(sm.is(&States::End));
+    sm.process_event(event).unwrap();
+    assert!(matches!(sm.state(), &States::End));
 }
 
 #[test]
@@ -166,14 +162,14 @@ fn named_derive_display_events_states() {
     struct Context;
     impl SMStateMachineContext for Context {}
 
-    let mut sm = SMStateMachine::new_with_policy(Context, crate::Testing::default());
-    assert!(sm.is(&SMStates::Init));
+    let mut sm = SMStateMachine::new(Context);
+    assert!(matches!(sm.state(), &SMStates::Init));
 
     let event = SMEvents::Event;
     assert_eq!(format!("{event}"), "Event");
 
-    assert_eq!(sm.process_event(event), Ok(true));
-    assert!(sm.is(&SMStates::End));
+    sm.process_event(event).unwrap();
+    assert!(matches!(sm.state(), &SMStates::End));
 }
 
 #[test]
@@ -202,13 +198,13 @@ fn async_guards_and_actions() {
             }
         }
 
-        let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
+        let mut sm = StateMachine::new(Context);
 
-        assert_eq!(sm.process_event(Events::Event1).await, Ok(true));
-        assert!(sm.is(&States::State2));
+        sm.process_event(Events::Event1).await.unwrap();
+        assert!(matches!(sm.state(), &States::State2));
 
-        assert_eq!(sm.process_event(Events::Event1).await, Ok(true));
-        assert!(sm.is(&States::Fault));
+        sm.process_event(Events::Event1).await.unwrap();
+        assert!(matches!(sm.state(), &States::Fault));
     });
 }
 
@@ -244,13 +240,13 @@ fn async_on_entry_and_exit() {
             }
         }
 
-        let mut sm = StateMachine::new_with_policy(Context, crate::Testing::default());
+        let mut sm = StateMachine::new(Context);
 
-        assert_eq!(sm.process_event(Events::Event1).await, Ok(true));
-        assert!(sm.is(&States::State2));
+        sm.process_event(Events::Event1).await.unwrap();
+        assert!(matches!(sm.state(), &States::State2));
 
-        assert_eq!(sm.process_event(Events::Event2).await, Ok(true));
-        assert!(sm.is(&States::State3));
+        sm.process_event(Events::Event2).await.unwrap();
+        assert!(matches!(sm.state(), &States::State3));
     });
 }
 
@@ -290,49 +286,49 @@ fn guard_expressions() {
         }
     }
 
-    let mut sm = StateMachine::new_with_policy(
-        Context {
-            password: 42,
-            attempts: 0,
-        },
-        Testing::default(),
-    );
-    assert!(sm.is(&States::Init));
+    let mut sm = StateMachine::new(Context {
+        password: 42,
+        attempts: 0,
+    });
+    assert!(matches!(sm.state(), &States::Init));
 
     let bad_entry = Entry(10);
     let good_entry = Entry(42);
 
     let _ = sm.process_event(Events::Login(&bad_entry));
     assert_eq!(sm.context().attempts, 1);
-    assert!(sm.is(&States::Init));
+    assert!(matches!(sm.state(), &States::Init));
 
     let _ = sm.process_event(Events::Login(&bad_entry));
     assert_eq!(sm.context().attempts, 2);
-    assert!(sm.is(&States::Init));
+    assert!(matches!(sm.state(), &States::Init));
 
     let _ = sm.process_event(Events::Login(&good_entry));
     assert_eq!(sm.context().attempts, 3);
-    assert!(sm.is(&States::LoggedIn));
+    assert!(matches!(sm.state(), &States::LoggedIn));
 
     let _ = sm.process_event(Events::Logout);
     assert_eq!(sm.context().attempts, 0);
-    assert!(sm.is(&States::Init));
+    assert!(matches!(sm.state(), &States::Init));
 
     let _ = sm.process_event(Events::Login(&bad_entry));
     let _ = sm.process_event(Events::Login(&bad_entry));
     let _ = sm.process_event(Events::Login(&bad_entry));
     assert_eq!(sm.context().attempts, 3);
-    assert!(sm.is(&States::Init));
+    assert!(matches!(sm.state(), &States::Init));
 
     // exhausted attempts
     let _ = sm.process_event(Events::Login(&bad_entry));
     assert_eq!(sm.context().attempts, 4);
-    assert!(sm.is(&States::LoginDenied));
+    assert!(matches!(sm.state(), &States::LoginDenied));
 
     // Invalid event, as we are in a final state
-    assert_eq!(sm.process_event(Events::Login(&good_entry)), Ok(false));
+    assert_eq!(
+        sm.process_event(Events::Login(&good_entry)),
+        Err(Error::InvalidEvent)
+    );
     assert_eq!(sm.context().attempts, 4);
-    assert!(sm.is(&States::LoginDenied));
+    assert!(matches!(sm.state(), &States::LoginDenied));
 }
 #[test]
 fn guarded_transition_before_unguarded() {
@@ -357,16 +353,15 @@ fn guarded_transition_before_unguarded() {
             Ok(())
         }
     }
-    let mut sm =
-        StateMachine::new_with_policy(Context { enabled: true }, crate::Testing::default());
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::State2));
+    let mut sm = StateMachine::new(Context { enabled: true });
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::State2));
 
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::State1));
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::State1));
 
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::Fault));
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::Fault));
 }
 
 #[test]
@@ -392,33 +387,27 @@ fn guard_errors() {
         }
     }
 
-    let mut sm = StateMachine::new_with_policy(
-        Context {
-            guard_passable: false,
-            guard_errors: true,
-        },
-        Testing::default(),
-    );
+    let mut sm = StateMachine::new(Context {
+        guard_passable: false,
+        guard_errors: true,
+    });
 
     // Test attempting to transition when the guard fails.
     sm.context_mut().guard_errors = true;
-    assert!(matches!(
-        sm.process_event(Events::Event1),
-        Err(Error::GuardFailed(()))
-    ));
-    assert!(sm.is(&States::Init));
+    assert!(sm.process_event(Events::Event1).is_err());
+    assert!(matches!(sm.state(), &States::Init));
 
     // Test attempting to transition when the guard is not passable.
     sm.context_mut().guard_errors = false;
-    assert_eq!(sm.process_event(Events::Event1), Ok(false));
-    assert!(sm.is(&States::Init));
+    assert!(sm.process_event(Events::Event1).is_err());
+    assert!(matches!(sm.state(), &States::Init));
 
-    assert_eq!(sm.process_event(Events::Event1), Ok(false));
-    assert!(sm.is(&States::Init));
+    assert!(sm.process_event(Events::Event1).is_err());
+    assert!(matches!(sm.state(), &States::Init));
 
     sm.context_mut().guard_passable = true;
-    assert_eq!(sm.process_event(Events::Event1), Ok(true));
-    assert!(sm.is(&States::Done));
+    sm.process_event(Events::Event1).unwrap();
+    assert!(matches!(sm.state(), &States::Done));
 }
 #[test]
 fn test_internal_transition_with_data() {
@@ -487,40 +476,28 @@ fn test_internal_transition_with_data() {
     }
 
     {
-        let mut sm = StateMachine::new_with_policy(
-            Context::default(),
-            State1Data(ActionId::Init),
-            Testing::default(),
-        );
+        let mut sm = StateMachine::new(Context::default(), State1Data(ActionId::Init));
         matches!(States::State2, States::State2);
         assert_transition_ok!(sm, Events::Event2, ActionId::Action12, States::State2);
-        assert_eq!(sm.process_event(Events::Event1), Ok(false));
-        assert_eq!(sm.process_event(Events::Event2), Ok(false));
-        assert_eq!(sm.process_event(Events::Event4), Ok(false));
+        assert!(sm.process_event(Events::Event1).is_err());
+        assert!(sm.process_event(Events::Event2).is_err());
+        assert!(sm.process_event(Events::Event4).is_err());
         assert_transition_ok!(sm, Events::Event3, ActionId::Action23, States::State3(_));
         assert_transition_ok!(sm, Events::Event3, ActionId::Action3, States::State3(_));
         assert_transition_ok!(sm, Events::Event3, ActionId::Action3, States::State3(_));
-        assert_eq!(sm.process_event(Events::Event1), Ok(false));
-        assert_eq!(sm.process_event(Events::Event2), Ok(false));
-        assert_eq!(sm.process_event(Events::Event4), Ok(false));
+        assert!(sm.process_event(Events::Event1).is_err());
+        assert!(sm.process_event(Events::Event2).is_err());
+        assert!(sm.process_event(Events::Event4).is_err());
     }
     {
-        let mut sm = StateMachine::new_with_policy(
-            Context::default(),
-            State1Data(ActionId::Init),
-            Testing::default(),
-        );
+        let mut sm = StateMachine::new(Context::default(), State1Data(ActionId::Init));
         assert_transition_ok!(sm, Events::Event3, ActionId::Action13, States::State3(_));
-        assert_eq!(sm.process_event(Events::Event1), Ok(false));
-        assert_eq!(sm.process_event(Events::Event2), Ok(false));
-        assert_eq!(sm.process_event(Events::Event4), Ok(false));
+        assert!(sm.process_event(Events::Event1).is_err());
+        assert!(sm.process_event(Events::Event2).is_err());
+        assert!(sm.process_event(Events::Event4).is_err());
     }
     {
-        let mut sm = StateMachine::new_with_policy(
-            Context::default(),
-            State1Data(ActionId::Init),
-            Testing::default(),
-        );
+        let mut sm = StateMachine::new(Context::default(), State1Data(ActionId::Init));
         assert_transition_ok!(sm, Events::Event4, ActionId::Action14, States::State4(_));
         assert_transition_ok!(sm, Events::Event1, ActionId::Action44, States::State4(_));
         assert_transition_ok!(sm, Events::Event3, ActionId::Action3, States::State4(_));
@@ -547,7 +524,7 @@ fn test_wildcard_states_and_internal_transitions() {
         }
     }
 
-    let mut sm = StateMachine::new_with_policy(Context { count: 0 }, Testing::default());
+    let mut sm = StateMachine::new(Context { count: 0 });
 
     assert_transition!(sm, Events::Event1, States::State1, 1);
     assert_transition!(sm, Events::Event2, States::State2, 1);
@@ -555,7 +532,7 @@ fn test_wildcard_states_and_internal_transitions() {
     assert_transition!(sm, Events::Event1, States::State3, 2);
     assert_transition!(sm, Events::Event3, States::State3, 3);
 
-    assert_eq!(sm.process_event(Events::Event2), Ok(false));
+    assert!(sm.process_event(Events::Event2).is_err()); // InvalidEvent
     assert_eq!(&States::State3, sm.state());
 }
 #[test]
@@ -586,7 +563,7 @@ fn test_specify_attrs() {
             Ok(())
         }
     }
-    let mut sm = StateMachine::new_with_policy(Context::default(), Testing::default());
+    let mut sm = StateMachine::new(Context::default());
 
     assert_eq!(sm.state().clone(), States::State1);
     assert_transition!(sm, Events::tostate2, States::State2, 0);
@@ -643,8 +620,7 @@ mod machine_trait_api {
 
     #[test]
     fn synchronous_trait_dispatches_flat_machine() {
-        let mut flat =
-            TraitSyncFlatStateMachine::new_with_policy(Context, crate::Testing::default());
+        let mut flat = TraitSyncFlatStateMachine::new(Context);
         assert!(process_sync(
             &mut flat,
             TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)
@@ -655,8 +631,7 @@ mod machine_trait_api {
     #[test]
     fn asynchronous_trait_dispatches_flat_machine() {
         smol::block_on(async {
-            let mut flat =
-                TraitSyncFlatStateMachine::new_with_policy(Context, crate::Testing::default());
+            let mut flat = TraitSyncFlatStateMachine::new(Context);
             assert!(
                 process_async(&mut flat, TraitSyncFlatEvents::SyncFlatEvent(SyncFlatEvent)).await
             );
@@ -666,8 +641,7 @@ mod machine_trait_api {
 
     #[test]
     fn trait_rejection_preserves_private_inherent_error_contract() {
-        let mut inherent =
-            TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
+        let mut inherent = TraitPrivateErrorStateMachine::new(Context);
         assert!(matches!(
             inherent.process_event(RejectedEvent),
             Err(TraitPrivateErrorError::ActionFailed(
@@ -676,8 +650,7 @@ mod machine_trait_api {
         ));
         assert!(inherent.is(&TraitPrivateErrorStates::Idle));
 
-        let mut synchronous =
-            TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
+        let mut synchronous = TraitPrivateErrorStateMachine::new(Context);
         assert!(!Machine::process_event(
             &mut synchronous,
             TraitPrivateErrorEvents::RejectedEvent(RejectedEvent),
@@ -685,8 +658,7 @@ mod machine_trait_api {
         assert!(synchronous.is(&TraitPrivateErrorStates::Idle));
 
         smol::block_on(async {
-            let mut asynchronous =
-                TraitPrivateErrorStateMachine::new_with_policy(Context, crate::Testing::default());
+            let mut asynchronous = TraitPrivateErrorStateMachine::new(Context);
             assert!(
                 !Machine::process_event_async(
                     &mut asynchronous,

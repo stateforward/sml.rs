@@ -3,11 +3,7 @@
 //! state data on its own, so an earlier guarded row that is not taken does not
 //! hold the borrow across a later row's transition.
 
-use sml::{sml, sml_policies};
-
-sml_policies!(Testing {
-    testing: sml::TestingPolicy,
-});
+use sml::sml;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault;
@@ -93,11 +89,10 @@ impl DataRowsStateMachineContext for DataRowsContext {
 
 #[test]
 fn two_level_child_data_state_rows_on_one_trigger_each_read_the_data() {
-    let mut machine =
-        DataRowsStateMachine::new_with_policy(DataRowsContext::default(), Testing::default());
-    assert_eq!(machine.process_event(Input { value: 1 }), Ok(true));
+    let mut machine = DataRowsStateMachine::new(DataRowsContext::default());
+    machine.process_event(Input { value: 1 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
-    assert_eq!(machine.process_event(Input { value: 2 }), Ok(true));
+    machine.process_event(Input { value: 2 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
     assert_eq!(machine.context().log, ["take_one 1", "take_other 2"]);
 }
@@ -106,9 +101,8 @@ fn two_level_child_data_state_rows_on_one_trigger_each_read_the_data() {
 fn two_level_child_data_state_exception_rows_read_the_data() {
     // The fault from a completion row is caught by the first of two exception
     // rows on the same data-carrying state (the stabilize fault fix).
-    let mut machine =
-        DataRowsStateMachine::new_with_policy(DataRowsContext::default(), Testing::default());
-    assert_eq!(machine.process_event(Input { value: 3 }), Ok(true));
+    let mut machine = DataRowsStateMachine::new(DataRowsContext::default());
+    machine.process_event(Input { value: 3 }).unwrap();
     assert!(machine.is(&DataRowsStates::Idle));
     assert_eq!(machine.context().log, ["take_other 3", "recover_one 3"]);
 }
@@ -161,11 +155,10 @@ impl MultiDataRowsStateMachineContext for MultiDataContext {
 
 #[test]
 fn multi_child_data_state_rows_on_one_trigger_each_read_the_data() {
-    let mut machine =
-        MultiDataRowsStateMachine::new_with_policy(MultiDataContext::default(), Testing::default());
-    assert_eq!(machine.process_event(Input { value: 1 }), Ok(true));
+    let mut machine = MultiDataRowsStateMachine::new(MultiDataContext::default());
+    machine.process_event(Input { value: 1 }).unwrap();
     assert!(machine.is(&MultiDataRowsStates::Idle));
-    assert_eq!(machine.process_event(Input { value: 5 }), Ok(true));
+    machine.process_event(Input { value: 5 }).unwrap();
     assert!(machine.is(&MultiDataRowsStates::Idle));
     assert_eq!(machine.context().log, ["one 1", "other 5"]);
 }
