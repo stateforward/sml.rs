@@ -1,8 +1,8 @@
-error[E0046]: not all trait items implemented, missing: `Logger`, `Observer`, `Dispatch`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `testing`, `new_defer_queue`, `new_process_queue`
+error[E0046]: not all trait items implemented, missing: `Logger`, `Observer`, `Dispatch`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger_mut`, `observer_mut`, `dispatch`, `testing`, `new_defer_queue`, `new_process_queue`
  --> tests/compile-fail/policy_composition_is_sealed.rs:9:1
   |
 9 | impl PolicyParts for UserParts {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Logger`, `Observer`, `Dispatch`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger`, `logger_mut`, `observer`, `observer_mut`, `dispatch`, `testing`, `new_defer_queue`, `new_process_queue` in implementation
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Logger`, `Observer`, `Dispatch`, `Testing`, `DeferQueue`, `ProcessQueue`, `logger_mut`, `observer_mut`, `dispatch`, `testing`, `new_defer_queue`, `new_process_queue` in implementation
   |
   = help: implement the missing item: `type Logger = /* Type */;`
   = help: implement the missing item: `type Observer = /* Type */;`
@@ -10,9 +10,7 @@ error[E0046]: not all trait items implemented, missing: `Logger`, `Observer`, `D
   = help: implement the missing item: `type Testing = /* Type */;`
   = help: implement the missing item: `type DeferQueue<E> = /* Type */;`
   = help: implement the missing item: `type ProcessQueue<E> = /* Type */;`
-  = help: implement the missing item: `fn logger(&self) -> &<Self as sml::__private::PolicyParts>::Logger { todo!() }`
   = help: implement the missing item: `fn logger_mut(&mut self) -> &mut <Self as sml::__private::PolicyParts>::Logger { todo!() }`
-  = help: implement the missing item: `fn observer(&self) -> &<Self as sml::__private::PolicyParts>::Observer { todo!() }`
   = help: implement the missing item: `fn observer_mut(&mut self) -> &mut <Self as sml::__private::PolicyParts>::Observer { todo!() }`
   = help: implement the missing item: `fn dispatch(&self) -> &<Self as sml::__private::PolicyParts>::Dispatch { todo!() }`
   = help: implement the missing item: `fn testing(&self) -> &<Self as sml::__private::PolicyParts>::Testing { todo!() }`

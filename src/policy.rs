@@ -557,12 +557,8 @@ pub trait PolicyParts: policy_parts::Sealed {
     type DeferQueue<E>: Queue<E>;
     /// Process queue slot.
     type ProcessQueue<E>: Queue<E>;
-    /// Borrows the logger.
-    fn logger(&self) -> &Self::Logger;
     /// Mutably borrows the logger.
     fn logger_mut(&mut self) -> &mut Self::Logger;
-    /// Borrows the observer.
-    fn observer(&self) -> &Self::Observer;
     /// Mutably borrows the observer.
     fn observer_mut(&mut self) -> &mut Self::Observer;
     /// Borrows the dispatch strategy.
@@ -591,16 +587,8 @@ where
     type DeferQueue<E> = DQ::Queue<E>;
     type ProcessQueue<E> = PQ::Queue<E>;
 
-    fn logger(&self) -> &Self::Logger {
-        &self.logger
-    }
-
     fn logger_mut(&mut self) -> &mut Self::Logger {
         &mut self.logger
-    }
-
-    fn observer(&self) -> &Self::Observer {
-        &self.observer
     }
 
     fn observer_mut(&mut self) -> &mut Self::Observer {
@@ -814,16 +802,8 @@ impl PolicyParts for NoPolicyParts {
     type DeferQueue<E> = EventQueue<E, 16>;
     type ProcessQueue<E> = EventQueue<E, 16>;
 
-    fn logger(&self) -> &Self::Logger {
-        &self.logger
-    }
-
     fn logger_mut(&mut self) -> &mut Self::Logger {
         &mut self.logger
-    }
-
-    fn observer(&self) -> &Self::Observer {
-        &self.observer
     }
 
     fn observer_mut(&mut self) -> &mut Self::Observer {
@@ -1318,8 +1298,9 @@ mod tests {
         let _: EventQueue<u8, 16> = Policy::new_defer_queue(&no_policy);
         let _: EventQueue<u8, 16> = Policy::new_process_queue(&no_policy);
         let (no_policy_parts, ()) = Policy::into_parts(no_policy);
-        let _: &() = PolicyParts::logger(&no_policy_parts);
-        let _: &() = PolicyParts::observer(&no_policy_parts);
+        let mut no_policy_parts = no_policy_parts;
+        let _: &mut () = PolicyParts::logger_mut(&mut no_policy_parts);
+        let _: &mut () = PolicyParts::observer_mut(&mut no_policy_parts);
         let _: &() = PolicyParts::testing(&no_policy_parts);
     }
 
