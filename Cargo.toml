@@ -16,8 +16,15 @@ homepage = "https://github.com/stateforward/sml.rs"
 [dependencies]
 sml-macros = { package = "stateforward-sml-macros", path = "macros", version = "1.5.0" }
 
+[dependencies.tokio]
+version = "1.54"
+default-features = false
+features = ["rt", "sync"]
+optional = true
+
 [dev-dependencies]
 smol = "2"
+tokio = { version = "1.54", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time"] }
 derive_more = "0.99.17"
 serde = {version = "1",features = ["derive"]}
 
@@ -36,10 +43,12 @@ name = "sml"
 
 [workspace]
 members = ["macros"]
+resolver = "2"
 
 [features]
 default = []
 std = []
+tokio = ["std", "dep:tokio"]
 spin = ["dep:spin"]
 
 graphviz = ["sml-macros/graphviz"]
