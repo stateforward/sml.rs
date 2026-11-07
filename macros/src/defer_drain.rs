@@ -150,6 +150,14 @@ fn restore(error: &TokenStream) -> TokenStream {
 pub fn sync_step(dispatch: &TokenStream, retry: &TokenStream, error: &TokenStream) -> TokenStream {
     let restore = restore(error);
     quote! {
+        // A top-level step starts at depth zero, outside any pass. A callback
+        // panic that a caller caught (as `FifoScheduler` does) can leave the
+        // tracking state of the interrupted step behind: restore queue order
+        // for an interrupted pass and reset the depth.
+        if self.deferred_draining {
+            #restore
+        }
+        self.deferred_depth = 0;
         self.deferred_changed = false;
         #dispatch?;
         if self.deferred_changed {

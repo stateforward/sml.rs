@@ -1215,3 +1215,60 @@ fn a_propagated_error_keeps_new_deferrals_behind_untouched_events() {
     });
     assert_eq!(log, Some(vec!["b", "c"]));
 }
+
+#[derive(Debug, Clone)]
+pub struct Boom;
+
+sml! {
+    Recovering {
+        *Hold + event<Boom> / boom,
+         Hold + event<A> / defer,
+         Hold + event<B> / defer,
+         Hold + event<C> / defer,
+         Hold + event<Go> = Ready,
+
+         Ready + event<A> / defer,
+         Ready + event<B> = Final,
+         Ready + event<C> / defer,
+
+         Final + event<A> / log_a,
+         Final + event<C> / log_c,
+    }
+}
+
+impl RecoveringStateMachineContext for Log {
+    fn boom(&mut self, _: &Boom) -> Result<(), ()> {
+        panic!("boom");
+    }
+    fn log_a(&mut self, _: &A) -> Result<(), ()> {
+        record(self, "a");
+        Ok(())
+    }
+    fn log_c(&mut self, _: &C) -> Result<(), ()> {
+        record(self, "c");
+        Ok(())
+    }
+}
+
+/// A callback panic caught by the caller leaves no stale drain state behind:
+/// a later drain still tells retained events from new ones and keeps them in
+/// order.
+#[test]
+fn a_caught_callback_panic_keeps_later_drains_in_order() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = RecoveringStateMachine::new(log.clone());
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = machine.process_event(Boom);
+        }));
+        assert!(unwound.is_err(), "boom panics");
+        machine.process_event(A).expect("deferred");
+        machine.process_event(B).expect("deferred");
+        machine.process_event(C).expect("deferred");
+        // Ready retains a, b leads to final, then a and c are taken there.
+        machine.process_event(Go).expect("to ready, then final");
+        assert!(machine.is(&RecoveringStates::Final));
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["a", "c"]));
+}
