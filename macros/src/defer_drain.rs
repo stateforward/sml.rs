@@ -160,7 +160,7 @@ pub fn sync_step(dispatch: &TokenStream, retry: &TokenStream, error: &TokenStrea
         self.deferred_depth = 0;
         self.deferred_changed = false;
         #dispatch?;
-        if self.deferred_changed {
+        if self.deferred_changed && self.deferred_len > 0 {
             self.deferred_draining = true;
             self.deferred_unvisited = self.deferred_len;
             self.deferred_new = 0;
