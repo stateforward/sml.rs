@@ -913,3 +913,60 @@ fn async_orthogonal_deferred_again_after_a_transition_waits() {
 fn async_orthogonal_deferred_again_by_a_self_transition_waits() {
     assert_eq!(async_orthogonal_run(Row::SelfTransition), Some(true));
 }
+
+// ---------------------------------------------------------------------------
+// Composite with an orthogonal root.
+// ---------------------------------------------------------------------------
+
+sml! {
+    RootChild {
+        *Writing + event<Ask> / defer,
+         Writing + event<Go> = Listening,
+         Writing + event<Hop> = Waiting,
+
+         Listening + event<Ask> / defer,
+         Listening + event<Go> = Idle,
+
+         Waiting + event<Ask> / defer = Waiting,
+         Waiting + event<Hop> = Idle,
+
+         Idle + event<Ask> = Busy,
+         Busy + event<Fin> = X,
+    }
+
+    RootRegions {
+        *state<RootChild> + completion<_> = X,
+        *Watch + event<Fin> = X,
+    }
+}
+
+impl RootRegionsStateMachineContext for Plain {}
+
+fn orthogonal_root_run(row: Row) -> Option<bool> {
+    within_spin(move || {
+        let mut machine = RootRegionsStateMachine::new(Plain);
+        machine.process_event(Ask).expect("deferred");
+        match row {
+            Row::Internal => {
+                machine.process_event(Go).expect("to listening");
+                machine.process_event(Go).expect("to idle");
+            }
+            Row::SelfTransition => {
+                machine.process_event(Hop).expect("to waiting");
+                machine.process_event(Hop).expect("to idle");
+            }
+        }
+        machine.process_event(Fin).expect("both regions to X");
+        machine.is(&[RootRegionsStates::X, RootRegionsStates::X])
+    })
+}
+
+#[test]
+fn orthogonal_root_composite_deferred_again_after_a_transition_waits() {
+    assert_eq!(orthogonal_root_run(Row::Internal), Some(true));
+}
+
+#[test]
+fn orthogonal_root_composite_deferred_again_by_a_self_transition_waits() {
+    assert_eq!(orthogonal_root_run(Row::SelfTransition), Some(true));
+}
