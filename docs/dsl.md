@@ -371,7 +371,14 @@ callbacks are supported. A machine currently uses one concrete Rust error
 type; use an enum when several error variants need typed routing.
 
 The reserved `/ defer` action stores the current event in a generated,
-allocation-free queue and retries it after the next state change. The reserved
+allocation-free queue and retries it after the next state change. As in
+sml.cpp, a step that changes the state (an external self-transition does not)
+retries each deferred event once, in queue order; an event deferred again
+keeps its place, and when a retried event changes the state the retries start
+over from the front, so retained events are retried in the new state ahead of
+those not yet retried. An event the current state keeps deferring waits for
+the next state change. If a retried event fails with a propagated error, the
+step returns it and the other deferred events stay queued in order. The reserved
 `/ process(Event {})` action dispatches the supplied event after the current
 transition has installed its target state. Queue actions work in sync/async
 flat, orthogonal, and composite tables through allocation-free iterative
