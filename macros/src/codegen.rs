@@ -1005,6 +1005,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                     crate::defer_drain::defer(
                                         &quote! { #deferred_event },
                                         &quote! { #error_type_name },
+                                        !async_queue,
                                     )
                                 };
                                 let default_output_code = if *default_output
@@ -1328,7 +1329,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     // add a second argument to pass this initial data
     let starting_state_name = starting_state.to_string();
     let deferred_init = has_deferred_events.then(|| {
-        quote! { deferred, deferred_len: 0, }
+        let tracking = crate::defer_drain::field_inits(!async_queue);
+        quote! { deferred, #tracking }
     });
     let pending_init = async_queue.then(|| quote! { pending, });
     let deferred_local = has_deferred_events.then(|| {
@@ -1821,17 +1823,13 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             Ok(&self.state)
         }
     } else if has_deferred_events {
-        let drain = crate::defer_drain::sync_drain(
-            &state_key,
+        let step = crate::defer_drain::sync_step(
+            &quote! { self.__sml_dispatch_event(#temporary_context_call event)#completion_await },
             &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#completion_await },
             &error_path,
         );
         quote! {
-            let __sml_before = #state_key;
-            let _ = self.__sml_dispatch_event(#temporary_context_call event)#completion_await?;
-            if __sml_before != #state_key {
-                #drain
-            }
+            #step
             Ok(&self.state)
         }
     } else {
@@ -1853,17 +1851,49 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         #event_dispatch
     };
     // Async machines with queues dispatch through `dispatch_queued`.
+    // Synchronous machines with a defer queue dispatch through a tracking
+    // wrapper that records state changes, nested ones included.
     let dispatch_event_fn = (!async_queue).then(|| {
-        quote! {
-            #[inline]
-            #is_async fn __sml_dispatch_event #process_event_impl_generics (
-                &mut self,
-                #temporary_context
-                event: #event_input_ident
-            ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
-            #process_event_where_clause
-            {
-                #dispatch_event_body
+        if has_deferred_events {
+            let tracked = crate::defer_drain::tracked_dispatch(
+                &state_key,
+                &quote! { self.__sml_dispatch_step(#temporary_context_call event)#completion_await },
+            );
+            quote! {
+                #[inline]
+                #is_async fn __sml_dispatch_event #process_event_impl_generics (
+                    &mut self,
+                    #temporary_context
+                    event: #event_input_ident
+                ) -> Result<(), #error_type>
+                #process_event_where_clause
+                {
+                    #tracked
+                }
+
+                #[inline]
+                #is_async fn __sml_dispatch_step #process_event_impl_generics (
+                    &mut self,
+                    #temporary_context
+                    event: #event_input_ident
+                ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
+                #process_event_where_clause
+                {
+                    #dispatch_event_body
+                }
+            }
+        } else {
+            quote! {
+                #[inline]
+                #is_async fn __sml_dispatch_event #process_event_impl_generics (
+                    &mut self,
+                    #temporary_context
+                    event: #event_input_ident
+                ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
+                #process_event_where_clause
+                {
+                    #dispatch_event_body
+                }
             }
         }
     });
@@ -2147,10 +2177,11 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             }
         }
     });
+    let deferred_tracking = crate::defer_drain::fields(!async_queue);
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
-            deferred_len: usize,
+            #deferred_tracking
         }
     });
     let pending_field = async_queue.then(|| {

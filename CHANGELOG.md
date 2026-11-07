@@ -20,7 +20,8 @@ All notable changes to this project are documented here. This project follows
   front, so retained events are retried in the new state ahead of those not
   yet retried.
 - If a retried event fails with a propagated guard or action error, the step
-  returns that error and the other deferred events stay queued in their order.
+  returns that error and the other deferred events stay queued in their order,
+  ahead of any events its nested `process(...)` calls deferred.
 - The async drain retries deferred events in queue order; it used to move them
   to the process queue in reverse.
 - The drain rotates events through the policy's defer queue in place, so it
@@ -30,7 +31,8 @@ All notable changes to this project are documented here. This project follows
 
 - Deferred events are retried only after a step changes the state. An external
   self-transition, which re-enters the same state, no longer retries them, as
-  in sml.cpp.
+  in sml.cpp. A step whose nested `process(...)` dispatches leave the starting
+  state and return to it still counts as a change.
 - Async machines with a defer queue no longer return `InvalidEvent` or
   `TransitionsFailed` from `process_event` when a retried deferred event is not
   handled; the event is dropped, as in sync machines.

@@ -970,3 +970,248 @@ fn orthogonal_root_composite_deferred_again_after_a_transition_waits() {
 fn orthogonal_root_composite_deferred_again_by_a_self_transition_waits() {
     assert_eq!(orthogonal_root_run(Row::SelfTransition), Some(true));
 }
+
+// ---------------------------------------------------------------------------
+// Nested `process(...)` dispatches (review of stateforward/sml.rs#18).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Back;
+#[derive(Debug, Clone)]
+pub struct Fail;
+
+/// Shared by the bouncing fixtures: `enable` opens the gate for the ask, and
+/// each action taken is recorded in order.
+fn gate_open(log: &Log) -> bool {
+    log.0.lock().expect("unpoisoned").contains(&"enable")
+}
+
+fn record(log: &Log, entry: &'static str) {
+    log.0.lock().expect("unpoisoned").push(entry);
+}
+
+sml! {
+    Bouncing {
+        *Hold + event<Ask> [enabled] / take,
+         Hold + event<Ask> / defer,
+         Hold + event<Go> / process(Back {}) = Ready,
+
+         Ready + event<Back> / enable = Hold,
+    }
+}
+
+impl BouncingStateMachineContext for Log {
+    fn enabled(&self, _: &Ask) -> Result<bool, ()> {
+        Ok(gate_open(self))
+    }
+    fn take(&mut self, _: &Ask) -> Result<(), ()> {
+        record(self, "ask");
+        Ok(())
+    }
+    fn enable(&mut self, _: &Back) -> Result<(), ()> {
+        record(self, "enable");
+        Ok(())
+    }
+}
+
+/// A step whose nested `process(...)` returns to the starting state still
+/// changed the state on the way, so the deferred events are retried.
+#[test]
+fn a_nested_round_trip_retries_deferred_events() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = BouncingStateMachine::new(log.clone());
+        machine.process_event(Ask).expect("deferred");
+        machine
+            .process_event(Go)
+            .expect("to ready and back to hold");
+        assert!(machine.is(&BouncingStates::Hold));
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["enable", "ask"]));
+}
+
+sml! {
+    BouncingChild {
+        *Hold + event<Ask> [enabled] / take,
+         Hold + event<Ask> / defer,
+         Hold + event<Go> / process(Back {}) = Ready,
+
+         Ready + event<Back> / enable = Hold,
+         Hold + event<Fin> = X,
+    }
+
+    BouncingParent {
+        *state<BouncingChild> + completion<_> = X,
+    }
+}
+
+impl BouncingParentStateMachineContext for Log {
+    fn enabled(&self, _: &Ask) -> Result<bool, ()> {
+        Ok(gate_open(self))
+    }
+    fn take(&mut self, _: &Ask) -> Result<(), ()> {
+        record(self, "ask");
+        Ok(())
+    }
+    fn enable(&mut self, _: &Back) -> Result<(), ()> {
+        record(self, "enable");
+        Ok(())
+    }
+}
+
+#[test]
+fn a_nested_round_trip_retries_deferred_events_in_a_composite() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = BouncingParentStateMachine::new(log.clone());
+        machine.process_event(Ask).expect("deferred");
+        machine
+            .process_event(Go)
+            .expect("to ready and back to hold");
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["enable", "ask"]));
+}
+
+sml! {
+    BouncingMultiChild {
+        *Hold + event<Ask> [enabled] / take,
+         Hold + event<Ask> / defer,
+         Hold + event<Go> / process(Back {}) = Ready,
+
+         Ready + event<Back> / enable = Hold,
+         Hold + event<Fin> = X,
+    }
+
+    BouncingMultiSpare {
+        *Resting + event<Done> = X,
+    }
+
+    BouncingMultiParent {
+        *state<BouncingMultiChild> + completion<_> = X,
+         state<BouncingMultiChild> + event<Other> = state<BouncingMultiSpare>,
+    }
+}
+
+impl BouncingMultiParentStateMachineContext for Log {
+    fn enabled(&self, _: &Ask) -> Result<bool, ()> {
+        Ok(gate_open(self))
+    }
+    fn take(&mut self, _: &Ask) -> Result<(), ()> {
+        record(self, "ask");
+        Ok(())
+    }
+    fn enable(&mut self, _: &Back) -> Result<(), ()> {
+        record(self, "enable");
+        Ok(())
+    }
+}
+
+#[test]
+fn a_nested_round_trip_retries_deferred_events_in_a_multi_child_composite() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = BouncingMultiParentStateMachine::new(log.clone());
+        machine.process_event(Ask).expect("deferred");
+        machine
+            .process_event(Go)
+            .expect("to ready and back to hold");
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["enable", "ask"]));
+}
+
+sml! {
+    BouncingRegions {
+        *Hold + event<Ask> [enabled] / take,
+         Hold + event<Ask> / defer,
+         Hold + event<Go> / process(Back {}) = Ready,
+
+         Ready + event<Back> / enable = Hold,
+
+        *Watch + event<Fin> = X,
+    }
+}
+
+impl BouncingRegionsStateMachineContext for Log {
+    fn enabled(&self, _: &Ask) -> Result<bool, ()> {
+        Ok(gate_open(self))
+    }
+    fn take(&mut self, _: &Ask) -> Result<(), ()> {
+        record(self, "ask");
+        Ok(())
+    }
+    fn enable(&mut self, _: &Back) -> Result<(), ()> {
+        record(self, "enable");
+        Ok(())
+    }
+}
+
+#[test]
+fn a_nested_round_trip_retries_deferred_events_in_regions() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = BouncingRegionsStateMachine::new(log.clone());
+        machine.process_event(Ask).expect("deferred");
+        machine
+            .process_event(Go)
+            .expect("to ready and back to hold");
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["enable", "ask"]));
+}
+
+sml! {
+    Interleaving {
+        *Hold + event<A> / defer,
+         Hold + event<B> / defer,
+         Hold + event<Go> = First,
+
+         First + event<A> / (process(C {}), process(Fail {})) = Second,
+         First + event<B> / defer,
+
+         Second + event<B> / defer,
+         Second + event<C> / defer,
+         Second + event<Fail> / fail,
+         Second + event<Go> = Third,
+
+         Third + event<B> / log_b,
+         Third + event<C> / log_c,
+    }
+}
+
+impl InterleavingStateMachineContext for Log {
+    fn fail(&mut self, _: &Fail) -> Result<(), ()> {
+        Err(())
+    }
+    fn log_b(&mut self, _: &B) -> Result<(), ()> {
+        record(self, "b");
+        Ok(())
+    }
+    fn log_c(&mut self, _: &C) -> Result<(), ()> {
+        record(self, "c");
+        Ok(())
+    }
+}
+
+/// When a drained event fails, the events it deferred through nested
+/// `process(...)` calls stay behind the deferred events not yet retried.
+#[test]
+fn a_propagated_error_keeps_new_deferrals_behind_untouched_events() {
+    let log = within_spin(|| {
+        let log = Log::default();
+        let mut machine = InterleavingStateMachine::new(log.clone());
+        machine.process_event(A).expect("deferred");
+        machine.process_event(B).expect("deferred");
+        // A leads to second, defers c there, and failing aborts the step.
+        assert!(matches!(
+            machine.process_event(Go),
+            Err(InterleavingError::ActionFailed(()))
+        ));
+        assert!(machine.is(&InterleavingStates::Second));
+        machine.process_event(Go).expect("to third");
+        log.taken()
+    });
+    assert_eq!(log, Some(vec!["b", "c"]));
+}

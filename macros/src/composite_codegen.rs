@@ -204,13 +204,15 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         .then(|| quote! { (core::default::Default::default()) });
     let _new_const =
         (parent_state_types.is_empty() && child_state_types.is_empty()).then(|| quote! { const });
+    let deferred_tracking = crate::defer_drain::fields(!async_queue);
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_name>,
-            deferred_len: usize,
+            #deferred_tracking
         }
     });
-    let deferred_init = has_deferred_events.then(|| quote! { deferred, deferred_len: 0, });
+    let deferred_tracking_init = crate::defer_drain::field_inits(!async_queue);
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, #deferred_tracking_init });
     let pending_field = async_queue.then(|| {
         quote! {
             pending: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::ProcessQueue<#events_name>,
@@ -794,17 +796,13 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             Ok(&self.state)
         }
     } else if has_deferred_events {
-        let drain = crate::defer_drain::sync_drain(
-            &drain_state_key,
+        let step = crate::defer_drain::sync_step(
+            &quote! { self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize },
             &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#await_stabilize },
             &quote! { #error_name },
         );
         quote! {
-            let __sml_before = #drain_state_key;
-            let _ = self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize?;
-            if __sml_before != #drain_state_key {
-                #drain
-            }
+            #step
             Ok(&self.state)
         }
     } else {
@@ -812,7 +810,39 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     };
     // Dispatches one event without draining the defer queue; the drain runs
     // once per top-level step, in `__sml_process_event_unlocked`.
-    let dispatch_event_fn = {
+    // Synchronous machines with a defer queue dispatch through a tracking
+    // wrapper that records state changes, nested ones included.
+    let dispatch_event_fn = if has_deferred_events && !async_queue {
+        let tracked = crate::defer_drain::tracked_dispatch(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_step(#temporary_context_call event)#await_stabilize },
+        );
+        quote! {
+            #[inline]
+            #async_keyword fn __sml_dispatch_event<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<(), #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #tracked
+            }
+
+            #[inline]
+            #async_keyword fn __sml_dispatch_step<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<&#parent_states_name, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #dispatch_event_body
+            }
+        }
+    } else {
         quote! {
             #[inline]
             #async_keyword fn __sml_dispatch_event<EventInput>(
@@ -2583,17 +2613,13 @@ fn generate_multi_code(
             Ok(#return_state)
         }
     } else if has_deferred_events {
-        let drain = crate::defer_drain::sync_drain(
-            &drain_state_key,
+        let step = crate::defer_drain::sync_step(
+            &quote! { self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize },
             &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#await_stabilize },
             &quote! { #error_name },
         );
         quote! {
-            let __sml_before = #drain_state_key;
-            let _ = self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize?;
-            if __sml_before != #drain_state_key {
-                #drain
-            }
+            #step
             Ok(#return_state)
         }
     } else {
@@ -2601,7 +2627,39 @@ fn generate_multi_code(
     };
     // Dispatches one event without draining the defer queue; the drain runs
     // once per top-level step, in `__sml_process_event_unlocked`.
-    let dispatch_event_fn = {
+    // Synchronous machines with a defer queue dispatch through a tracking
+    // wrapper that records state changes, nested ones included.
+    let dispatch_event_fn = if has_deferred_events && !async_queue {
+        let tracked = crate::defer_drain::tracked_dispatch(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_step(#temporary_context_call event)#await_stabilize },
+        );
+        quote! {
+            #[inline]
+            #async_keyword fn __sml_dispatch_event<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<(), #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #tracked
+            }
+
+            #[inline]
+            #async_keyword fn __sml_dispatch_step<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<#process_return, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #dispatch_event_body
+            }
+        }
+    } else {
         quote! {
             #[inline]
             #async_keyword fn __sml_dispatch_event<EventInput>(
@@ -2651,13 +2709,15 @@ fn generate_multi_code(
                 &parent_states_name,
             )
         });
+    let deferred_tracking = crate::defer_drain::fields(!async_queue);
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_name>,
-            deferred_len: usize,
+            #deferred_tracking
         }
     });
-    let deferred_init = has_deferred_events.then(|| quote! { deferred, deferred_len: 0, });
+    let deferred_tracking_init = crate::defer_drain::field_inits(!async_queue);
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, #deferred_tracking_init });
     let pending_field = async_queue.then(|| {
         quote! {
             pending: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::ProcessQueue<#events_name>,
@@ -4548,7 +4608,7 @@ fn transition_code(
         } else {
             quote! { #events_name::#event }
         };
-        crate::defer_drain::defer(&event_value, &quote! { #error_name })
+        crate::defer_drain::defer(&event_value, &quote! { #error_name }, !async_queue)
     } else {
         quote! {}
     };
