@@ -1024,12 +1024,26 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                             }
                                         }
                                     } else {
+                                        // Drain the events deferred when the drain began, each
+                                        // once, as sml.cpp does. An event the new state defers
+                                        // again lands on the fresh queue and waits for the next
+                                        // state change instead of being popped again forever.
                                         quote! {
-                                            while let Some(deferred_event) = self.deferred.pop() {
+                                            let mut draining = ::core::mem::replace(
+                                                &mut self.deferred,
+                                                ::sml::Queue::new(),
+                                            );
+                                            while let Some(deferred_event) = ::sml::Queue::pop(&mut draining) {
                                                 match self.__sml_process_event_unlocked(deferred_event)#process_await {
                                                     Ok(_) | Err(#error_type_name::InvalidEvent)
                                                     | Err(#error_type_name::TransitionsFailed) => {}
-                                                    Err(error) => return Err(error),
+                                                    Err(error) => {
+                                                        // What was not drained stays deferred.
+                                                        while let Some(left) = ::sml::Queue::pop(&mut draining) {
+                                                            let _ = ::sml::Queue::defer(&mut self.deferred, left);
+                                                        }
+                                                        return Err(error);
+                                                    }
                                                 }
                                             }
                                         }

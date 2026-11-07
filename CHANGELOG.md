@@ -4,6 +4,17 @@ All notable changes to this project are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.1 - 2026-11-06
+
+### Fixed
+
+- A synchronous machine's drain of its defer queue after a state change no
+  longer spins forever when the new state defers a drained event again. The
+  drain takes the events deferred when it began and handles each once; an
+  event deferred again waits for the next state change, as in sml.cpp. If a
+  drained event fails with a propagated error, the events not yet drained
+  stay deferred ([#17](https://github.com/stateforward/sml.rs/issues/17)).
+
 ## 2.0.0 - 2026-11-02
 
 This is a major release; see the [2.0 migration guide](docs/migrating-to-2.0.md).
