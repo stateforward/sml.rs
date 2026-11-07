@@ -996,16 +996,16 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                                 .map_err(|_| #error_type_name::QueueFull)?;
                                         }
                                     } else {
-                                        quote! { let _ = self.__sml_process_event_unlocked(#event)#process_await?; }
+                                        quote! { let _ = self.__sml_dispatch_event(#event)#process_await?; }
                                     }
                                 });
                                 let defer_code = if deferred_event.is_empty() {
                                     quote! {}
                                 } else {
-                                    quote! {
-                                        self.deferred.defer(#deferred_event)
-                                            .map_err(|_| #error_type_name::QueueFull)?;
-                                    }
+                                    crate::defer_drain::defer(
+                                        &quote! { #deferred_event },
+                                        &quote! { #error_type_name },
+                                    )
                                 };
                                 let default_output_code = if *default_output
                                     && action.is_empty()
@@ -1015,43 +1015,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                 } else {
                                     quote! {}
                                 };
-                                let drain_deferred = if has_deferred_events {
-                                    if async_queue {
-                                        quote! {
-                                            while let Some(deferred_event) = self.deferred.pop() {
-                                                self.pending.process(deferred_event)
-                                                    .map_err(|_| #error_type_name::QueueFull)?;
-                                            }
-                                        }
-                                    } else {
-                                        // Drain the events deferred when the drain began, each
-                                        // once, as sml.cpp does. An event the new state defers
-                                        // again lands on the fresh queue and waits for the next
-                                        // state change instead of being popped again forever.
-                                        quote! {
-                                            let mut draining = ::core::mem::replace(
-                                                &mut self.deferred,
-                                                ::sml::Queue::new(),
-                                            );
-                                            while let Some(deferred_event) = ::sml::Queue::pop(&mut draining) {
-                                                match self.__sml_process_event_unlocked(deferred_event)#process_await {
-                                                    Ok(_) | Err(#error_type_name::InvalidEvent)
-                                                    | Err(#error_type_name::TransitionsFailed) => {}
-                                                    Err(error) => {
-                                                        // What was not drained stays deferred.
-                                                        while let Some(left) = ::sml::Queue::pop(&mut draining) {
-                                                            let _ = ::sml::Queue::defer(&mut self.deferred, left);
-                                                        }
-                                                        return Err(error);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    quote! {}
-                                };
-
                                 let finish_transition = if *event_kind == EventKind::Completion {
                                     quote! { return Ok(true); }
                                 } else if *event_kind == EventKind::Exception {
@@ -1095,7 +1058,6 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
                                             #entry_action
                                             #defer_code
                                             #(#process_code)*
-                                            #drain_deferred
                                             #finish_transition
                                         }
                                 };
@@ -1366,7 +1328,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     // add a second argument to pass this initial data
     let starting_state_name = starting_state.to_string();
     let deferred_init = has_deferred_events.then(|| {
-        quote! { deferred, }
+        quote! { deferred, deferred_len: 0, }
     });
     let pending_init = async_queue.then(|| quote! { pending, });
     let deferred_local = has_deferred_events.then(|| {
@@ -1833,7 +1795,22 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             }
         }
     });
-    let unlocked_dispatch = if async_queue {
+    let state_key = quote! { ::core::mem::discriminant(&self.state) };
+    let error_path = quote! { #error_type_name };
+    let unlocked_dispatch = if async_queue && has_deferred_events {
+        let async_loop = crate::defer_drain::async_loop(
+            &state_key,
+            &quote! { self.dispatch_queued(#completion_context_call event).await },
+            &error_path,
+            &quote! { &self.state },
+        );
+        quote! {
+            use ::sml::Queue as _;
+            self.pending.process(event.into())
+                .map_err(|_| #error_type_name::QueueFull)?;
+            #async_loop
+        }
+    } else if async_queue {
         quote! {
             use ::sml::Queue as _;
             self.pending.process(event.into())
@@ -1843,19 +1820,53 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
             }
             Ok(&self.state)
         }
+    } else if has_deferred_events {
+        let drain = crate::defer_drain::sync_drain(
+            &state_key,
+            &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#completion_await },
+            &error_path,
+        );
+        quote! {
+            let __sml_before = #state_key;
+            let _ = self.__sml_dispatch_event(#temporary_context_call event)#completion_await?;
+            if __sml_before != #state_key {
+                #drain
+            }
+            Ok(&self.state)
+        }
     } else {
         quote! {
-            use ::sml::Queue as _;
-            let event: #events_type_name #event_type_generics = event.into();
-            #capture_completion_origin
-            self.context.log_process_event(&self.state, &event);
-            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
-            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
-                return Err(#error_type_name::InvalidEvent);
-            }
-            #event_dispatch
+            self.__sml_dispatch_event(#temporary_context_call event)#completion_await
         }
     };
+    // Dispatches one event without draining the defer queue; the drain runs
+    // once per top-level step, in `__sml_process_event_unlocked`.
+    let dispatch_event_body = quote! {
+        use ::sml::Queue as _;
+        let event: #events_type_name #event_type_generics = event.into();
+        #capture_completion_origin
+        self.context.log_process_event(&self.state, &event);
+        Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+        if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+            return Err(#error_type_name::InvalidEvent);
+        }
+        #event_dispatch
+    };
+    // Async machines with queues dispatch through `dispatch_queued`.
+    let dispatch_event_fn = (!async_queue).then(|| {
+        quote! {
+            #[inline]
+            #is_async fn __sml_dispatch_event #process_event_impl_generics (
+                &mut self,
+                #temporary_context
+                event: #event_input_ident
+            ) -> Result<&#states_type_name <#state_lifetimes>, #error_type>
+            #process_event_where_clause
+            {
+                #dispatch_event_body
+            }
+        }
+    });
     let public_dispatch = quote! {
         let thread_safe = &self.thread_safe;
         let core = &mut self.core;
@@ -1873,6 +1884,8 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
         {
             #unlocked_dispatch
         }
+
+        #dispatch_event_fn
     };
     let initialize_context = if initialize_uses_temporary_context {
         temporary_context.clone()
@@ -2137,6 +2150,7 @@ pub fn generate_code(sm: &ParsedStateMachine) -> parse::Result<proc_macro2::Toke
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_type_ident as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_type_name #event_type_generics>,
+            deferred_len: usize,
         }
     });
     let pending_field = async_queue.then(|| {

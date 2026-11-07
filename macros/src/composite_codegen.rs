@@ -207,9 +207,10 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_name>,
+            deferred_len: usize,
         }
     });
-    let deferred_init = has_deferred_events.then(|| quote! { deferred, });
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, deferred_len: 0, });
     let pending_field = async_queue.then(|| {
         quote! {
             pending: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::ProcessQueue<#events_name>,
@@ -508,7 +509,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let parent_dispatch = dispatch_code(
@@ -529,7 +529,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let child_completion = completion_code(
@@ -552,7 +551,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let child_terminal = if child_states.contains_key("X") {
@@ -580,7 +578,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let child_exception = exception_code(
@@ -601,7 +598,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let parent_exception = exception_code(
@@ -622,7 +618,6 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             );
         },
         &temporary_context_argument,
-        has_deferred_events,
         async_queue,
     )?;
     let has_exception_handlers = [parent, child]
@@ -731,27 +726,24 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
         }
     };
 
-    let unlocked_process_event_body = if async_queue {
+    let dispatch_event_body = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.process(event.into())
-                .map_err(|_| #error_name::QueueFull)?;
-            while let Some(event) = self.pending.pop() {
-                self.context.log_process_event(&self.state, &event);
-                Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
-                if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
-                    return Err(#error_name::InvalidEvent);
-                }
-                #dispatch_attempt
-                if handled {
-                    if exception_recovered {
-                        self.stabilize(#temporary_context_call None).await?;
-                    } else {
-                        self.stabilize(#temporary_context_call Some(&event)).await?;
-                    }
+            let event: #events_name = event.into();
+            self.context.log_process_event(&self.state, &event);
+            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                return Err(#error_name::InvalidEvent);
+            }
+            #dispatch_attempt
+            if handled {
+                if exception_recovered {
+                    self.stabilize(#temporary_context_call None).await?;
                 } else {
-                    return Err(#error_name::InvalidEvent);
+                    self.stabilize(#temporary_context_call Some(&event)).await?;
                 }
+            } else {
+                return Err(#error_name::InvalidEvent);
             }
             Ok(&self.state)
         }
@@ -774,6 +766,64 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
                 Ok(&self.state)
             } else {
                 Err(#error_name::InvalidEvent)
+            }
+        }
+    };
+    let drain_state_key = quote! { (::core::mem::discriminant(&self.state), ::core::mem::discriminant(&self.child_state)) };
+    let unlocked_process_event_body = if async_queue && has_deferred_events {
+        let async_loop = crate::defer_drain::async_loop(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_event(#temporary_context_call event).await },
+            &quote! { #error_name },
+            &quote! { &self.state },
+        );
+        quote! {
+            use ::sml::Queue as _;
+            self.pending.process(event.into())
+                .map_err(|_| #error_name::QueueFull)?;
+            #async_loop
+        }
+    } else if async_queue {
+        quote! {
+            use ::sml::Queue as _;
+            self.pending.process(event.into())
+                .map_err(|_| #error_name::QueueFull)?;
+            while let Some(event) = self.pending.pop() {
+                let _ = self.__sml_dispatch_event(#temporary_context_call event).await?;
+            }
+            Ok(&self.state)
+        }
+    } else if has_deferred_events {
+        let drain = crate::defer_drain::sync_drain(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#await_stabilize },
+            &quote! { #error_name },
+        );
+        quote! {
+            let __sml_before = #drain_state_key;
+            let _ = self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize?;
+            if __sml_before != #drain_state_key {
+                #drain
+            }
+            Ok(&self.state)
+        }
+    } else {
+        quote! { self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize }
+    };
+    // Dispatches one event without draining the defer queue; the drain runs
+    // once per top-level step, in `__sml_process_event_unlocked`.
+    let dispatch_event_fn = {
+        quote! {
+            #[inline]
+            #async_keyword fn __sml_dispatch_event<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<&#parent_states_name, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #dispatch_event_body
             }
         }
     };
@@ -1051,6 +1101,8 @@ pub fn generate_code(machines: &[StateMachine]) -> parse::Result<TokenStream> {
             {
                 #unlocked_process_event_body
             }
+
+            #dispatch_event_fn
 
             #[inline(always)]
             fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
@@ -1501,6 +1553,8 @@ fn generate_multi_code(
 
     let mut child_enum_definitions = Vec::new();
     let mut child_fields = Vec::new();
+    // What the drain compares to tell whether a step changed the state.
+    let mut drain_key_parts = Vec::new();
     let mut child_initializers = Vec::new();
     let mut child_callback_methods = Vec::new();
     let mut child_api = Vec::new();
@@ -1573,7 +1627,6 @@ fn generate_multi_code(
                     );
                 },
                 &temporary_context_argument,
-                has_deferred_events,
                 async_queue,
                 region_paths.as_deref(),
             )?;
@@ -1645,6 +1698,7 @@ fn generate_multi_code(
                 }
             });
             let exit_skip = format_ident!("{}_exit_skip", field);
+            drain_key_parts.push(quote! { self.#field.each_ref().map(::core::mem::discriminant) });
             child_fields.push(quote! {
                 #field: [#child_states_name; #region_count],
                 #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
@@ -1772,7 +1826,6 @@ fn generate_multi_code(
                 );
             },
             &temporary_context_argument,
-            has_deferred_events,
             async_queue,
         )?;
         let completion = completion_code(
@@ -1803,7 +1856,6 @@ fn generate_multi_code(
                 );
             },
             &temporary_context_argument,
-            has_deferred_events,
             async_queue,
         )?;
         let exception = exception_code(
@@ -1817,7 +1869,6 @@ fn generate_multi_code(
             enter_nested,
             quote! { self.context.#callback(&old_state, new_state); },
             &temporary_context_argument,
-            has_deferred_events,
             async_queue,
         )?;
         let terminal = if child_states.contains_key("X") {
@@ -1850,6 +1901,7 @@ fn generate_multi_code(
             }
         });
         let exit_skip = format_ident!("{}_exit_skip", field);
+        drain_key_parts.push(quote! { ::core::mem::discriminant(&self.#field) });
         child_fields.push(quote! {
             #field: #child_states_name,
             #[allow(dead_code, reason = "an exit-skip token is only read where its state slot is exited")]
@@ -2160,7 +2212,6 @@ fn generate_multi_code(
                     );
                 },
                 &temporary_context_argument,
-                has_deferred_events,
                 async_queue,
             )
         })
@@ -2188,7 +2239,6 @@ fn generate_multi_code(
                     );
                 },
                 &temporary_context_argument,
-                has_deferred_events,
                 async_queue,
             )
         })
@@ -2214,7 +2264,6 @@ fn generate_multi_code(
                     );
                 },
                 &temporary_context_argument,
-                has_deferred_events,
                 async_queue,
             )
         })
@@ -2281,7 +2330,6 @@ fn generate_multi_code(
             root_enter_children,
             root_child_terminal,
             &temporary_context_argument,
-            has_deferred_events,
             async_queue,
             root_region_paths.as_deref(),
         )?)
@@ -2455,23 +2503,39 @@ fn generate_multi_code(
         quote! { &self.state }
     };
     let return_state = log_state.clone();
-    let unlocked_process_event_body = if async_queue {
+    let process_return = if let Some(region_count) = root_region_count {
+        quote! { &[#parent_states_name; #region_count] }
+    } else {
+        quote! { &#parent_states_name }
+    };
+    let drain_key = {
+        let root = if root_region_count.is_some() {
+            quote! { self.states.each_ref().map(::core::mem::discriminant) }
+        } else {
+            quote! { ::core::mem::discriminant(&self.state) }
+        };
+        // Nested pairs, so any number of children compares.
+        let children = drain_key_parts
+            .iter()
+            .rev()
+            .fold(quote! { () }, |rest, part| quote! { (#part, #rest) });
+        quote! { (#root, #children) }
+    };
+    let dispatch_event_body = if async_queue {
         quote! {
             use ::sml::Queue as _;
-            self.pending.process(event.into()).map_err(|_| #error_name::QueueFull)?;
-            while let Some(event) = self.pending.pop() {
-                self.context.log_process_event(#log_state, &event);
-                Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
-                if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
-                    return Err(#error_name::InvalidEvent);
-                }
-                #dispatch_attempt
-                if !handled { return Err(#error_name::InvalidEvent); }
-                if exception_recovered {
-                    self.stabilize(#temporary_context_call None).await?;
-                } else {
-                    self.stabilize(#temporary_context_call Some(&event)).await?;
-                }
+            let event: #events_name = event.into();
+            self.context.log_process_event(#log_state, &event);
+            Self::__sml_log_process_event(&mut self.policy, ::sml::EventName::name(&event));
+            if !Self::__sml_dispatch_allowed(&self.policy, ::sml::EventName::name(&event)) {
+                return Err(#error_name::InvalidEvent);
+            }
+            #dispatch_attempt
+            if !handled { return Err(#error_name::InvalidEvent); }
+            if exception_recovered {
+                self.stabilize(#temporary_context_call None).await?;
+            } else {
+                self.stabilize(#temporary_context_call Some(&event)).await?;
             }
             Ok(#return_state)
         }
@@ -2492,6 +2556,64 @@ fn generate_multi_code(
                 self.stabilize(#temporary_context_call Some(&event))#await_stabilize?;
             }
             Ok(#return_state)
+        }
+    };
+    let drain_state_key = drain_key;
+    let unlocked_process_event_body = if async_queue && has_deferred_events {
+        let async_loop = crate::defer_drain::async_loop(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_event(#temporary_context_call event).await },
+            &quote! { #error_name },
+            &quote! { #return_state },
+        );
+        quote! {
+            use ::sml::Queue as _;
+            self.pending.process(event.into())
+                .map_err(|_| #error_name::QueueFull)?;
+            #async_loop
+        }
+    } else if async_queue {
+        quote! {
+            use ::sml::Queue as _;
+            self.pending.process(event.into())
+                .map_err(|_| #error_name::QueueFull)?;
+            while let Some(event) = self.pending.pop() {
+                let _ = self.__sml_dispatch_event(#temporary_context_call event).await?;
+            }
+            Ok(#return_state)
+        }
+    } else if has_deferred_events {
+        let drain = crate::defer_drain::sync_drain(
+            &drain_state_key,
+            &quote! { self.__sml_dispatch_event(#temporary_context_call deferred_event)#await_stabilize },
+            &quote! { #error_name },
+        );
+        quote! {
+            let __sml_before = #drain_state_key;
+            let _ = self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize?;
+            if __sml_before != #drain_state_key {
+                #drain
+            }
+            Ok(#return_state)
+        }
+    } else {
+        quote! { self.__sml_dispatch_event(#temporary_context_call event)#await_stabilize }
+    };
+    // Dispatches one event without draining the defer queue; the drain runs
+    // once per top-level step, in `__sml_process_event_unlocked`.
+    let dispatch_event_fn = {
+        quote! {
+            #[inline]
+            #async_keyword fn __sml_dispatch_event<EventInput>(
+                &mut self,
+                #temporary_context_parameter
+                event: EventInput,
+            ) -> Result<#process_return, #generated_error>
+            where
+                EventInput: Into<#events_name>,
+            {
+                #dispatch_event_body
+            }
         }
     };
     let parent_terminated = root_embedded.as_ref().map_or_else(
@@ -2532,9 +2654,10 @@ fn generate_multi_code(
     let deferred_field = has_deferred_events.then(|| {
         quote! {
             deferred: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::DeferQueue<#events_name>,
+            deferred_len: usize,
         }
     });
-    let deferred_init = has_deferred_events.then(|| quote! { deferred, });
+    let deferred_init = has_deferred_events.then(|| quote! { deferred, deferred_len: 0, });
     let pending_field = async_queue.then(|| {
         quote! {
             pending: <<#policy_name as ::sml::Policy>::Parts as ::sml::__private::PolicyParts>::ProcessQueue<#events_name>,
@@ -2633,11 +2756,6 @@ fn generate_multi_code(
             }
             fn is(&self, expected: &#parent_states_name) -> bool { self.state == *expected }
         }
-    };
-    let process_return = if let Some(region_count) = root_region_count {
-        quote! { &[#parent_states_name; #region_count] }
-    } else {
-        quote! { &#parent_states_name }
     };
     let public_initialize = if let Some(region_count) = root_region_count {
         quote! {
@@ -2914,6 +3032,8 @@ fn generate_multi_code(
                 #unlocked_process_event_body
             }
 
+            #dispatch_event_fn
+
             fn is_terminated(&self) -> bool { #parent_terminated }
             fn context(&self) -> &T { &self.context }
             fn context_mut(&mut self) -> &mut T { &mut self.context }
@@ -3183,7 +3303,6 @@ fn tree_embedded_orthogonal(
     error_name: &Ident,
     callback: TokenStream,
     temporary_context: &Option<TokenStream>,
-    has_deferred_events: bool,
     async_queue: bool,
     region_paths: Option<&[Vec<usize>]>,
 ) -> parse::Result<crate::orthogonal_codegen::EmbeddedOrthogonal> {
@@ -3258,7 +3377,6 @@ fn tree_embedded_orthogonal(
         entry,
         terminal,
         temporary_context,
-        has_deferred_events,
         async_queue,
         region_paths,
     )
@@ -3495,7 +3613,6 @@ fn tree_enter_node(
             TokenStream::new(),
             temporary_context,
             false,
-            false,
             None,
         )?;
         let initials = embedded.initial_values;
@@ -3629,7 +3746,6 @@ fn tree_exit_node(
             error_name,
             TokenStream::new(),
             temporary_context,
-            false,
             false,
             None,
         )?;
@@ -4186,7 +4302,6 @@ fn dispatch_code(
     composite_entry: TokenStream,
     callback: TokenStream,
     temporary_context: &Option<TokenStream>,
-    has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
     let mut grouped = HashMap::<(String, String), Vec<&StateTransition>>::new();
@@ -4235,7 +4350,6 @@ fn dispatch_code(
                     enter_composite,
                     &callback,
                     temporary_context,
-                    has_deferred_events,
                     async_queue,
                     candidate_index,
                 )
@@ -4274,7 +4388,6 @@ fn dispatch_code(
             enter_composite,
             &callback,
             temporary_context,
-            has_deferred_events,
             async_queue,
             0,
         )?;
@@ -4305,7 +4418,6 @@ fn dispatch_code(
             enter_composite,
             &callback,
             temporary_context,
-            has_deferred_events,
             async_queue,
             0,
         )?;
@@ -4342,7 +4454,6 @@ fn transition_code(
     composite_entry: TokenStream,
     callback: &TokenStream,
     temporary_context: &Option<TokenStream>,
-    has_deferred_events: bool,
     async_queue: bool,
     candidate_index: usize,
 ) -> parse::Result<TokenStream> {
@@ -4420,7 +4531,7 @@ fn transition_code(
                         .map_err(|_| #error_name::QueueFull)?;
                 }
             } else {
-                quote! { let _ = self.__sml_process_event_unlocked(#temporary_context_call #event)?; }
+                quote! { let _ = self.__sml_dispatch_event(#temporary_context_call #event)?; }
             }
         })
         .collect::<Vec<_>>();
@@ -4437,32 +4548,7 @@ fn transition_code(
         } else {
             quote! { #events_name::#event }
         };
-        quote! {
-            self.deferred.defer(#event_value)
-                .map_err(|_| #error_name::QueueFull)?;
-        }
-    } else {
-        quote! {}
-    };
-    let drain_deferred = if has_deferred_events && !transition.internal_transition {
-        if async_queue {
-            quote! {
-                while let Some(deferred_event) = self.deferred.pop() {
-                    self.pending.process(deferred_event)
-                        .map_err(|_| #error_name::QueueFull)?;
-                }
-            }
-        } else {
-            quote! {
-                while let Some(deferred_event) = self.deferred.pop() {
-                    match self.__sml_process_event_unlocked(#temporary_context_call deferred_event) {
-                        Ok(_) | Err(#error_name::InvalidEvent)
-                        | Err(#error_name::TransitionsFailed) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-            }
-        }
+        crate::defer_drain::defer(&event_value, &quote! { #error_name })
     } else {
         quote! {}
     };
@@ -4535,7 +4621,6 @@ fn transition_code(
             #composite_entry
             #defer_code
             #(#process_code)*
-            #drain_deferred
             handled = true;
         }
     };
@@ -4591,7 +4676,6 @@ fn exception_code(
     composite_entry: TokenStream,
     callback: TokenStream,
     temporary_context: &Option<TokenStream>,
-    has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
     let mut grouped = HashMap::<String, Vec<&StateTransition>>::new();
@@ -4643,7 +4727,6 @@ fn exception_code(
                     enter_composite,
                     &callback,
                     temporary_context,
-                    has_deferred_events,
                     async_queue,
                     0,
                 )?;
@@ -4732,7 +4815,6 @@ fn completion_code(
     composite_entry: TokenStream,
     callback: TokenStream,
     temporary_context: &Option<TokenStream>,
-    has_deferred_events: bool,
     async_queue: bool,
 ) -> parse::Result<TokenStream> {
     let mut grouped = HashMap::<String, Vec<&StateTransition>>::new();
@@ -4784,7 +4866,6 @@ fn completion_code(
                     },
                     &callback,
                     temporary_context,
-                    has_deferred_events,
                     async_queue,
                     0,
                 )
@@ -4863,7 +4944,6 @@ fn completion_code(
                     },
                     &callback,
                     temporary_context,
-                    has_deferred_events,
                     async_queue,
                     0,
                 )

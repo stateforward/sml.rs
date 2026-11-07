@@ -8,12 +8,32 @@ All notable changes to this project are documented here. This project follows
 
 ### Fixed
 
-- A synchronous machine's drain of its defer queue after a state change no
-  longer spins forever when the new state defers a drained event again. The
-  drain takes the events deferred when it began and handles each once; an
-  event deferred again waits for the next state change, as in sml.cpp. If a
-  drained event fails with a propagated error, the events not yet drained
-  stay deferred ([#17](https://github.com/stateforward/sml.rs/issues/17)).
+- Draining the defer queue no longer spins forever when the state a drain
+  reaches defers a drained event again
+  ([#17](https://github.com/stateforward/sml.rs/issues/17)). Flat,
+  composite, and orthogonal machines, sync and async, hung when the event was
+  deferred again by an internal row (sync) or by an external self-transition
+  (sync and async). The drain now follows sml.cpp: it runs once per
+  `process_event` step, after a step that changed the state, and retries each
+  deferred event once in queue order; an event deferred again keeps its place,
+  and a retried event that changes the state starts the retries over from the
+  front, so retained events are retried in the new state ahead of those not
+  yet retried.
+- If a retried event fails with a propagated guard or action error, the step
+  returns that error and the other deferred events stay queued in their order.
+- The async drain retries deferred events in queue order; it used to move them
+  to the process queue in reverse.
+- The drain rotates events through the policy's defer queue in place, so it
+  never builds another queue and never needs more room than the queue had.
+
+### Changed
+
+- Deferred events are retried only after a step changes the state. An external
+  self-transition, which re-enters the same state, no longer retries them, as
+  in sml.cpp.
+- Async machines with a defer queue no longer return `InvalidEvent` or
+  `TransitionsFailed` from `process_event` when a retried deferred event is not
+  handled; the event is dropped, as in sync machines.
 
 ## 2.0.0 - 2026-11-02
 

@@ -91,6 +91,7 @@
 
 mod codegen;
 mod composite_codegen;
+mod defer_drain;
 #[cfg(feature = "graphviz")]
 mod diagramgen;
 mod event_codegen;
