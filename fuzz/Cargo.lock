@@ -109,14 +109,14 @@ dependencies = [
 
 [[package]]
 name = "stateforward-sml"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "stateforward-sml-macros",
 ]
 
 [[package]]
 name = "stateforward-sml-macros"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "proc-macro2",
  "quote",
